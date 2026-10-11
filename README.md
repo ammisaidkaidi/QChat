@@ -12,7 +12,7 @@ Agent infrastructure toolkit — strict TypeScript, ESM-only, library **and** CL
 ## Quick start
 
 ```bash
-git clone <your-remote> InfAgent && cd InfAgent
+git clone https://github.com/ammisaidkaidi/InfAgent.git && cd InfAgent
 npm install
 
 # edit env.txt, then materialise the real env file
@@ -114,21 +114,30 @@ InfAgent/
 
 ## Publishing to GitHub
 
-The local repo is already initialised on `main` with commits. Two ways to push:
+Published at **https://github.com/ammisaidkaidi/InfAgent** (private, branch `main`).
 
-**A. With a token (creates the repo for you):**
+> **CI workflow is not pushed yet.** `.github/workflows/ci.yml` exists but is untracked:
+> GitHub rejects any push that adds or modifies workflow files unless the token carries the
+> `workflow` scope, and the token used here has only `repo`. Grant the `workflow` scope
+> (or push from a machine signed in via `gh`/SSH), then:
+>
+> ```bash
+> git add .github/workflows/ci.yml
+> git commit -m "ci: add GitHub Actions workflow"
+> git push
+> ```
+>
+> Everything else in `.github/` (dependabot) is already pushed.
+
+Helper for future/other repos:
 
 ```bash
 GITHUB_TOKEN=ghp_xxx ./tools/publish-github.sh infagent            # public
-GITHUB_TOKEN=ghp_xxx ./tools/publish-github.sh infagent --private  # private
+GITHUB_TOKEN=ghp_xxx ./tools/publish-github.sh my-org/infagent --private
 ```
 
-**B. Manually:**
-
-```bash
-git remote add origin git@github.com:<you>/InfAgent.git
-git push -u origin main
-```
+It creates the repo (tolerating one that already exists), sets `origin`, pushes the current
+branch, and never writes the token to `.git/config`.
 
 ## License
 
