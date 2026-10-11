@@ -1,143 +1,190 @@
 # InfAgent
 
-Agent infrastructure toolkit — strict TypeScript, ESM-only, library **and** CLI.
+Agent infrastructure toolkit — strict TypeScript, ESM-only, library **and** CLI,
+plus a **Vue interface** for the agent's script toolbox.
 
-- Node **≥ 20.11**, ESM (`"type": "module"`), TypeScript **strict** (incl. `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`)
-- `tsx` for instant dev runs, `tsc` for the published build in `dist/`
-- Vitest for tests, ESLint + Prettier for style, GitHub Actions CI on Node 20 & 22
-- Env handled as a first-class citizen: `env.txt` → `.env`, with redaction built in
+- Node **≥ 20.11**, ESM (`"type": "module"`), TypeScript strict
+- Library + CLI + HTTP API + Vue 3 / Tailwind / daisyUI console
+- Agent scripts as self-describing files: `.js` / `.py` with a prompt header
+- Built-in callbacks: `createScript`, `removeScript`, `listScripts`, `readScript`, `updateScript`, `searchScripts`, `runScript`, `describeScript`, `scriptStats`
+- Env as a first-class citizen: `env.txt` → `.env`, secrets redacted
 
 ---
 
 ## Quick start
 
 ```bash
-git clone https://github.com/ammisaidkaidi/InfAgent.git && cd InfAgent
 npm install
 
-# edit env.txt, then materialise the real env file
-npm run env:from-txt
+# 1. run the console (API + interface on one port)
+npm run ui:build        # build the Vue app into ui/dist
+npm run build           # compile the TypeScript to dist/
+npm run serve           # → http://localhost:8787
 
-# sanity check
-npm run typecheck && npm test
-
-# run the CLI in watch/dev mode
-npm run dev -- config
-npm run dev -- run "hello infra"
-
-# production-style build + run
-npm run build && npm start -- config
+# 2. or drive it from the terminal
+npx tsx src/cli.ts scripts list
+npx tsx src/cli.ts scripts run hello '{"name":"world"}'
 ```
 
-## Scripts
+Interface development with hot reload (`vite` on 5173, proxying `/api` to 8787):
 
-| Script | What it does |
+```bash
+npm run serve           # terminal 1 — API
+npm run ui:dev          # terminal 2 — interface
+```
+
+## The `scripts/` folder
+
+This folder belongs to the agent. It contains **only** `.js` and `.py` files
+(plus a one-line `package.json` ESM marker the registry writes so the `.js`
+files run as ES modules anywhere they are copied).
+
+Every script starts with a header that is both a docstring and an agent prompt:
+
+```js
+/**
+ * @infagent-script v1
+ * @name hello
+ * @language js
+ * @description Greet a person by name…
+ * @callback run({ name }) -> { ok, result }
+ * @usage node scripts/hello.js '{"name":"World"}'
+ * @params [{"name":"name","type":"string","required":false}]
+ * @agent
+ *   Use this script when the user greets someone.
+ *   Call it with {"name": "<person>"} and read result.greeting.
+ */
+```
+
+**Invocation contract** — one JSON argument in, one JSON envelope out:
+
+```
+node scripts/hello.js '{"name":"InfAgent"}'      →  {"ok":true,"result":{…}}
+python3 scripts/disk_report.py '{"min_free_gb":5}'  →  {"ok":true,"result":{…}}
+```
+
+Failures print `{"ok":false,"error":"…"}` and exit non-zero — an agent must read
+the envelope instead of assuming the call succeeded.
+
+## Built-in callbacks
+
+| Callback | Purpose |
 | --- | --- |
-| `npm run dev` | Run the CLI from source with `tsx watch` (hot reload) |
-| `npm run build` | Compile `src/` → `dist/` (declarations + sourcemaps) |
-| `npm start` | Run the compiled CLI (`node dist/cli.js`) |
-| `npm run typecheck` | `tsc --noEmit` across `src/` and `tests/` |
-| `npm test` / `test:watch` / `test:coverage` | Vitest run / watch / coverage |
-| `npm run lint` / `lint:fix` | ESLint (flat config, typescript-eslint) |
-| `npm run format` / `format:check` | Prettier |
-| `npm run env:from-txt` | Generate `.env` + `.env.example` from `env.txt` |
-| `npm run clean` | Remove `dist/` |
+| `listScripts()` | every script, with description and language |
+| `searchScripts(query)` | match name, description or agent prompt |
+| `readScript(name)` | metadata + full source |
+| `describeScript(name)` | metadata only |
+| `createScript({…})` | scaffold a `.js`/`.py` file with a generated header |
+| `updateScript(name, patch)` | patch header fields and/or body |
+| `removeScript(name)` | delete a script |
+| `runScript(name, args)` | execute, capture stdout/stderr + envelope |
+| `scriptStats()` | counters by language, total size, managed folder |
 
-## Environment: `env.txt` is the source of truth
+```ts
+import { createScript, runScript, scriptSystemPrompt } from 'infagent';
 
+createScript({
+  name: 'disk_report',
+  language: 'py',
+  description: 'Report free disk space per volume.',
+  params: [{ name: 'min_free_gb', type: 'number' }],
+});
+
+const result = await runScript('disk_report', { min_free_gb: 5 });
+console.log(result.envelope);
+
+// Hand this to an LLM as its system prompt / tool descriptions:
+const tools = scriptSystemPrompt();
 ```
-env.txt   ──(npm run env:from-txt)──▶   .env          ← read by the app, gitignored
-                                   ──▶   .env.example  ← committed template, secrets blanked
-```
-
-Rules enforced by `tools/env-from-txt.mjs`:
-
-- one `KEY=value` per line, `#` comments and blank lines are preserved in `.env`
-- `export KEY=value` works; surrounding quotes are stripped
-- keys matching `SECRET|TOKEN|PASSWORD|API_KEY|PRIVATE_KEY|…` are written to `.env` but **blanked in `.env.example`** and shown as `<redacted>` in the script output
-- the previous `.env` is backed up to `.env.bak`
-
-**Never commit `env.txt` or `.env`** — both are gitignored. If you must share a config, share `.env.example`.
 
 ## CLI
 
 ```bash
-infagent help                 # usage
-infagent config               # resolved keys (secrets redacted)
-infagent config --json        # machine-readable
-infagent run "task text"      # run through the agent (stub handler)
-infagent --version
+infagent serve [--port 8787]          # API + interface
+infagent scripts list [--json]
+infagent scripts search <query>
+infagent scripts read <name>
+infagent scripts prompt <name>        # how an agent should call it
+infagent scripts create <name> --lang js --desc "…" [--force]
+infagent scripts update <name> --desc "…" --prompt "…" --body file.js
+infagent scripts remove <name>
+infagent scripts run <name> '{"json":"args"}'
+infagent scripts stats
+infagent tools [--json]               # JSON-schema tool defs for an LLM
+infagent config | run <task> | --version
 ```
 
-Exit codes: `0` success, `1` task failure, `2` usage error.
+## HTTP API
 
-## Library usage
+| Method & path | Purpose |
+| --- | --- |
+| `GET /api/health` | version, node, folder, counters |
+| `GET /api/scripts` | list + stats + system prompt |
+| `POST /api/scripts` | create |
+| `GET /api/scripts/:name` | detail + source |
+| `PATCH /api/scripts/:name` | update |
+| `DELETE /api/scripts/:name` | remove |
+| `POST /api/scripts/:name/run` | `{ "args": {…} }` → run result |
+| `GET /api/scripts/:name/prompt` | ready-to-paste agent prompt |
+| `GET /api/tools` | tool schemas + system prompt |
 
-```ts
-import { Agent, getEnv, requireEnv, loadEnv, snapshot } from 'infagent';
+## Interface (Vue 3 + Tailwind + daisyUI)
 
-loadEnv();                                   // reads ./.env, idempotent
-const { LOG_LEVEL } = requireEnv('LOG_LEVEL'); // fails fast, lists all missing keys
+`ui/` is a small console that follows the same design language as the API:
 
-const agent = new Agent({
-  name: 'infra-bot',
-  handler: async (task, self) => `${self.name} handled: ${task}`,
-});
+- **Scripts panel** — search, filter by language, create, remove
+- **Detail tabs** — overview, *Agent prompt* (copyable), source, run console with arguments and the parsed envelope
+- **Agent tool console** — the built-in callbacks as an LLM would call them, with a call log
 
-const result = await agent.run('drain node-3');
-console.log(result);          // { ok, output, durationMs, agent }
-console.table(snapshot());    // secrets shown as sk-***890
+## Environment: `env.txt` is the source of truth
+
+```
+env.txt ──(npm run env:from-txt)──▶ .env          ← gitignored, read by the app
+                                ──▶ .env.example   ← committed, secrets blanked
 ```
 
-Because `infagent` is ESM-only and built with `module: NodeNext`, keep `.js`
-extensions in relative imports (`./config/env.js`).
+Keys matching `SECRET|TOKEN|PASSWORD|PASS|…|DATABASE_URL` are written to `.env`
+but blanked in `.env.example`. The previous `.env` is backed up to `.env.bak`.
+
+Relevant InfAgent variables:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `PORT` | `8787` | HTTP port |
+| `HOST` | `0.0.0.0` | bind address |
+| `INFAGENT_SCRIPTS_DIR` | `./scripts` | managed script folder |
+| `INFAGENT_SCRIPT_TIMEOUT_MS` | `30000` | per-run timeout |
+| `INFAGENT_ALLOW_RUN` | `1` | set to `0` to disable execution |
+| `INFAGENT_PYTHON` | `python3` | interpreter for `.py` scripts |
+| `INFAGENT_NAME` | `InfAgent` | agent display name |
+
+## Scripts (npm)
+
+| Script | What it does |
+| --- | --- |
+| `npm run serve` | API + interface from `dist/` |
+| `npm run serve:dev` | same, with hot reload (`tsx watch`) |
+| `npm run ui:build` / `ui:dev` | build / develop the Vue interface |
+| `npm run build` | compile `src/` → `dist/` |
+| `npm run dev` | CLI from source with `tsx watch` |
+| `npm run typecheck` / `test` / `lint` / `format` | quality gates |
+| `npm run env:from-txt` | regenerate `.env` + `.env.example` |
 
 ## Project layout
 
 ```
 InfAgent/
 ├── src/
-│   ├── cli.ts              # executable entry (bin: infagent)
-│   ├── version.ts          # version + build info
-│   ├── config/env.ts       # env loading, validation, redaction
-│   └── lib/
-│       ├── agent.ts        # Agent runtime (injectable task handler)
-│       └── index.ts        # public library surface
-├── tests/                  # vitest specs
-├── tools/
-│   ├── env-from-txt.mjs    # env.txt → .env generator
-│   └── publish-github.sh   # create the GitHub repo + push in one shot
-├── .github/workflows/ci.yml
-├── env.txt                 # your reference config (gitignored)
-└── .env.example            # committed template
+│   ├── cli.ts                 # bin: infagent
+│   ├── config/env.ts          # env loading, validation, redaction
+│   ├── lib/                   # Agent runtime + public library surface
+│   ├── scripts/               # script toolbox (header, registry, runner)
+│   └── server/                # HTTP API + static UI server
+├── ui/                        # Vue 3 + Tailwind + daisyUI interface
+├── scripts/                   # agent-authored .js / .py callbacks
+├── tests/                     # vitest: env, agent, script toolbox
+└── tools/                     # env generator, GitHub publish helper
 ```
-
-## Publishing to GitHub
-
-Published at **https://github.com/ammisaidkaidi/InfAgent** (private, branch `main`).
-
-> **CI workflow is not pushed yet.** `.github/workflows/ci.yml` exists but is untracked:
-> GitHub rejects any push that adds or modifies workflow files unless the token carries the
-> `workflow` scope, and the token used here has only `repo`. Grant the `workflow` scope
-> (or push from a machine signed in via `gh`/SSH), then:
->
-> ```bash
-> git add .github/workflows/ci.yml
-> git commit -m "ci: add GitHub Actions workflow"
-> git push
-> ```
->
-> Everything else in `.github/` (dependabot) is already pushed.
-
-Helper for future/other repos:
-
-```bash
-GITHUB_TOKEN=ghp_xxx ./tools/publish-github.sh infagent            # public
-GITHUB_TOKEN=ghp_xxx ./tools/publish-github.sh my-org/infagent --private
-```
-
-It creates the repo (tolerating one that already exists), sets `origin`, pushes the current
-branch, and never writes the token to `.git/config`.
 
 ## License
 

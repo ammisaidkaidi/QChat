@@ -1,0 +1,54 @@
+@import 'tailwindcss';
+
+@plugin 'daisyui' {
+  themes:
+    dark --default,
+    light;
+}
+
+@plugin 'daisyui/theme' {
+  name: 'dark';
+  default: true;
+  prefersdark: true;
+  color-scheme: dark;
+  --color-base-100: oklch(17% 0.017 265);
+  --color-base-200: oklch(21% 0.02 265);
+  --color-base-300: oklch(26% 0.023 265);
+  --color-primary: oklch(72% 0.15 255);
+  --color-primary-content: oklch(18% 0.03 265);
+  --color-secondary: oklch(72% 0.16 320);
+  --color-accent: oklch(78% 0.15 165);
+  --color-neutral: oklch(28% 0.02 265);
+  --radius-box: 0.9rem;
+  --radius-field: 0.6rem;
+}
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+/* Long script sources: keep the layout stable on mobile. */
+pre {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.grid-lines {
+  background-image:
+    linear-gradient(
+      to right,
+      color-mix(in oklch, currentColor 6%, transparent) 1px,
+      transparent 1px
+    ),
+    linear-gradient(
+      to bottom,
+      color-mix(in oklch, currentColor 6%, transparent) 1px,
+      transparent 1px
+    );
+  background-size: 44px 44px;
+}

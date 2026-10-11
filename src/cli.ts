@@ -1,16 +1,31 @@
 #!/usr/bin/env node
 /**
- * InfAgent CLI — zero-dependency beyond dotenv.
+ * InfAgent CLI.
  *
- *   infagent                 show help
- *   infagent config [--json] dump resolved env keys (secrets redacted)
- *   infagent run <task…>     execute a task through the stub agent
- *   infagent --version       print version
+ *   infagent                              show help
+ *   infagent config [--json]              resolved env keys (secrets redacted)
+ *   infagent run <task…>                  execute a task through the stub agent
+ *   infagent serve [--port 8787]          start the API + Vue interface
+ *   infagent scripts list [--json]        list agent scripts
+ *   infagent scripts search <query>       search scripts
+ *   infagent scripts read <name>          metadata + source
+ *   infagent scripts prompt <name>        agent callback prompt
+ *   infagent scripts create <name> …      scaffold a new script
+ *   infagent scripts update <name> …      patch header/body
+ *   infagent scripts remove <name>        delete a script
+ *   infagent scripts run <name> [json]    execute a script
+ *   infagent scripts stats [--json]       counters
+ *   infagent tools [--json]               JSON-schema tool definitions for an LLM
+ *   infagent --version
  */
 import process from 'node:process';
 
 import { ensureEnv, envKeys, envSource, isEnvLoaded, snapshot } from './config/env.js';
 import { Agent } from './lib/agent.js';
+import { SCRIPT_LANGUAGES } from './scripts/types.js';
+import type { CreateScriptInput, ScriptLanguage, UpdateScriptInput } from './scripts/types.js';
+import { ScriptError, defaultRegistry } from './scripts/registry.js';
+import { startServer } from './server/server.js';
 import { buildInfo } from './version.js';
 
 const HELP = `InfAgent — agent infrastructure toolkit
@@ -19,14 +34,32 @@ Usage:
   infagent <command> [options]
 
 Commands:
-  run <task...>      Run a task through the agent
-  config             Show resolved configuration (secrets redacted)
-  help               Show this help
+  run <task...>              Run a task through the agent
+  serve [--port <n>]         Start the API + Vue interface (default port 8787)
+  config                     Show resolved configuration (secrets redacted)
+  scripts <subcommand>       Manage agent scripts (see below)
+  tools                      JSON-schema tool definitions for an LLM
+  help                       Show this help
+
+Script subcommands:
+  list [--json]              List scripts with description and language
+  search <query>             Match name, description or agent prompt
+  read <name> [--json]       Header metadata + full source
+  prompt <name>              Prompt describing how an agent calls the script
+  create <name> [options]    Scaffold a script (.js by default)
+      --lang js|py             Target language
+      --desc "text"            One-line description (required)
+      --body <file>            Use this file as the body
+      --force                  Overwrite an existing script
+  update <name> [options]    Patch description / prompt / body
+  remove <name>              Delete a script
+  run <name> ['{json args}'] Execute a script and print its envelope
+  stats [--json]             Script counters
 
 Options:
-  -h, --help         Show help
-  -v, --version      Show version
-  -j, --json         Machine-readable output (config)
+  -h, --help                 Show help
+  -v, --version              Show version
+  -j, --json                 Machine-readable output
 
 Environment:
   Reads .env from the current working directory.
@@ -36,6 +69,196 @@ Environment:
 const argv = process.argv.slice(2);
 const wantsJson = argv.includes('--json') || argv.includes('-j');
 const args = argv.filter((arg) => arg !== '--json' && arg !== '-j');
+
+/** Read `--flag value` or `--flag=value` from the argument list. */
+function flag(name: string): string | undefined {
+  const index = args.findIndex((arg) => arg === `--${name}`);
+  if (index !== -1) {
+    const value = args[index + 1];
+    if (value !== undefined && !value.startsWith('--')) return value;
+  }
+  const inline = args.find((arg) => arg.startsWith(`--${name}=`));
+  return inline ? inline.slice(name.length + 3) : undefined;
+}
+
+function print(value: string): void {
+  process.stdout.write(`${value}\n`);
+}
+
+async function scriptsCommand(sub: string | undefined, rest: string[]): Promise<number> {
+  const registry = defaultRegistry;
+
+  switch (sub) {
+    case 'list':
+    case undefined: {
+      const records = registry.list();
+      if (wantsJson) {
+        print(JSON.stringify({ scripts: records, stats: registry.stats() }, null, 2));
+      } else {
+        print(registry.format());
+      }
+      return 0;
+    }
+
+    case 'search': {
+      const query = rest.join(' ').trim();
+      if (!query) {
+        process.stderr.write('error: `infagent scripts search` needs a query\n');
+        return 2;
+      }
+      const records = registry.search(query);
+      if (wantsJson) {
+        print(JSON.stringify({ scripts: records }, null, 2));
+      } else {
+        print(
+          records.length === 0
+            ? `No script matches "${query}".`
+            : records
+                .map(
+                  (record) =>
+                    `${record.meta.name}  (${record.meta.language})  ${record.meta.description}`,
+                )
+                .join('\n'),
+        );
+      }
+      return 0;
+    }
+
+    case 'read': {
+      const name = rest[0];
+      if (!name) {
+        process.stderr.write('error: `infagent scripts read` needs a script name\n');
+        return 2;
+      }
+      const detail = registry.read(name);
+      if (wantsJson) {
+        print(JSON.stringify(detail, null, 2));
+      } else {
+        print(`${detail.meta.name} (${detail.meta.language}) — ${detail.meta.description}`);
+        print(`file     : ${detail.relativePath}`);
+        print(`callback : ${detail.meta.callback}`);
+        print(`usage    : ${detail.meta.usage}`);
+        print('');
+        print(detail.source);
+      }
+      return 0;
+    }
+
+    case 'prompt': {
+      const name = rest[0];
+      if (!name) {
+        process.stderr.write('error: `infagent scripts prompt` needs a script name\n');
+        return 2;
+      }
+      print(registry.agentPrompt(name));
+      return 0;
+    }
+
+    case 'create': {
+      const name = rest[0];
+      const description = flag('desc') ?? flag('description');
+      const language = (flag('lang') ?? 'js') as ScriptLanguage;
+      if (!name || !description) {
+        process.stderr.write(
+          'error: usage: infagent scripts create <name> --desc "text" [--lang js|py] [--force]\n',
+        );
+        return 2;
+      }
+      if (!(SCRIPT_LANGUAGES as readonly string[]).includes(language)) {
+        process.stderr.write(`error: --lang must be one of ${SCRIPT_LANGUAGES.join(', ')}\n`);
+        return 2;
+      }
+      const bodyFile = flag('body');
+      const input: CreateScriptInput = {
+        name,
+        language,
+        description,
+        overwrite: argv.includes('--force'),
+        ...(bodyFile ? { body: (await import('node:fs')).readFileSync(bodyFile, 'utf8') } : {}),
+      };
+      const created = registry.create(input);
+      print(`✔ created ${created.relativePath} (${created.meta.language})`);
+      print(`  callback: ${created.meta.callback}`);
+      return 0;
+    }
+
+    case 'update': {
+      const name = rest[0];
+      if (!name) {
+        process.stderr.write('error: `infagent scripts update` needs a script name\n');
+        return 2;
+      }
+      const patch: UpdateScriptInput = {
+        ...(flag('desc') ? { description: flag('desc') as string } : {}),
+        ...(flag('prompt') ? { agentPrompt: flag('prompt') as string } : {}),
+        ...(flag('body')
+          ? { body: (await import('node:fs')).readFileSync(flag('body') as string, 'utf8') }
+          : {}),
+      };
+      const updated = registry.update(name, patch);
+      print(`✔ updated ${updated.relativePath}`);
+      return 0;
+    }
+
+    case 'remove': {
+      const name = rest[0];
+      if (!name) {
+        process.stderr.write('error: `infagent scripts remove` needs a script name\n');
+        return 2;
+      }
+      const removed = registry.remove(name);
+      print(`✔ removed ${removed.relativePath}`);
+      return 0;
+    }
+
+    case 'run': {
+      const name = rest[0];
+      if (!name) {
+        process.stderr.write('error: `infagent scripts run` needs a script name\n');
+        return 2;
+      }
+      let scriptArgs: Record<string, unknown> = {};
+      const rawArgs = rest.slice(1).join(' ').trim();
+      if (rawArgs) {
+        try {
+          const parsed: unknown = JSON.parse(rawArgs);
+          if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed))
+            throw new Error('not an object');
+          scriptArgs = parsed as Record<string, unknown>;
+        } catch {
+          process.stderr.write(`error: arguments must be a JSON object, got: ${rawArgs}\n`);
+          return 2;
+        }
+      }
+      const result = await registry.run(name, scriptArgs);
+      if (wantsJson) {
+        print(JSON.stringify(result, null, 2));
+      } else {
+        print(`$ ${result.command}`);
+        if (result.stdout.trim()) print(result.stdout.trimEnd());
+        if (result.stderr.trim()) process.stderr.write(result.stderr);
+        print(
+          `${result.ok ? '✔' : '✖'} exit ${result.exitCode ?? 'null'} in ${result.durationMs}ms`,
+        );
+      }
+      return result.ok ? 0 : 1;
+    }
+
+    case 'stats': {
+      const stats = registry.stats();
+      print(
+        wantsJson
+          ? JSON.stringify(stats, null, 2)
+          : `scripts: ${stats.count} (js ${stats.byLanguage.js}, py ${stats.byLanguage.py}) · ${stats.totalBytes} bytes · ${stats.root}`,
+      );
+      return 0;
+    }
+
+    default:
+      process.stderr.write(`error: unknown scripts subcommand "${sub}"\n\n${HELP}`);
+      return 2;
+  }
+}
 
 async function main(): Promise<number> {
   const [command, ...rest] = args;
@@ -47,11 +270,11 @@ async function main(): Promise<number> {
 
   if (command === '--version' || command === '-v' || command === 'version') {
     const { name, version, node } = buildInfo();
-    if (wantsJson) {
-      process.stdout.write(`${JSON.stringify({ name, version, node }, null, 2)}\n`);
-    } else {
-      process.stdout.write(`${name} v${version} (node ${node})\n`);
-    }
+    print(
+      wantsJson
+        ? JSON.stringify({ name, version, node }, null, 2)
+        : `${name} v${version} (node ${node})`,
+    );
     return 0;
   }
 
@@ -62,17 +285,37 @@ async function main(): Promise<number> {
     const entries = snapshot(declared.length > 0 ? declared : undefined);
 
     if (wantsJson) {
-      process.stdout.write(
-        `${JSON.stringify({ envFileFound: found, envFile: source, entries }, null, 2)}\n`,
-      );
+      print(JSON.stringify({ envFileFound: found, envFile: source, entries }, null, 2));
       return 0;
     }
 
-    process.stdout.write(`env file : ${source}${found ? '' : ' (not found)'}\n\n`);
+    print(`env file : ${source}${found ? '' : ' (not found)'}\n`);
     for (const { key, value, sensitive } of entries) {
-      process.stdout.write(`${sensitive ? '🔒' : '  '} ${key.padEnd(28)} ${value}\n`);
+      print(`${sensitive ? '🔒' : '  '} ${key.padEnd(28)} ${value}`);
     }
     return 0;
+  }
+
+  if (command === 'serve') {
+    ensureEnv({ silent: true });
+    const port = Number(flag('port') ?? process.env['PORT'] ?? 8787);
+    const running = await startServer({ port, host: flag('host') ?? '0.0.0.0' });
+    print(`InfAgent UI → ${running.url}  (Ctrl+C to stop)`);
+    return await new Promise<number>(() => 0);
+  }
+
+  if (command === 'tools') {
+    const tools = defaultRegistry.toolDefinitions();
+    print(
+      wantsJson
+        ? JSON.stringify({ tools, systemPrompt: defaultRegistry.systemPrompt() }, null, 2)
+        : JSON.stringify(tools, null, 2),
+    );
+    return 0;
+  }
+
+  if (command === 'scripts') {
+    return await scriptsCommand(rest[0], rest.slice(1));
   }
 
   if (command === 'run') {
@@ -81,15 +324,12 @@ async function main(): Promise<number> {
       process.stderr.write('error: `infagent run` needs a task, e.g. infagent run "ping"\n');
       return 2;
     }
-
-    const agent = new Agent();
-    const result = await agent.run(task);
-
-    if (wantsJson) {
-      process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
-    } else {
-      process.stdout.write(`${result.ok ? '✔' : '✖'} [${result.agent}] ${result.output}\n`);
-    }
+    const result = await new Agent().run(task);
+    print(
+      wantsJson
+        ? JSON.stringify(result, null, 2)
+        : `${result.ok ? '✔' : '✖'} [${result.agent}] ${result.output}`,
+    );
     return result.ok ? 0 : 1;
   }
 
@@ -103,6 +343,11 @@ main()
     process.exitCode = code;
   })
   .catch((error: unknown) => {
+    if (error instanceof ScriptError) {
+      process.stderr.write(`error: ${error.message}\n`);
+      process.exitCode = 2;
+      return;
+    }
     process.stderr.write(`fatal: ${error instanceof Error ? error.message : String(error)}\n`);
     process.exitCode = 1;
   });

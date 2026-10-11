@@ -1,5 +1,5 @@
 /**
- * Public library surface — `import { Agent, loadEnv } from 'infagent'`.
+ * Public library surface — `import { Agent, ScriptRegistry } from 'infagent'`.
  */
 export {
   EnvError,
@@ -21,6 +21,40 @@ export type { EnvEntry, LoadEnvOptions } from '../config/env.js';
 
 export { Agent } from './agent.js';
 export type { AgentOptions, AgentRunResult, TaskHandler } from './agent.js';
+
+// Agent script toolbox: the built-in callbacks an LLM can invoke.
+export {
+  ScriptRegistry,
+  ScriptError,
+  defaultRegistry,
+  createScript,
+  describeScript,
+  listScripts,
+  readScript,
+  removeScript,
+  runScript,
+  searchScripts,
+  scriptAgentPrompt,
+  scriptStats,
+  scriptSystemPrompt,
+  scriptTools,
+  updateScript,
+} from '../scripts/index.js';
+export type {
+  CreateScriptInput,
+  ScriptDetail,
+  ScriptLanguage,
+  ScriptMeta,
+  ScriptParam,
+  ScriptRecord,
+  ScriptRunResult,
+  ScriptStats,
+  ToolDefinition,
+  UpdateScriptInput,
+} from '../scripts/index.js';
+
+export { createServer, startServer } from '../server/server.js';
+export type { ServerOptions, RunningServer } from '../server/server.js';
 
 export { VERSION, buildInfo } from '../version.js';
 export type { BuildInfo } from '../version.js';

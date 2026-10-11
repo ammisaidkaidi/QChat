@@ -4,7 +4,9 @@ import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
   {
-    ignores: ['dist/**', 'coverage/**', 'node_modules/**', '.vitest/**'],
+    // `ui/**` is type-checked by vue-tsc (see ui/package.json) and `scripts/**`
+    // holds agent-authored files that must not be able to fail repo lint.
+    ignores: ['dist/**', 'ui/**', 'scripts/**', 'coverage/**', 'node_modules/**', '.vitest/**'],
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,
