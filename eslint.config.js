@@ -6,7 +6,15 @@ export default tseslint.config(
   {
     // `ui/**` is type-checked by vue-tsc (see ui/package.json) and `scripts/**`
     // holds agent-authored files that must not be able to fail repo lint.
-    ignores: ['dist/**', 'ui/**', 'scripts/**', 'coverage/**', 'node_modules/**', '.vitest/**'],
+    ignores: [
+      'dist/**',
+      'ui/**',
+      'scripts/**',
+      'coverage/**',
+      'node_modules/**',
+      '.vitest/**',
+      'tools/ui-smoke.mjs',
+    ],
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,
@@ -21,6 +29,13 @@ export default tseslint.config(
       eqeqeq: ['error', 'always', { null: 'ignore' }],
       'prefer-const': 'error',
       'object-shorthand': 'error',
+    },
+  },
+  {
+    // The browser smoke test runs in Node *and* inside the page.
+    files: ['tools/*.mjs'],
+    languageOptions: {
+      globals: { console: 'readonly', process: 'readonly', document: 'readonly' },
     },
   },
   {
