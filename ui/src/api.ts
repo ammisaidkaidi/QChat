@@ -3,7 +3,11 @@
  * works identically when served by `infagent serve` or the Vite dev proxy.
  */
 import type {
+  ChatConfig,
+  ChatEvent,
+  ChatMessage,
   CreateScriptInput,
+  EngineStatus,
   Health,
   ScriptDetail,
   ScriptRecord,
@@ -67,6 +71,169 @@ export const api = {
     request(`/api/scripts/${encodeURIComponent(name)}/run`, { method: 'POST', body: { args } }),
 
   tools: (): Promise<{ tools: ToolDefinition[]; systemPrompt: string }> => request('/api/tools'),
+};
+
+/* ── chat: server-sent events ─────────────────────────────────────────────── */
+
+export interface ChatStreamHandle {
+  abort: () => void;
+}
+
+interface ChatStreamOptions {
+  messages: ChatMessage[];
+  temperature?: number;
+  maxTokens?: number;
+  thinking?: boolean;
+  tools?: boolean;
+  systemPrompt?: string;
+  onEvent: (event: ChatEvent) => void;
+  onError: (message: string) => void;
+  onClose: () => void;
+}
+
+/**
+ * Reads an SSE stream from a POST request. `EventSource` cannot POST, so the
+ * response body is parsed frame by frame instead.
+ */
+export function streamChat(options: ChatStreamOptions): ChatStreamHandle {
+  const controller = new AbortController();
+
+  void (async () => {
+    try {
+      const response = await fetch('/api/chat/completions', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        signal: controller.signal,
+        body: JSON.stringify({
+          messages: options.messages,
+          ...(options.temperature === undefined ? {} : { temperature: options.temperature }),
+          ...(options.maxTokens === undefined ? {} : { maxTokens: options.maxTokens }),
+          ...(options.thinking === undefined ? {} : { thinking: options.thinking }),
+          ...(options.tools === undefined ? {} : { tools: options.tools }),
+          ...(options.systemPrompt ? { systemPrompt: options.systemPrompt } : {}),
+        }),
+      });
+
+      if (!response.ok || !response.body) {
+        const text = await response.text().catch(() => '');
+        let message = `Chat request failed (${response.status}).`;
+        try {
+          const parsed = JSON.parse(text) as { error?: string };
+          if (parsed.error) message = parsed.error;
+        } catch {
+          /* keep the generic message */
+        }
+        options.onError(message);
+        return;
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        let boundary = buffer.indexOf('\n\n');
+        while (boundary !== -1) {
+          const frame = buffer.slice(0, boundary);
+          buffer = buffer.slice(boundary + 2);
+          boundary = buffer.indexOf('\n\n');
+
+          const payload = frame
+            .split('\n')
+            .filter((line) => line.startsWith('data: '))
+            .map((line) => line.slice(6))
+            .join('');
+          if (!payload) continue;
+
+          try {
+            options.onEvent(JSON.parse(payload) as ChatEvent);
+          } catch {
+            /* ignore malformed frames */
+          }
+        }
+      }
+    } catch (error) {
+      if ((error as Error).name !== 'AbortError') options.onError((error as Error).message);
+    } finally {
+      options.onClose();
+    }
+  })();
+
+  return { abort: () => controller.abort() };
+}
+
+export const chatApi = {
+  status: (): Promise<{ status: EngineStatus; config: ChatConfig }> => request('/api/chat/status'),
+
+  unload: (): Promise<{ status: EngineStatus }> => request('/api/chat/model', { method: 'DELETE' }),
+
+  /** Downloads the GGUF, reporting progress until it finishes. */
+  download: (
+    onProgress: (progress: number, status: EngineStatus) => void,
+    onDone: (status: EngineStatus) => void,
+    onError: (message: string) => void,
+  ): ChatStreamHandle => {
+    const controller = new AbortController();
+
+    void (async () => {
+      try {
+        const response = await fetch('/api/chat/model/download', {
+          method: 'POST',
+          signal: controller.signal,
+          headers: { accept: 'text/event-stream' },
+        });
+        if (!response.ok || !response.body) {
+          onError(`Download failed (${response.status}).`);
+          return;
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+
+          let end = buffer.indexOf('\n\n');
+          while (end !== -1) {
+            const frame = buffer.slice(0, end);
+            buffer = buffer.slice(end + 2);
+            end = buffer.indexOf('\n\n');
+
+            const payload = frame
+              .split('\n')
+              .filter((line) => line.startsWith('data: '))
+              .map((line) => line.slice(6))
+              .join('');
+            if (!payload) continue;
+
+            try {
+              const parsed = JSON.parse(payload) as {
+                type: string;
+                message?: string;
+                status?: EngineStatus;
+              };
+              if (parsed.type === 'error') onError(parsed.message ?? 'Download failed.');
+              else if (parsed.type === 'done' && parsed.status) onDone(parsed.status);
+              else if (parsed.status) onProgress(parsed.status.downloadProgress, parsed.status);
+            } catch {
+              /* ignore malformed frames */
+            }
+          }
+        }
+      } catch (error) {
+        if ((error as Error).name !== 'AbortError') onError((error as Error).message);
+      }
+    })();
+
+    return { abort: () => controller.abort() };
+  },
 };
 
 export async function copyText(value: string): Promise<boolean> {

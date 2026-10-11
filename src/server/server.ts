@@ -13,6 +13,9 @@ import process from 'node:process';
 
 import { ScriptError, ScriptRegistry } from '../scripts/registry.js';
 import type { CreateScriptInput, ScriptLanguage, UpdateScriptInput } from '../scripts/types.js';
+import { QwenEngine, ChatError } from '../chat/qwen.js';
+import type { ChatEvent, ChatRequest } from '../chat/types.js';
+import { openSse } from './sse.js';
 import { VERSION } from '../version.js';
 
 const MAX_BODY_BYTES = 1_000_000;
@@ -34,6 +37,8 @@ const MIME: Record<string, string> = {
 export interface ServerOptions {
   /** Registry backing `/api/scripts`. Defaults to `<cwd>/scripts`. */
   registry?: ScriptRegistry;
+  /** Local model engine backing `/api/chat`. Defaults to a CPU Qwen3 engine. */
+  engine?: QwenEngine;
   /** Folder with the built Vue app. Defaults to `<repo>/ui/dist`. */
   uiDir?: string;
   port?: number;
@@ -100,6 +105,7 @@ function serveStatic(res: ServerResponse, uiDir: string, pathname: string): void
 
 export function createServer(options: ServerOptions = {}): Server {
   const registry = options.registry ?? new ScriptRegistry();
+  const engine = options.engine ?? new QwenEngine({ registry });
   const uiDir = options.uiDir ?? defaultUiDir();
   registry.ensureRoot();
 
@@ -136,6 +142,89 @@ export function createServer(options: ServerOptions = {}): Server {
             tools: registry.toolDefinitions(),
             systemPrompt: registry.systemPrompt(),
           });
+          return;
+        }
+
+        if (segments[1] === 'chat') {
+          const sub = segments[2];
+
+          if (sub === 'status' && method === 'GET') {
+            sendJson(res, 200, {
+              status: engine.status(),
+              config: {
+                scriptCount: registry.list().length,
+                modelsDir: engine.modelsDir,
+                contextSize: engine.contextSize,
+                threads: engine.threads,
+                defaultTemperature: 0.4,
+                defaultMaxTokens: 360,
+                thinking: false,
+                tools: engine.status().toolsAvailable,
+              },
+            });
+            return;
+          }
+
+          if (sub === 'model' && segments[3] === 'download' && method === 'POST') {
+            const sse = openSse(res);
+            try {
+              await engine.downloadModel();
+              sse.send({ type: 'done', status: engine.status() });
+            } catch (error) {
+              sse.send({
+                type: 'error',
+                message: error instanceof Error ? error.message : 'Download failed.',
+                status: engine.status(),
+              });
+            } finally {
+              sse.close();
+            }
+            return;
+          }
+
+          if (sub === 'model' && method === 'DELETE') {
+            await engine.unload();
+            sendJson(res, 200, { status: engine.status() });
+            return;
+          }
+
+          if (sub === 'model' && method === 'GET') {
+            sendJson(res, 200, { status: engine.status() });
+            return;
+          }
+
+          if (sub === 'completions' && method === 'POST') {
+            const body = await readBody(req);
+            const request = body as unknown as ChatRequest;
+            if (!Array.isArray(request.messages) || request.messages.length === 0) {
+              sendJson(res, 400, { error: 'Body must include a non-empty `messages` array.' });
+              return;
+            }
+
+            const controller = new AbortController();
+            const sse = openSse(res);
+            req.on('close', () => controller.abort());
+
+            try {
+              for await (const event of engine.stream(request, controller.signal)) {
+                if (sse.closed) {
+                  controller.abort();
+                  break;
+                }
+                sse.send(event, event.type);
+              }
+            } catch (error) {
+              sse.send({
+                type: 'error',
+                message: error instanceof Error ? error.message : 'Generation failed.',
+              } satisfies ChatEvent);
+            } finally {
+              sse.close();
+            }
+            return;
+          }
+
+          sendJson(res, 404, { error: `Unknown chat route: ${pathname}` });
           return;
         }
 
@@ -196,6 +285,11 @@ export function createServer(options: ServerOptions = {}): Server {
 
         sendJson(res, 404, { error: `Unknown API route: ${pathname}` });
       } catch (error) {
+        if (error instanceof ChatError) {
+          const status = error.code === 'busy' ? 429 : error.code === 'unavailable' ? 503 : 409;
+          sendJson(res, status, { error: error.message, code: error.code });
+          return;
+        }
         if (error instanceof ScriptError) {
           const status =
             error.code === 'not_found'

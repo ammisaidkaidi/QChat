@@ -44,10 +44,13 @@
     "format:check": "prettier --check .",
     "env:from-txt": "node tools/env-from-txt.mjs",
     "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
-    "prepublishOnly": "npm run clean && npm run build"
+    "prepublishOnly": "npm run clean && npm run build",
+    "chat:ask": "node dist/cli.js chat ask",
+    "chat:model": "node dist/cli.js chat download"
   },
   "dependencies": {
-    "dotenv": "^16.6.1"
+    "dotenv": "^16.6.1",
+    "node-llama-cpp": "^3.22.1"
   },
   "keywords": [
     "agent",

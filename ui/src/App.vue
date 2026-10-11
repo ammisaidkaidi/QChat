@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from 'vue';
 
 import { api } from './api';
+import ChatPanel from './components/ChatPanel.vue';
 import CreateScriptModal from './components/CreateScriptModal.vue';
 import ScriptDetail from './components/ScriptDetail.vue';
 import ScriptsPanel from './components/ScriptsPanel.vue';
@@ -13,6 +14,9 @@ import type {
   ScriptStats,
   ToolDefinition,
 } from './types';
+
+type Tab = 'chat' | 'scripts';
+const tab = ref<Tab>('chat');
 
 const scripts = ref<ScriptRecord[]>([]);
 const stats = ref<ScriptStats | null>(null);
@@ -134,7 +138,10 @@ onMounted(async () => {
       </div>
     </header>
 
-    <main class="mx-auto grid max-w-7xl gap-4 p-3 sm:p-4 lg:grid-cols-[22rem_1fr]">
+    <main
+      v-if="tab === 'scripts'"
+      class="mx-auto grid max-w-7xl gap-4 p-3 sm:p-4 lg:grid-cols-[22rem_1fr]"
+    >
       <ScriptsPanel
         :scripts="scripts"
         :stats="stats"
@@ -161,7 +168,14 @@ onMounted(async () => {
       </div>
     </main>
 
-    <footer v-if="stats" class="mx-auto max-w-7xl px-4 pb-8 text-center text-[11px] opacity-50">
+    <main v-else class="mx-auto max-w-7xl p-3 sm:p-4">
+      <ChatPanel @notify="notify" />
+    </main>
+
+    <footer
+      v-if="tab === 'scripts' && stats"
+      class="mx-auto max-w-7xl px-4 pb-8 text-center text-[11px] opacity-50"
+    >
       {{ stats.count }} scripts · {{ stats.byLanguage.js }} js · {{ stats.byLanguage.py }} py ·
       folder {{ stats.root }}
     </footer>

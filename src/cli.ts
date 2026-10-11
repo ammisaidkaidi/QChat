@@ -21,6 +21,7 @@
 import process from 'node:process';
 
 import { ensureEnv, envKeys, envSource, isEnvLoaded, snapshot } from './config/env.js';
+import { ChatError, QwenEngine } from './chat/qwen.js';
 import { Agent } from './lib/agent.js';
 import { SCRIPT_LANGUAGES } from './scripts/types.js';
 import type { CreateScriptInput, ScriptLanguage, UpdateScriptInput } from './scripts/types.js';
@@ -38,8 +39,18 @@ Commands:
   serve [--port <n>]         Start the API + Vue interface (default port 8787)
   config                     Show resolved configuration (secrets redacted)
   scripts <subcommand>       Manage agent scripts (see below)
+  chat <subcommand>          Talk to the local Qwen3 model
   tools                      JSON-schema tool definitions for an LLM
   help                       Show this help
+
+Chat subcommands:
+  status                     Model, context, threads, RAM, tools
+  download                   Fetch the GGUF (~380 MB) into the models folder
+  ask "<message>"            One-shot question, streamed token by token
+      --thinking               Show the model's reasoning block (on stderr)
+      --no-tools               Disable script tool calls
+      --temp 0.4 --max 512     Sampling controls
+  unload                     Free the model from memory
 
 Script subcommands:
   list [--json]              List scripts with description and language
@@ -260,6 +271,97 @@ async function scriptsCommand(sub: string | undefined, rest: string[]): Promise<
   }
 }
 
+/** `infagent chat` — talk to the local Qwen3 model from the terminal. */
+async function chatCommand(sub: string | undefined, rest: string[]): Promise<number> {
+  const engine = new QwenEngine();
+
+  switch (sub) {
+    case 'status':
+    case undefined: {
+      const status = engine.status();
+      if (wantsJson) {
+        print(JSON.stringify(status, null, 2));
+      } else {
+        print(`${status.modelName} — ${status.state}`);
+        print(`model   : ${status.modelPath}${status.modelPresent ? '' : ' (not downloaded)'}`);
+        print(
+          `context : ${status.contextSize} tokens · threads ${status.threads} · RAM ${status.ramUsedMb} MB`,
+        );
+        print(`tools   : ${status.toolsAvailable ? 'enabled' : 'disabled (INFAGENT_ALLOW_RUN=0)'}`);
+      }
+      return 0;
+    }
+
+    case 'download': {
+      if (engine.status().modelPresent) {
+        print(`✔ already present: ${engine.status().modelPath}`);
+        return 0;
+      }
+      print(`→ downloading ${engine.status().modelUrl}`);
+      const file = await engine.downloadModel();
+      print(`✔ ${file}`);
+      return 0;
+    }
+
+    case 'unload': {
+      await engine.unload();
+      print('✔ model unloaded');
+      return 0;
+    }
+
+    case 'ask': {
+      const message = rest
+        .filter((arg) => !arg.startsWith('--'))
+        .join(' ')
+        .trim();
+      if (!message) {
+        process.stderr.write(
+          'error: usage: infagent chat ask "your question" [--thinking] [--no-tools]\n',
+        );
+        return 2;
+      }
+
+      for await (const event of engine.stream({
+        messages: [{ role: 'user', content: message }],
+        thinking: argv.includes('--thinking'),
+        tools: !argv.includes('--no-tools'),
+        ...(flag('temp') ? { temperature: Number(flag('temp')) } : {}),
+        ...(flag('max') ? { maxTokens: Number(flag('max')) } : {}),
+      })) {
+        switch (event.type) {
+          case 'thinking':
+            process.stderr.write(event.text);
+            break;
+          case 'token':
+            process.stdout.write(event.text);
+            break;
+          case 'tool_call':
+            print(`\n🛠 ${event.call.name}(${JSON.stringify(event.call.args)})`);
+            break;
+          case 'tool_result':
+            print(`   ${event.call.ok ? 'ok' : 'failed'} in ${event.call.durationMs ?? 0}ms`);
+            break;
+          case 'stats':
+            print(
+              `\n— ${event.totalTokens} tok · ${event.tokensPerSecond} tok/s · ${(event.durationMs / 1000).toFixed(1)}s`,
+            );
+            break;
+          case 'error':
+            process.stderr.write(`\nerror: ${event.message}\n`);
+            return 1;
+          default:
+            break;
+        }
+      }
+      return 0;
+    }
+
+    default:
+      process.stderr.write(`error: unknown chat subcommand "${sub}"\n\n${HELP}`);
+      return 2;
+  }
+}
+
 async function main(): Promise<number> {
   const [command, ...rest] = args;
 
@@ -318,6 +420,10 @@ async function main(): Promise<number> {
     return await scriptsCommand(rest[0], rest.slice(1));
   }
 
+  if (command === 'chat') {
+    return await chatCommand(rest[0], rest.slice(1));
+  }
+
   if (command === 'run') {
     const task = rest.join(' ').trim();
     if (!task) {
@@ -343,6 +449,11 @@ main()
     process.exitCode = code;
   })
   .catch((error: unknown) => {
+    if (error instanceof ChatError) {
+      process.stderr.write(`error: ${error.message}\n`);
+      process.exitCode = error.code === 'busy' ? 2 : 1;
+      return;
+    }
     if (error instanceof ScriptError) {
       process.stderr.write(`error: ${error.message}\n`);
       process.exitCode = 2;

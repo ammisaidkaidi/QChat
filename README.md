@@ -1,10 +1,13 @@
 # InfAgent
 
 Agent infrastructure toolkit — strict TypeScript, ESM-only, library **and** CLI,
-plus a **Vue interface** for the agent's script toolbox.
+plus a **Vue interface** with two tabs: a chat agent running **Qwen3-0.6B locally**
+(CPU, llama.cpp) and a console for the agent's script toolbox.
 
 - Node **≥ 20.11**, ESM (`"type": "module"`), TypeScript strict
 - Library + CLI + HTTP API + Vue 3 / Tailwind / daisyUI console
+- Local chat model: Qwen3-0.6B GGUF (Q4_K_M, ~380 MB) via `node-llama-cpp`, no API key, fully offline
+- The chat model calls the script toolbox as tools (`<tool_call>` protocol)
 - Agent scripts as self-describing files: `.js` / `.py` with a prompt header
 - Built-in callbacks: `createScript`, `removeScript`, `listScripts`, `readScript`, `updateScript`, `searchScripts`, `runScript`, `describeScript`, `scriptStats`
 - Env as a first-class citizen: `env.txt` → `.env`, secrets redacted
@@ -21,10 +24,55 @@ npm run ui:build        # build the Vue app into ui/dist
 npm run build           # compile the TypeScript to dist/
 npm run serve           # → http://localhost:8787
 
-# 2. or drive it from the terminal
+# 2. chat tab: download the model once (~380 MB), then talk to it
+npm run chat:model      # or click "Download model" in the Chat tab
+npm run chat:ask -- "Use a tool to greet Amina"
+
+# 3. or drive the scripts from the terminal
 npx tsx src/cli.ts scripts list
 npx tsx src/cli.ts scripts run hello '{"name":"world"}'
 ```
+
+## Chat tab — Qwen3-0.6B on CPU
+
+The model runs in-process through llama.cpp; nothing leaves the machine.
+
+| | |
+| --- | --- |
+| Model | `Qwen3-0.6B-Q4_K_M.gguf` (~380 MB, `unsloth/Qwen3-0.6B-GGUF`) |
+| Folder | `~/.cache/infagent/models` (override with `INFAGENT_MODELS_DIR`) |
+| Backend | CPU only, 2 threads by default, 2048-token context |
+| Speed | ~10-17 tok/s on 2 cores; first token ≈ 1.3 s warm, ~4 s cold |
+| Memory | ~1 GB RSS while loaded; unloads automatically after 10 idle minutes |
+
+How it works:
+
+1. The system prompt declares every script in the Scripts tab as a Qwen3 tool
+   (`<tools>[…]</tools>`), plus `listScripts` / `createScript`.
+2. The model replies with `<tool_call>{"name": "hello", "args": {…}}</tool_call>`.
+3. The server executes the call against the same registry as the Scripts tab,
+   feeds the result back, and streams the final answer.
+4. Token streaming, the reasoning block and tool activity are all shown live.
+
+Practical notes:
+
+- **Thinking mode is off by default.** Qwen3 still emits a reasoning block on
+  tool turns; it is streamed into a collapsible "reasoning" section.
+- Tool turns take 10-20 s on 2 cores including the reasoning block; plain chat
+  replies land in 1-2 s.
+- If the model returns nothing usable (a 0.6B model occasionally echoes JSON or
+  goes blank), the server appends a factual one-line summary of the tool result,
+  so the outcome is never lost.
+- `INFAGENT_ALLOW_RUN=0` disables tool execution and the model is told it has no tools.
+
+```bash
+infagent chat status              # engine state, context, RAM
+infagent chat download            # fetch the GGUF
+infagent chat ask "…" [--thinking] [--no-tools] [--temp 0.4] [--max 512]
+infagent chat unload              # free ~1 GB of RAM now
+```
+
+CLI equivalents: `npm run chat:model`, `npm run chat:ask -- "…"`.
 
 Interface development with hot reload (`vite` on 5173, proxying `/api` to 8787):
 
@@ -127,14 +175,24 @@ infagent config | run <task> | --version
 | `POST /api/scripts/:name/run` | `{ "args": {…} }` → run result |
 | `GET /api/scripts/:name/prompt` | ready-to-paste agent prompt |
 | `GET /api/tools` | tool schemas + system prompt |
+| `GET /api/chat/status` | engine state, model path, context, RAM, defaults |
+| `POST /api/chat/model/download` | SSE progress while fetching the GGUF |
+| `DELETE /api/chat/model` | unload the model from memory |
+| `POST /api/chat/completions` | SSE token stream (`status`, `thinking`, `token`, `tool_call`, `tool_result`, `stats`, `done`) |
 
 ## Interface (Vue 3 + Tailwind + daisyUI)
 
 `ui/` is a small console that follows the same design language as the API:
 
-- **Scripts panel** — search, filter by language, create, remove
-- **Detail tabs** — overview, *Agent prompt* (copyable), source, run console with arguments and the parsed envelope
-- **Agent tool console** — the built-in callbacks as an LLM would call them, with a call log
+Two tabs in the header: **Chat** and **Scripts**.
+
+- **Chat** — local Qwen3-0.6B conversation: model status, download button with
+  progress, streaming bubbles, collapsible reasoning, tool-call cards with
+  arguments and results, settings (temperature, max tokens, thinking, tools,
+  custom system prompt), Stop / Retry / Clear, history kept in `localStorage`
+- **Scripts** — searchable script list, detail tabs (overview, *Agent prompt*
+  copyable, source, run console with the parsed envelope) and the tool console
+  that invokes the built-in callbacks as an LLM would
 
 ## Environment: `env.txt` is the source of truth
 
@@ -154,9 +212,14 @@ Relevant InfAgent variables:
 | `HOST` | `0.0.0.0` | bind address |
 | `INFAGENT_SCRIPTS_DIR` | `./scripts` | managed script folder |
 | `INFAGENT_SCRIPT_TIMEOUT_MS` | `30000` | per-run timeout |
-| `INFAGENT_ALLOW_RUN` | `1` | set to `0` to disable execution |
+| `INFAGENT_ALLOW_RUN` | `1` | set to `0` to disable script execution |
 | `INFAGENT_PYTHON` | `python3` | interpreter for `.py` scripts |
 | `INFAGENT_NAME` | `InfAgent` | agent display name |
+| `INFAGENT_MODELS_DIR` | `~/.cache/infagent/models` | GGUF cache folder |
+| `INFAGENT_MODEL_PATH` | `<modelsDir>/Qwen3-0.6B-Q4_K_M.gguf` | explicit model file |
+| `INFAGENT_LLM_CONTEXT` | `2048` | context window |
+| `INFAGENT_LLM_THREADS` | `2` | llama.cpp threads |
+| `INFAGENT_LLM_IDLE_UNLOAD_MS` | `600000` | idle time before the model is freed |
 
 ## Scripts (npm)
 
@@ -169,6 +232,7 @@ Relevant InfAgent variables:
 | `npm run dev` | CLI from source with `tsx watch` |
 | `npm run typecheck` / `test` / `lint` / `format` | quality gates |
 | `npm run env:from-txt` | regenerate `.env` + `.env.example` |
+| `npm run chat:model` / `chat:ask` | download the model / ask it a question |
 
 ## Project layout
 
@@ -178,8 +242,9 @@ InfAgent/
 │   ├── cli.ts                 # bin: infagent
 │   ├── config/env.ts          # env loading, validation, redaction
 │   ├── lib/                   # Agent runtime + public library surface
+│   ├── chat/                  # Qwen3 engine, prompts, tool dispatch, splitter
 │   ├── scripts/               # script toolbox (header, registry, runner)
-│   └── server/                # HTTP API + static UI server
+│   └── server/                # HTTP API (scripts + chat SSE) + static UI
 ├── ui/                        # Vue 3 + Tailwind + daisyUI interface
 ├── scripts/                   # agent-authored .js / .py callbacks
 ├── tests/                     # vitest: env, agent, script toolbox

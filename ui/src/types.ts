@@ -83,3 +83,80 @@ export interface CreateScriptInput {
   body?: string;
   overwrite?: boolean;
 }
+
+/* ── chat ─────────────────────────────────────────────────────────────────── */
+
+export type EngineState =
+  | 'unavailable'
+  | 'absent'
+  | 'downloading'
+  /** Model file present but not loaded into memory yet. */
+  | 'idle'
+  | 'loading'
+  | 'ready'
+  | 'error';
+
+export interface EngineStatus {
+  state: EngineState;
+  modelPath: string;
+  modelPresent: boolean;
+  modelBytes: number;
+  modelUrl: string;
+  downloadProgress: number;
+  downloadedBytes: number;
+  downloadTotalBytes: number;
+  contextSize: number;
+  threads: number;
+  modelName: string;
+  quantization: string;
+  toolsAvailable: boolean;
+  ramUsedMb: number;
+  lastError: string | null;
+}
+
+export interface ChatConfig {
+  scriptCount: number;
+  modelsDir: string;
+  contextSize: number;
+  threads: number;
+  defaultTemperature: number;
+  defaultMaxTokens: number;
+  thinking: boolean;
+  tools: boolean;
+}
+
+export interface ChatToolCall {
+  name: string;
+  args: Record<string, unknown>;
+  ok?: boolean;
+  result?: unknown;
+  error?: string;
+  durationMs?: number;
+}
+
+export interface ChatMessage {
+  role: 'system' | 'user' | 'assistant';
+  content: string;
+}
+
+/** A rendered assistant turn: text, reasoning, tool activity and timing. */
+export interface ChatTurn {
+  id: string;
+  role: 'user' | 'assistant';
+  text: string;
+  thinking: string;
+  calls: ChatToolCall[];
+  stats?: { totalTokens: number; tokensPerSecond: number; durationMs: number };
+  error?: string;
+  streaming?: boolean;
+}
+
+export type ChatEvent =
+  | { type: 'status'; state: EngineState; detail?: string }
+  | { type: 'thinking'; text: string }
+  | { type: 'token'; text: string }
+  | { type: 'tool_call'; call: ChatToolCall }
+  | { type: 'tool_result'; call: ChatToolCall }
+  | { type: 'stats'; totalTokens: number; tokensPerSecond: number; durationMs: number }
+  | { type: 'done' }
+  | { type: 'error'; message: string };
