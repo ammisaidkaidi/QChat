@@ -16,7 +16,7 @@ import { resolve } from 'node:path';
 import process from 'node:process';
 
 const SENSITIVE_KEY =
-  /(SECRET|TOKEN|PASSWORD|PASSWD|CREDENTIAL|PRIVATE[_-]?KEY|API[_-]?KEY|ACCESS[_-]?KEY|SESSION|DSN|CONNECTION[_-]?STRING)/i;
+  /(SECRET|TOKEN|PASSWORD|PASS|CREDENTIAL|PRIVATE[_-]?KEY|API[_-]?KEY|ACCESS[_-]?KEY|SESSION|DSN|CONNECTION[_-]?STRING|DATABASE_URL)/i;
 
 const argv = process.argv.slice(2);
 

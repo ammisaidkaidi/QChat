@@ -74,7 +74,16 @@ describe('env helpers', () => {
     expect(isSensitiveKey('OPENAI_API_KEY')).toBe(true);
     expect(isSensitiveKey('GITHUB_TOKEN')).toBe(true);
     expect(isSensitiveKey('DB_PASSWORD')).toBe(true);
+    expect(isSensitiveKey('SMTP_PASS')).toBe(true);
+    expect(isSensitiveKey('DATABASE_URL')).toBe(true);
+    expect(isSensitiveKey('VAPID_PRIVATE_KEY')).toBe(true);
+    expect(isSensitiveKey('NVIDIA_API_KEY')).toBe(true);
+
     expect(isSensitiveKey('LOG_LEVEL')).toBe(false);
+    expect(isSensitiveKey('SMTP_HOST')).toBe(false);
+    expect(isSensitiveKey('SMTP_USER')).toBe(false);
+    expect(isSensitiveKey('VAPID_PUBLIC_KEY')).toBe(false);
+    expect(isSensitiveKey('PORT')).toBe(false);
   });
 
   it('redacts secrets without leaking them', () => {

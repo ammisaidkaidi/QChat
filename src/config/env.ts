@@ -12,7 +12,7 @@ import { config as loadDotenv, parse } from 'dotenv';
 
 /** Keys whose values must never be printed unredacted. */
 const SENSITIVE_KEY =
-  /(SECRET|TOKEN|PASSWORD|PASSWD|CREDENTIAL|PRIVATE KEY|PRIVATE_KEY|API[_-]?KEY|ACCESS[_-]?KEY|SESSION|COOKIE|DSN|CONNECTION[_-]?STRING)/i;
+  /(SECRET|TOKEN|PASSWORD|PASS|CREDENTIAL|PRIVATE[_-]?KEY|API[_-]?KEY|ACCESS[_-]?KEY|SESSION|COOKIE|DSN|CONNECTION[_-]?STRING|DATABASE_URL)/i;
 
 let loaded = false;
 let loadedFrom: string | undefined;
