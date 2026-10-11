@@ -58,6 +58,13 @@ Practical notes:
 
 - **Thinking mode is off by default.** Qwen3 still emits a reasoning block on
   tool turns; it is streamed into a collapsible "reasoning" section.
+- **Tool calling is defended in depth.** Qwen3-0.6B does not always follow its
+  own protocol, so the engine declares tools in the exact trained shape, retries
+  once when a reply arrives with no call at all, salvages calls with missing
+  tags or mangled names (`list_scripts` → `listScripts`), and finally answers
+  from the registry itself if the model still refuses. When a reply ignores the
+  tool result ("I have several scripts available."), the factual line is
+  appended, so the user always sees what the tool found.
 - Tool turns take 10-20 s on 2 cores including the reasoning block; plain chat
   replies land in 1-2 s.
 - If the model returns nothing usable (a 0.6B model occasionally echoes JSON or
@@ -233,6 +240,7 @@ Relevant InfAgent variables:
 | `npm run typecheck` / `test` / `lint` / `format` | quality gates |
 | `npm run env:from-txt` | regenerate `.env` + `.env.example` |
 | `npm run chat:model` / `chat:ask` | download the model / ask it a question |
+| `node tools/ui-smoke.mjs` | browser smoke test of the console (needs Playwright) |
 
 ## Project layout
 

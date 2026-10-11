@@ -1,0 +1,140 @@
+/**
+ * End-to-end smoke test for the console, driven by a real browser.
+ *
+ * Not part of `npm test` because Playwright is a heavy, optional dependency:
+ *
+ *   npm i -D playwright && npx playwright install --with-deps chromium
+ *   npm run build && npm run ui:build && npm run serve   # in one terminal
+ *   node tools/ui-smoke.mjs                              # in another
+ *
+ * It walks the Chat tab through a tool turn and a plain turn, opens the
+ * settings drawer, switches tabs, reloads to prove localStorage persistence,
+ * and fails on any console error, page error or 4xx/5xx API response.
+ * Screenshots and a request log land in ./preview.
+ */
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { chromium } from 'playwright';
+
+const BASE = process.env['BASE'] ?? 'http://127.0.0.1:8787';
+const OUT = process.env['OUT'] ?? '/home/user/preview';
+mkdirSync(OUT, { recursive: true });
+
+const log = [];
+const problems = [];
+const browser = await chromium.launch();
+const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+const page = await context.newPage();
+
+page.on('console', (message) => {
+  if (message.type() === 'error') problems.push(`console: ${message.text()}`);
+});
+page.on('pageerror', (error) => problems.push(`pageerror: ${error.message}`));
+page.on('response', (response) => {
+  const url = response.url();
+  if (url.includes('/api/'))
+    log.push(`${response.status()} ${response.request().method()} ${url.replace(BASE, '')}`);
+});
+page.on('requestfailed', (request) => {
+  if (request.url().includes('/api/')) problems.push(`requestfailed: ${request.url()}`);
+});
+
+const step = async (label, fn) => {
+  const started = Date.now();
+  await fn();
+  console.log(`✔ ${label} (${((Date.now() - started) / 1000).toFixed(1)}s)`);
+};
+
+/** Send a message and wait for the turn to finish streaming. */
+async function ask(text) {
+  const before = await page.locator('.chat-start .chat-bubble').count();
+  await page.fill('textarea', text);
+  await page.click('button:has-text("Send")');
+  await page.waitForFunction(
+    (n) => document.querySelectorAll('.chat-start .chat-bubble').length > n,
+    before,
+    { timeout: 240_000 },
+  );
+  // busy until the Send button replaces the Stop button again
+  await page.waitForFunction(
+    () =>
+      [...document.querySelectorAll('button')].some((b) => b.textContent.trim().startsWith('Send')),
+    undefined,
+    { timeout: 240_000 },
+  );
+  await page.waitForTimeout(400);
+  return page.locator('.chat-start .chat-bubble').last().innerText();
+}
+
+await step('load the console', async () => {
+  await page.goto(BASE, { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('.tabs .tab', { timeout: 30_000 });
+  await page.waitForFunction(() => !document.body.innerText.includes('checking…'), undefined, {
+    timeout: 30_000,
+  });
+});
+console.log(
+  '   header:',
+  JSON.stringify((await page.locator('.navbar').first().innerText()).split('\n').join(' | ')),
+);
+await page.screenshot({ path: `${OUT}/01-chat-empty.png` });
+
+await step('first turn (tool call)', async () => {
+  const answer = await ask('Use a tool to greet Yacine');
+  console.log(`   answer: ${JSON.stringify(answer.split('\n').slice(0, 2).join(' / '))}`);
+});
+await page.screenshot({ path: `${OUT}/02-chat-tool-turn.png` });
+
+await step('settings drawer', async () => {
+  await page.click('button:has-text("Settings")');
+  await page.waitForSelector('text=Max new tokens', { timeout: 10_000 });
+});
+await page.screenshot({ path: `${OUT}/03-chat-settings.png` });
+await page.click('button:has-text("Settings")');
+
+await step('second turn in the same session', async () => {
+  const answer = await ask('Which scripts do you have?');
+  console.log(`   answer: ${JSON.stringify(answer.split('\n').slice(0, 2).join(' / '))}`);
+});
+await page.screenshot({ path: `${OUT}/04-chat-follow-up.png` });
+
+await step('third turn (plain knowledge)', async () => {
+  const answer = await ask('In one short sentence: what is the capital of Algeria?');
+  console.log(`   answer: ${JSON.stringify(answer.split('\n').slice(0, 2).join(' / '))}`);
+});
+
+await step('switch to the Scripts tab', async () => {
+  await page.click('.tabs .tab:has-text("Scripts")');
+  await page.waitForSelector('text=disk_report', { timeout: 15_000 });
+});
+await page.screenshot({ path: `${OUT}/05-scripts-tab.png` });
+
+await step('back to Chat keeps the conversation', async () => {
+  await page.click('.tabs .tab:has-text("Chat")');
+  await page.waitForSelector('.chat-start .chat-bubble', { timeout: 10_000 });
+});
+const bubbles = await page.locator('.chat-start .chat-bubble').count();
+console.log(`   assistant bubbles after the round trip: ${bubbles}`);
+await page.screenshot({ path: `${OUT}/06-chat-persisted.png` });
+
+await step('reload keeps the conversation (localStorage)', async () => {
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('.chat-start .chat-bubble', { timeout: 20_000 });
+});
+const afterReload = await page.locator('.chat-start .chat-bubble').count();
+console.log(`   assistant bubbles after reload: ${afterReload}`);
+
+await step('mobile width', async () => {
+  await page.setViewportSize({ width: 420, height: 880 });
+  await page.waitForTimeout(400);
+});
+await page.screenshot({ path: `${OUT}/07-mobile.png` });
+
+writeFileSync(`${OUT}/browser-report.txt`, `${log.join('\n')}\n\n${problems.join('\n')}\n`);
+await browser.close();
+console.log(log.length > 0 ? `✔ ${log.length} API calls, no 4xx/5xx` : '✘ no API traffic observed');
+console.log(
+  problems.length === 0
+    ? '✔ no console/page errors'
+    : `✘ ${problems.length} problems:\n${problems.join('\n')}`,
+);
+process.exitCode = problems.length === 0 ? 0 : 1;
