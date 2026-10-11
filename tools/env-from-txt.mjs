@@ -29,6 +29,7 @@ function flag(name, fallback) {
 }
 
 const force = argv.includes('--force') || argv.includes('-f');
+const noExample = argv.includes('--no-example');
 const inFile = resolve(flag('in', 'env.txt'));
 const outFile = resolve(flag('out', '.env'));
 const exampleFile = resolve(flag('example', '.env.example'));
@@ -123,24 +124,29 @@ const exampleBody = parsed
   .join('\n');
 
 writeFileSync(outFile, `${header('env.txt')}${envBody}\n`, 'utf8');
-writeFileSync(
-  exampleFile,
-  [
-    header('env.txt'),
-    '# Committed template: sensitive values are blanked here.',
-    '# .env holds the real values and is generated, never edited by hand.',
-    '',
-    exampleBody,
-    '',
-  ].join('\n'),
-  'utf8',
-);
+
+if (!noExample) {
+  writeFileSync(
+    exampleFile,
+    [
+      header('env.txt'),
+      '# Committed template: sensitive values are blanked here.',
+      '# .env holds the real values and is generated, never edited by hand.',
+      '',
+      exampleBody,
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+}
 
 const untouched = parsed.filter((item) => item.kind === 'comment').length;
 process.stdout.write(
   `✔ ${entries.length} variable${entries.length === 1 ? '' : 's'} written\n` +
     `  → ${outFile}${existsSync(`${outFile}.bak`) ? '  (previous file backed up to .env.bak)' : ''}\n` +
-    `  → ${exampleFile}${untouched ? `  (${untouched} comment line${untouched === 1 ? '' : 's'} kept)` : ''}\n` +
+    (noExample
+      ? '  - .env.example left untouched (--no-example)\n'
+      : `  → ${exampleFile}${untouched ? `  (${untouched} comment line${untouched === 1 ? '' : 's'} kept)` : ''}\n`) +
     (skipped ? `  ! ${skipped} line${skipped === 1 ? '' : 's'} skipped (not KEY=value)\n` : '') +
     '\nKeys:\n' +
     entries
