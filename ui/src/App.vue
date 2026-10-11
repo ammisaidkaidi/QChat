@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 
 import { api } from './api';
 import ChatPanel from './components/ChatPanel.vue';
@@ -16,7 +16,29 @@ import type {
 } from './types';
 
 type Tab = 'chat' | 'scripts';
-const tab = ref<Tab>('chat');
+
+const TABS: { id: Tab; label: string }[] = [
+  { id: 'chat', label: '💬 Chat' },
+  { id: 'scripts', label: '🧩 Scripts' },
+];
+
+const TAB_KEY = 'infagent.tab';
+const storedTab = ((): Tab => {
+  try {
+    const value = localStorage.getItem(TAB_KEY);
+    return value === 'scripts' ? 'scripts' : 'chat';
+  } catch {
+    return 'chat';
+  }
+})();
+const tab = ref<Tab>(storedTab);
+watch(tab, (value) => {
+  try {
+    localStorage.setItem(TAB_KEY, value);
+  } catch {
+    /* private mode — the tab still works, it just is not remembered */
+  }
+});
 
 const scripts = ref<ScriptRecord[]>([]);
 const stats = ref<ScriptStats | null>(null);
@@ -114,6 +136,20 @@ onMounted(async () => {
             <p class="text-sm font-semibold leading-tight">InfAgent</p>
             <p class="text-[11px] leading-tight opacity-60">agent script console</p>
           </div>
+        </div>
+
+        <div class="tabs tabs-boxed tabs-sm">
+          <button
+            v-for="entry in TABS"
+            :key="entry.id"
+            class="tab"
+            :class="{ 'tab-active': tab === entry.id }"
+            role="tab"
+            :aria-selected="tab === entry.id"
+            @click="tab = entry.id"
+          >
+            {{ entry.label }}
+          </button>
         </div>
 
         <div class="hidden items-center gap-2 sm:flex">

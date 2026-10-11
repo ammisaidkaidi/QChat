@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
 import { OutputSplitter, stripThinking } from '../src/chat/splitter.js';
-import { extractToolCalls } from '../src/chat/tools.js';
+import { dispatchTool, extractToolCalls } from '../src/chat/tools.js';
 import {
+  answerUsesResult,
+  asksAboutToolbox,
   buildSystemPrompt,
   fallbackAnswer,
   formatToolResult,
@@ -87,12 +89,47 @@ describe('extractToolCalls', () => {
     expect(calls[0]?.name).toBe('listScripts');
   });
 
+  it('accepts the tool name as the only key', () => {
+    const { calls } = extractToolCalls('<tool_call>{"listScripts": {}}</tool_call>');
+    expect(calls).toEqual([{ name: 'listScripts', args: {} }]);
+  });
+
   it('salvages an unterminated block when generation stops after the JSON', () => {
     const { calls, rest } = extractToolCalls(
       '<think></think>\n<tool_call>\n{"name": "listScripts"}',
     );
     expect(calls[0]?.name).toBe('listScripts');
     expect(rest).not.toContain('listScripts');
+  });
+
+  it('salvages a bare JSON call with no tags, dropping it from the text', () => {
+    const { calls, rest } = extractToolCalls(
+      '<think>\n</think>\n{"name": "listScripts", "arguments": {}}\n</tool_call>',
+    );
+    expect(calls).toEqual([{ name: 'listScripts', args: {} }]);
+    expect(rest).not.toContain('listScripts');
+    expect(rest).not.toContain('tool_call');
+  });
+
+  it('accepts the tool name as a key when the value holds the answer', () => {
+    const { calls } = extractToolCalls(
+      '<think>\n</think>\n{"list_scripts": [{"name": "hello"}]}\n</tool_call>',
+      { knownScripts: ['hello', 'disk_report'] },
+    );
+    expect(calls[0]?.name).toBe('list_scripts');
+  });
+
+  it('does not mistake prose JSON for a call', () => {
+    const { calls } = extractToolCalls('Sure: {"cities": ["Algiers", "Oran"]}', {
+      knownScripts: ['hello'],
+    });
+    expect(calls).toHaveLength(0);
+  });
+
+  it('leaves ordinary JSON in a reply alone', () => {
+    const { calls, rest } = extractToolCalls('Here is some JSON: {"city": "Algiers"}');
+    expect(calls).toHaveLength(0);
+    expect(rest).toContain('Algiers');
   });
 
   it('ignores malformed blocks and deduplicates', () => {
@@ -131,10 +168,11 @@ describe('chat prompt', () => {
     });
 
     expect(prompt).toContain('<tools>');
-    expect(prompt).toContain('"name":"hello"');
+    expect(prompt).toContain('{"type":"function","function":{"name":"hello"');
     expect(prompt).toContain('"required":["name"]');
     expect(prompt).toContain('/no_think');
     expect(prompt).toContain('<tool_call>');
+    expect(prompt).toContain('# Tools');
   });
 
   it('announces when tools are disabled', () => {
@@ -148,7 +186,8 @@ describe('chat prompt', () => {
     expect(rendered).toContain('greeting: Hello!');
     expect(rendered).not.toContain('{');
 
-    const prompt = toolResultPrompt(['- hello → greeting: Hello!'], 'greet Sara');
+    const prompt = toolResultPrompt(['hello → greeting: Hello!'], 'greet Sara');
+    expect(prompt.startsWith('<tool_response>')).toBe(true);
     expect(prompt.indexOf('greet Sara')).toBeGreaterThan(prompt.indexOf('greeting: Hello!'));
   });
 
@@ -156,6 +195,58 @@ describe('chat prompt', () => {
     expect(fallbackAnswer('hello', { ok: true, result: { greeting: 'Hi!' } })).toBe(
       'hello → greeting: Hi!',
     );
+  });
+
+  it('recognises questions about the toolbox', () => {
+    for (const text of [
+      'Which scripts do you have?',
+      'which scripts are available',
+      'List my tools',
+      'What can you do?',
+      'do you have any scripts installed?',
+    ]) {
+      expect(asksAboutToolbox(text), text).toBe(true);
+    }
+    for (const text of [
+      'Use a tool to greet Yacine',
+      'What is the capital of Algeria?',
+      'Explain what a disk report script usually does in one line.',
+      'Hello!',
+    ]) {
+      expect(asksAboutToolbox(text), text).toBe(false);
+    }
+  });
+
+  it('repairs mangled tool names instead of failing', async () => {
+    const call = await dispatchTool(
+      { name: 'list_scripts', args: {} },
+      { registry, allowRun: false },
+    );
+    expect(call.ok).toBe(true);
+    // the canonical name is reported back so the UI card is unambiguous
+    expect(call.name).toBe('listScripts');
+    expect(Array.isArray(call.result)).toBe(true);
+  });
+
+  it('reports unknown tools as failures rather than throwing', async () => {
+    const call = await dispatchTool(
+      { name: 'deleteEverything', args: {} },
+      { registry, allowRun: false },
+    );
+    expect(call.ok).toBe(false);
+    expect(String(call.error)).toContain('deleteEverything');
+  });
+
+  it('notices when a reply ignores the tool result', () => {
+    const listed = [
+      { name: 'hello', description: 'Greet someone.' },
+      { name: 'disk_report', description: 'Report disk space.' },
+    ];
+    expect(answerUsesResult('The scripts I have are hello and disk_report.', listed)).toBe(true);
+    expect(answerUsesResult('I have several scripts available.', listed)).toBe(false);
+    expect(
+      answerUsesResult('Hello, Yacine!', { ok: true, result: { greeting: 'Hello, Yacine!' } }),
+    ).toBe(true);
   });
 
   it('exposes the registry for wiring (smoke)', () => {

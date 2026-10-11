@@ -15,6 +15,38 @@ import { SCRIPT_NAME_PATTERN, ScriptError } from '../scripts/registry.js';
 import type { ScriptRegistry } from '../scripts/registry.js';
 import type { ChatToolCall } from './types.js';
 
+/** Walk `text` and return every balanced `{…}` slice (string literals respected). */
+function findJsonObjects(text: string): { raw: string; index: number }[] {
+  const found: { raw: string; index: number }[] = [];
+  let depth = 0;
+  let start = -1;
+  let inString = false;
+  let escaped = false;
+
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (char === '\\') escaped = true;
+      else if (char === '"') inString = false;
+      continue;
+    }
+    if (char === '"') inString = true;
+    else if (char === '{') {
+      if (depth === 0) start = index;
+      depth += 1;
+    } else if (char === '}' && depth > 0) {
+      depth -= 1;
+      if (depth === 0 && start !== -1) {
+        found.push({ raw: text.slice(start, index + 1), index: start });
+        start = -1;
+      }
+    }
+  }
+
+  return found;
+}
+
 const TOOL_CALL_BLOCK = /<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/gi;
 const FENCED_JSON = /```(?:json)?\s*([\s\S]*?)```/gi;
 
@@ -41,13 +73,34 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
  * Returns the calls plus the reply text with the blocks removed, so the UI can
  * show only the human-readable remainder.
  */
-export function extractToolCalls(text: string): { calls: ChatToolCall[]; rest: string } {
+export function extractToolCalls(
+  text: string,
+  options: { knownScripts?: readonly string[] } = {},
+): { calls: ChatToolCall[]; rest: string } {
+  const knownScripts = options.knownScripts ?? [];
   const calls: ChatToolCall[] = [];
   const seen = new Set<string>();
 
   const consider = (candidate: unknown): void => {
-    const record = asRecord(candidate);
+    let record = asRecord(candidate);
     if (!record) return;
+
+    // Qwen3 sometimes emits `{"listScripts": {}}` — or `{"list_scripts": […]}`
+    // with the answer already inside — instead of the documented
+    // `{"name": …, "arguments": …}` shape. Only real tool names qualify, so a
+    // stray JSON object in prose is never mistaken for a call.
+    if (typeof record['name'] !== 'string') {
+      const keys = Object.keys(record);
+      const [key] = keys;
+      if (keys.length === 1 && key !== undefined && isToolName(key, knownScripts, true)) {
+        const value = record[key];
+        record = {
+          name: key,
+          args:
+            value !== null && typeof value === 'object' ? (value as Record<string, unknown>) : {},
+        };
+      }
+    }
 
     const name = typeof record['name'] === 'string' ? record['name'] : undefined;
     if (!name) return;
@@ -103,6 +156,31 @@ export function extractToolCalls(text: string): { calls: ChatToolCall[]; rest: s
   if (calls.length === 0) rest = text;
 
   if (calls.length === 0) {
+    // Last resort: the model sometimes emits the call with no tags at all (or
+    // drops the opening one), e.g. `{"name": "listScripts", "arguments": {}}`
+    // or `{"list_scripts": […]}`.
+    // Only names that are real tools are accepted, so prose stays intact.
+    for (const candidate of findJsonObjects(rest)) {
+      try {
+        const parsed: unknown = JSON.parse(candidate.raw);
+        const before = calls.length;
+        consider(parsed);
+        {
+          if (calls.length > before) {
+            // Remove the JSON (and any stray tag around it) from the reply.
+            const before = rest.slice(0, candidate.index);
+            const after = rest.slice(candidate.index + candidate.raw.length);
+            rest = `${before}${after}`.replace(/<\/?tool_call>/gi, '');
+            break;
+          }
+        }
+      } catch {
+        /* not JSON — keep scanning */
+      }
+    }
+  }
+
+  if (calls.length === 0) {
     // No explicit block: accept a fenced JSON object naming a callable tool.
     rest = rest.replace(FENCED_JSON, (full, body: string) => {
       try {
@@ -121,6 +199,41 @@ export function extractToolCalls(text: string): { calls: ChatToolCall[]; rest: s
   }
 
   return { calls, rest };
+}
+
+/**
+ * Is this a name the toolbox actually answers to?
+ *
+ * `strict` drops the "looks like a script name" fallback, which is what the
+ * loose `{"toolName": {...}}` shape needs so prose JSON is never a call.
+ */
+function isToolName(name: string, knownScripts: readonly string[], strict = false): boolean {
+  const normalize = (value: string): string => value.replace(/[^a-z0-9]/gi, '').toLowerCase();
+  const target = normalize(name);
+  const matches =
+    (BUILTIN_TOOLS as readonly string[]).some((tool) => normalize(tool) === target) ||
+    knownScripts.some((script) => normalize(script) === target);
+  return matches || (!strict && SCRIPT_NAME_PATTERN.test(name));
+}
+
+/**
+ * Repair the tool name a small model produced.
+ *
+ * `list_scripts`, `listscripts` and `ListScripts` all mean `listScripts`; the
+ * same holds for script names in the registry. Without this the call fails with
+ * "unknown tool" and the model has to guess its way back.
+ */
+function resolveToolName(raw: string, registry: ScriptRegistry): string {
+  const builtins = BUILTIN_TOOLS as readonly string[];
+  if (builtins.includes(raw)) return raw;
+
+  const scriptNames = registry.list().map((record) => record.meta.name);
+  if (scriptNames.includes(raw)) return raw;
+
+  const normalize = (value: string): string => value.replace(/[^a-z0-9]/gi, '').toLowerCase();
+  const target = normalize(raw);
+  const match = [...builtins, ...scriptNames].find((candidate) => normalize(candidate) === target);
+  return match ?? raw;
 }
 
 export interface DispatchOptions {
@@ -144,7 +257,7 @@ export async function dispatchTool(
   });
 
   try {
-    const name = call.name;
+    const name = resolveToolName(call.name, registry);
 
     // A script called directly by name (`{"name":"hello","args":{…}}`).
     if (!(BUILTIN_TOOLS as readonly string[]).includes(name) && SCRIPT_NAME_PATTERN.test(name)) {

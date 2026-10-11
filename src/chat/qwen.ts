@@ -27,6 +27,8 @@ import type {
 
 import { ScriptRegistry } from '../scripts/registry.js';
 import {
+  answerUsesResult,
+  asksAboutToolbox,
   buildSystemPrompt,
   fallbackAnswer,
   formatToolResult,
@@ -35,7 +37,14 @@ import {
 } from './prompt.js';
 import { OutputSplitter } from './splitter.js';
 import { dispatchTool, extractToolCalls } from './tools.js';
-import type { ChatEvent, ChatMessage, ChatRequest, EngineState, EngineStatus } from './types.js';
+import type {
+  ChatEvent,
+  ChatMessage,
+  ChatRequest,
+  ChatToolCall,
+  EngineState,
+  EngineStatus,
+} from './types.js';
 
 export const DEFAULT_MODEL = {
   repo: 'unsloth/Qwen3-0.6B-GGUF',
@@ -359,6 +368,16 @@ export class QwenEngine {
       const prompt = thinking ? lastUser.content : `${lastUser.content}\n/no_think`;
 
       const session = await this.sessionFor(loaded, systemPrompt, history.slice(0, lastUserIndex));
+      if (process.env['INFAGENT_CHAT_DEBUG'] === '1') {
+        const rendered = session
+          .getChatHistory()
+          .map((item: { type: string }) => item.type)
+          .join(',');
+        process.stderr.write(
+          `[chat] system ${systemPrompt.length} chars · history [${rendered}] · tools=${useTools}\n` +
+            `[chat] system head: ${systemPrompt.slice(0, 160).replace(/\n/g, '⏎')}\n`,
+        );
+      }
       // Qwen3 spends 150-250 tokens on a reasoning block before answering, so the
       // budget must cover thinking *and* the reply, or the visible answer is cut off.
       const maxTokens = request.maxTokens ?? 512;
@@ -398,19 +417,51 @@ export class QwenEngine {
         return text;
       };
 
+      const knownScripts = this.registry.list().map((record) => record.meta.name);
+      const readCalls = (text: string): ChatToolCall[] =>
+        useTools ? extractToolCalls(text, { knownScripts }).calls : [];
+
       let combined = yield* runGeneration(prompt);
+      let calls = readCalls(combined);
 
       // A 0.6B model occasionally returns a completely empty completion. One
       // silent retry is far cheaper for the user than a blank bubble.
-      if (!visibleText.trim() && extractToolCalls(combined).calls.length === 0) {
+      if (!visibleText.trim() && calls.length === 0) {
         if (process.env['INFAGENT_CHAT_DEBUG'] === '1')
           process.stderr.write('[chat] empty reply, retrying\n');
+        yield { type: 'reset' };
+        visibleText = '';
         combined = yield* runGeneration(prompt);
+        calls = readCalls(combined);
+      }
+
+      // Questions about the toolbox itself are answerable only from the
+      // registry, yet the model sometimes replies from the tool listing in its
+      // own prompt ("I have scripts available."). Nudge it once instead of
+      // showing that vague answer.
+      if (useTools && calls.length === 0 && asksAboutToolbox(lastUser.content)) {
+        if (process.env['INFAGENT_CHAT_DEBUG'] === '1')
+          process.stderr.write('[chat] toolbox question without a call, retrying\n');
+        yield { type: 'reset' };
+        visibleText = '';
+        combined = yield* runGeneration(
+          `${prompt}\n\nCall the listScripts function now. Reply with exactly this and nothing else:\n` +
+            '<tool_call>\n{"name": "listScripts", "arguments": {}}\n</tool_call>',
+        );
+        calls = readCalls(combined);
+      }
+
+      // The model answered a toolbox question twice without calling the tool.
+      // The registry knows the answer, so supply it rather than showing a vague
+      // sentence; the wording still comes from the model below.
+      if (useTools && calls.length === 0 && asksAboutToolbox(lastUser.content)) {
+        if (process.env['INFAGENT_CHAT_DEBUG'] === '1')
+          process.stderr.write('[chat] running listScripts for an ungrounded answer\n');
+        calls = [{ name: 'listScripts', args: {} }];
       }
 
       let iteration = 0;
       const maxIterations = Math.min(request.maxToolIterations ?? 2, 4);
-      let calls = useTools ? extractToolCalls(combined).calls : [];
       /** Results already produced this turn, so a repeated call is not re-run. */
       const memo = new Map<string, string>();
 
@@ -422,7 +473,7 @@ export class QwenEngine {
           const signature = `${call.name}:${JSON.stringify(call.args)}`;
           const cached = memo.get(signature);
           if (cached !== undefined) {
-            results.push(`- ${call.name} → ${cached}`);
+            results.push(`${call.name} → ${cached}`);
             continue;
           }
 
@@ -441,11 +492,11 @@ export class QwenEngine {
             ? formatToolResult(dispatched.result)
             : `ERROR: ${dispatched.error ?? 'failed'}`;
           memo.set(signature, rendered);
-          results.push(`- ${call.name} → ${rendered}`);
+          results.push(`${call.name} → ${rendered}`);
         }
 
         combined = yield* runGeneration(toolResultPrompt(results, lastUser.content));
-        calls = extractToolCalls(combined).calls.filter(
+        calls = readCalls(combined).filter(
           (call) => !memo.has(`${call.name}:${JSON.stringify(call.args)}`),
         );
       }
@@ -457,11 +508,13 @@ export class QwenEngine {
       const cleaned = stripJsonBlobs(visibleText).trim();
       if (
         lastTool &&
-        (cleaned.length === 0 || (cleaned.length < 12 && visibleText.includes('{')))
+        (cleaned.length === 0 ||
+          (cleaned.length < 12 && visibleText.includes('{')) ||
+          !answerUsesResult(cleaned, lastTool.result))
       ) {
         yield {
           type: 'token',
-          text: `${visibleText.trim() ? ' ' : ''}${fallbackAnswer(lastTool.name, lastTool.result)}`,
+          text: `${visibleText.trim() ? '\n\n' : ''}${fallbackAnswer(lastTool.name, lastTool.result)}`,
         };
       }
 

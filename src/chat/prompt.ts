@@ -13,6 +13,7 @@ export const IDENTITY = [
   'Answer in the user’s language and keep replies to one or two sentences.',
 ].join('\n');
 
+/** The function half of a tool declaration. */
 interface FunctionSchema {
   name: string;
   description: string;
@@ -21,6 +22,15 @@ interface FunctionSchema {
     properties: Record<string, { type: string; description?: string }>;
     required?: string[];
   };
+}
+
+/**
+ * Qwen3 was trained on OpenAI-style tool objects, and its chat template dumps
+ * one per line inside `<tools>`. A bare function object (without the
+ * `type`/`function` wrapper) measurably degrades tool calling on 0.6B.
+ */
+function asNativeTool(schema: FunctionSchema): { type: 'function'; function: FunctionSchema } {
+  return { type: 'function', function: schema };
 }
 
 /** JSON-schema declaration for one script, in Qwen3's tool-call format. */
@@ -51,7 +61,9 @@ export function scriptFunctionSchema(record: ScriptRecord): FunctionSchema {
 const MANAGEMENT_TOOLS: FunctionSchema[] = [
   {
     name: 'listScripts',
-    description: 'List every agent script with its description and arguments.',
+    description:
+      'List every agent script with its description and arguments. Call this ' +
+      'whenever the user asks which scripts exist, what you can do, or which tools you have.',
     parameters: { type: 'object', properties: {} },
   },
   {
@@ -74,14 +86,11 @@ export function toolSchemas(records: readonly ScriptRecord[]): FunctionSchema[] 
 }
 
 export const TOOL_PROTOCOL = [
-  'If a script’s purpose matches the request, call it instead of guessing.',
-  'For general knowledge, chit-chat or anything no script covers, answer directly without calling a tool.',
-  'To call a script, reply with exactly this and nothing else:',
-  '<tool_call>',
-  '{"name": "<script name>", "args": {"<argument>": <value>}}',
-  '</tool_call>',
-  'One <tool_call> block per call; several blocks in one reply are allowed.',
-  'The tool result is then supplied to you: use it to answer the user in one short sentence, in plain language, without repeating the JSON.',
+  'If a function matches the request, call it instead of guessing from memory.',
+  'Never answer a question about the available scripts, tools or your own capabilities from this listing: call listScripts and use its output.',
+  'For general knowledge, chit-chat, or anything no function covers, answer directly without calling one.',
+  'Emit the <tool_call> block alone, with no prose around it.',
+  'A tool result is then supplied to you: answer the user in one short sentence of plain language, without repeating the JSON.',
 ].join('\n');
 
 export interface SystemPromptOptions {
@@ -102,12 +111,24 @@ export function buildSystemPrompt(options: SystemPromptOptions): string {
   }
 
   if (tools) {
+    // Verbatim Qwen3 preamble: the model was fine-tuned on this exact wording,
+    // line layout (`<tools>` holds one JSON object per line, not an array) and
+    // `arguments` key, so it must not be "improved".
     parts.push(
       '',
-      'You can call tools. Available tools:',
+      '# Tools',
+      '',
+      'You may call one or more functions to assist with the user query.',
+      '',
+      'You are provided with function signatures within <tools></tools> XML tags:',
       '<tools>',
-      JSON.stringify(toolSchemas(records)),
+      ...toolSchemas(records).map((schema) => JSON.stringify(asNativeTool(schema))),
       '</tools>',
+      '',
+      'For each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:',
+      '<tool_call>',
+      '{"name": <function-name>, "arguments": <args-json-object>}',
+      '</tool_call>',
     );
     parts.push('', TOOL_PROTOCOL);
     if (records.length === 0) {
@@ -204,7 +225,25 @@ export function fallbackAnswer(toolName: string, result: unknown): string {
   return `${toolName} → ${flat || 'done'}`;
 }
 
-/** Drop JSON blobs a small model may echo back instead of paraphrasing. */
+/**
+ * Does the user ask about the toolbox itself ("which scripts do you have?")?
+ *
+ * Those questions are answerable only from the registry, but a 0.6B model often
+ * replies from the tool listing in its own prompt instead of calling
+ * `listScripts`, producing a vague answer. The engine uses this to nudge it once.
+ */
+export function asksAboutToolbox(text: string): boolean {
+  const question = text.toLowerCase();
+  const noun = '(scripts?|tools?|functions?|callbacks?)';
+  return [
+    new RegExp(`\\b(which|what|how many|list|show|tell me|name)\\b(?:\\s+\\w+){0,2}\\s+${noun}\\b`),
+    new RegExp(`\\bany\\s+${noun}\\b`),
+    new RegExp(`\\b${noun}\\s+(are|is)\\s+(available|installed|there|defined)\\b`),
+    /\bwhat can you do\b/,
+    /\byour\s+(capabilit\w*|tools|scripts)\b/,
+  ].some((pattern) => pattern.test(question));
+}
+
 export function stripJsonBlobs(text: string): string {
   return text
     .replace(/\{[^{}]*\}/g, '')
@@ -220,13 +259,68 @@ export function stripJsonBlobs(text: string): string {
  * otherwise anchors on an earlier turn of the conversation.
  */
 export function toolResultPrompt(results: readonly string[], userQuestion: string): string {
+  // Qwen3 expects tool output inside a user turn as <tool_response> blocks.
+  // The question is repeated *after* the payload so a small model does not
+  // anchor on an earlier turn of the conversation.
   return [
-    'Tool output:',
-    ...results,
+    ...results.map((result) => `<tool_response>\n${result}\n</tool_response>`),
     '',
     `User question: ${userQuestion}`,
     '',
     'Using only the tool output above, answer that user question in one short sentence of plain language.',
     'Do not repeat the JSON, do not describe the tool call, and do not emit another <tool_call> block.',
   ].join('\n');
+}
+
+/** Unwrap the `{ok, result}` envelope a script run returns. */
+function unwrapEnvelope(result: unknown): unknown {
+  if (typeof result === 'object' && result !== null && 'ok' in result) {
+    const envelope = result as { ok: boolean; result?: unknown; error?: unknown };
+    return envelope.ok ? envelope.result : { error: envelope.error ?? 'failed' };
+  }
+  return result;
+}
+
+/**
+ * The concrete strings inside a tool result: name fields, scalar values and
+ * short strings. They are what a faithful answer is expected to mention.
+ */
+export function salientValues(result: unknown, limit = 12): string[] {
+  const found: string[] = [];
+
+  const walk = (value: unknown): void => {
+    if (found.length >= limit) return;
+    if (typeof value === 'string') {
+      if (value.length >= 3 && value.length <= 60) found.push(value);
+      return;
+    }
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      found.push(String(value));
+      return;
+    }
+    if (typeof value !== 'object' || value === null) return;
+    if (Array.isArray(value)) {
+      for (const item of value) walk(item);
+      return;
+    }
+    for (const item of Object.values(value as Record<string, unknown>)) walk(item);
+  };
+
+  walk(unwrapEnvelope(result));
+  return [...new Set(found)];
+}
+
+/**
+ * Did the model's reply actually use the tool result?
+ *
+ * A 0.6B model sometimes answers "I have several scripts available." even after
+ * the registry handed it the names. When nothing from the payload appears in the
+ * reply, the caller appends the factual line so the user is never left with a
+ * vague sentence while the answer was right there.
+ */
+export function answerUsesResult(answer: string, result: unknown): boolean {
+  const values = salientValues(result).filter((value) => Number.isNaN(Number(value)));
+  if (values.length === 0) return true;
+  const lower = answer.toLowerCase();
+  return values.some((value) => lower.includes(value.toLowerCase()));
 }

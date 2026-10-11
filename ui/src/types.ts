@@ -155,6 +155,8 @@ export type ChatEvent =
   | { type: 'status'; state: EngineState; detail?: string }
   | { type: 'thinking'; text: string }
   | { type: 'token'; text: string }
+  /** Discard the partially streamed reply (the engine is retrying this turn). */
+  | { type: 'reset' }
   | { type: 'tool_call'; call: ChatToolCall }
   | { type: 'tool_result'; call: ChatToolCall }
   | { type: 'stats'; totalTokens: number; tokensPerSecond: number; durationMs: number }

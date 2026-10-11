@@ -165,6 +165,11 @@ function applyEvent(turn: ChatTurn, event: ChatEvent): void {
     case 'token':
       turn.text += event.text;
       break;
+    case 'reset':
+      // The engine decided the partial reply was unusable and is retrying.
+      turn.text = '';
+      turn.thinking = '';
+      break;
     case 'tool_call':
       turn.calls.push({ ...event.call });
       break;
