@@ -102,8 +102,13 @@ export interface SystemPromptOptions {
   net?: boolean;
   /** One line per skill, shown so the model knows what it can load. */
   skills?: string;
-  /** Tools exposed by connected MCP servers. */
-  mcp?: readonly { server: string; name: string; description: string }[];
+  /** Tools exposed by connected MCP servers, with the schema each one declares. */
+  mcp?: readonly {
+    server: string;
+    name: string;
+    description: string;
+    inputSchema?: Record<string, unknown>;
+  }[];
 }
 
 /** The internet tools, offered only when internet access is on. */

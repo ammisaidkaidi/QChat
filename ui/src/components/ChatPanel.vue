@@ -76,32 +76,53 @@ const canChat = computed(
 
 /* ── persistence ─────────────────────────────────────────────────────────── */
 
+/** Snapshot of what is stored; the Save button is what moves settings into it. */
+const saved = ref('{}');
+const justSaved = ref(false);
+let savedTimer: number | null = null;
+
+function write(): void {
+  try {
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ turns: turns.value.slice(-40), settings: JSON.parse(saved.value) }),
+    );
+  } catch {
+    /* storage may be unavailable */
+  }
+}
+
+/** Changes made since the last save, shown next to the button. */
+const dirty = computed(() => JSON.stringify({ ...settings }) !== saved.value);
+
+function saveSettings(): void {
+  saved.value = JSON.stringify({ ...settings });
+  write();
+  justSaved.value = true;
+  if (savedTimer !== null) window.clearTimeout(savedTimer);
+  savedTimer = window.setTimeout(() => (justSaved.value = false), 1600);
+  emit('notify', 'Settings saved', 'success');
+}
+
 function restore(): void {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return;
+    if (!raw) {
+      saved.value = JSON.stringify({ ...settings });
+      return;
+    }
     const parsed = JSON.parse(raw) as { turns?: ChatTurn[]; settings?: Partial<typeof settings> };
     if (Array.isArray(parsed.turns)) turns.value = parsed.turns.slice(-40);
     if (parsed.settings) Object.assign(settings, parsed.settings);
   } catch {
     /* ignore corrupt state */
   }
+  saved.value = JSON.stringify({ ...settings });
 }
 
-watch(
-  [turns, settings],
-  () => {
-    try {
-      localStorage.setItem(
-        STORAGE_KEY,
-        JSON.stringify({ turns: turns.value.slice(-40), settings: { ...settings } }),
-      );
-    } catch {
-      /* storage may be unavailable */
-    }
-  },
-  { deep: true },
-);
+// Turns keep persisting on their own; settings only move when Save is pressed.
+watch(turns, write, { deep: true });
+watch(saved, write);
 
 /* ── engine status ───────────────────────────────────────────────────────── */
 
@@ -205,6 +226,8 @@ async function refresh(): Promise<void> {
     config.value = response.config;
     if (!settings.systemPrompt && response.config)
       settings.maxTokens = settings.maxTokens || response.config.defaultMaxTokens;
+    // That default is not a user edit: keep it out of the "unsaved changes" state.
+    if (!dirty.value) saved.value = JSON.stringify({ ...settings });
   } catch (error) {
     emit('notify', (error as Error).message, 'error');
   }
@@ -641,6 +664,23 @@ onMounted(async () => {
               class="textarea textarea-bordered textarea-xs font-mono"
             ></textarea>
           </label>
+
+          <div class="flex flex-wrap items-center gap-2 border-t border-base-300 pt-3 sm:col-span-2">
+            <button
+              class="btn btn-primary btn-sm"
+              :class="{ 'btn-success': justSaved }"
+              :disabled="!dirty && !justSaved"
+              title="Store these settings in this browser"
+              data-testid="save-settings"
+              @click="saveSettings"
+            >
+              {{ justSaved ? '✓ Saved' : 'Save settings' }}
+            </button>
+            <span v-if="dirty" class="badge badge-warning badge-sm">unsaved changes</span>
+            <span v-else class="text-[11px] opacity-60">
+              settings apply to the next message and are restored on reload
+            </span>
+          </div>
         </div>
       </div>
     </section>

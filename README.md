@@ -190,8 +190,13 @@ cleaner data. `INFAGENT_SEARCH_PROVIDER=bing|brave|tavily|duckduckgo` forces an
 order, `INFAGENT_ALLOW_NET=0` switches the whole capability off, and the Chat
 tab has an *Internet access* switch per conversation.
 
-**MCP servers** — `mcp.json` declares stdio servers in the standard
-[JSON-RPC 2.0](https://spec.modelcontextprotocol.io) protocol:
+**MCP servers** — `mcp.json` declares servers in the standard
+[JSON-RPC 2.0](https://spec.modelcontextprotocol.io) protocol, over one of two
+transports: a `command`/`args`/`env` entry is spawned as a child process and
+spoken to on stdin/stdout, while `"transport": "http"` speaks Streamable HTTP to
+a remote `url` with optional `headers`. `${VAR}` placeholders in `url`, `args`,
+`env` and `headers` are expanded from the app's environment (`.env`), so a token
+is never written into `mcp.json` itself.
 
 ```json
 { "servers": { "example": { "command": "node", "args": ["mcp/example-server.mjs"], "enabled": true } } }
@@ -201,13 +206,29 @@ Enabled servers start in the background at boot, their tools are offered to the
 model as `server__tool` (so `example__echo`), and the console's **MCP** tab can
 connect, disconnect, add servers and call any tool by hand. A dependency-free
 demo server ships in `mcp/example-server.mjs` (`echo`, `add`, `now`) so the loop
-can be verified before a real server is wired in. Prefer a package? Paste
-`npx -y @modelcontextprotocol/server-filesystem .` into the Add server form.
+can be verified before a real server is wired in.
+
+Four hardened servers ship in `mcp/servers/`. Nothing is vendored from a package
+registry: each guarantee below is enforced inside the server process, not by
+asking the model to behave.
+
+| Server | Tools | Enforced |
+| --- | --- | --- |
+| `filesystem.mjs` | `list_allowed_roots`, `list_directory`, `read_file`, `read_multiple_files`, `get_file_info`, `search_files`, plus `write_file` / `create_directory` only with `allow_write` and `remove_path` only with `allow_delete` | Only the declared roots (`./scripts`, `./skills`, `./screenshot` by default) are reachable. Every path is resolved through symlinks and refused if it leaves a root, contains `..` or a NUL byte, or names a credential file (`.env*`, `.git`, `.ssh`, `*.pem`, `id_rsa`, …). Read-only unless the config says otherwise. Caps: 1 MB per read, 500 entries, depth 4; binary files are refused rather than streamed. |
+| `fetch.mjs` | `fetch_url`, `fetch_policy` | https only (`allow_http` opts in). Every DNS answer and every redirect hop is checked against loopback, private, link-local (cloud metadata), CGNAT, multicast and reserved ranges, and the validated address is pinned into the connection so DNS cannot be re-pointed between the check and the request. 1 MB, 3 redirects and a 20 s budget are the defaults; only text-ish content types are returned, the result is flagged `untrusted`, and nothing is executed. |
+| `sqlite.py` (stdlib only) | `list_databases`, `list_tables`, `describe_table`, `read_query`, plus `write_query` only with `allow_write` | Read-only is a real SQLite setting — `file:…?mode=ro` plus `PRAGMA query_only=ON` — not just hidden tools. Foreign keys stay on, one statement per call, `ATTACH`/`DETACH`/`VACUUM`/`REINDEX`/`ANALYZE` and any `PRAGMA … =` are refused, and rows, bytes and time are capped. |
+| Supabase (official remote endpoint) | whatever the project's tool groups expose | `transport: "http"` to `https://mcp.supabase.com/mcp?project_ref=…&read_only=true`; off by default. The manager refuses a Supabase URL without a bearer token or without `read_only=true` unless `INFAGENT_ALLOW_SUPABASE_WRITES=1`, refuses plain http unless it is loopback *and* `INFAGENT_MCP_ALLOW_INSECURE=1`, and never prints the token — errors are redacted. |
 
 ```bash
 infagent mcp list
-infagent mcp call example__now '{}'
+infagent mcp start filesystem
+infagent mcp call filesystem__read_file '{"path":"scripts/hello.js"}'
+infagent mcp call sqlite__read_query '{"database":"demo","sql":"select * from notes limit 5"}'
 ```
+
+Adding a third-party server by hand works the same way (the Add server form
+accepts anything from `npx -y @modelcontextprotocol/server-filesystem .` to a
+remote URL), but its guarantees are then that package's, not InfAgent's.
 
 **Skills** — reusable procedures kept as markdown files in `skills/`. Only the
 one-line summary (`name`, `description`, `when to use it`) goes into the system
@@ -345,6 +366,11 @@ Relevant InfAgent variables:
 | `INFAGENT_LLM_CONTEXT` | `2048` | context window |
 | `INFAGENT_LLM_THREADS` | `2` | llama.cpp threads |
 | `INFAGENT_LLM_IDLE_UNLOAD_MS` | `600000` | idle time before the model is freed |
+| `INFAGENT_MCP_CONFIG` | `./mcp.json` | MCP server declarations |
+| `INFAGENT_MCP_ALLOW_INSECURE` | unset | allow `http://` for loopback remotes only |
+| `INFAGENT_ALLOW_SUPABASE_WRITES` | unset | allow a Supabase MCP connection that is not `read_only=true` |
+| `SUPABASE_ACCESS_TOKEN` | — | Supabase personal access token, read from `.env` and referenced as `${SUPABASE_ACCESS_TOKEN}` in `mcp.json` |
+| `SUPABASE_PROJECT_REF` | — | Supabase project exposed through the remote MCP endpoint |
 
 ## Scripts (npm)
 
@@ -371,14 +397,14 @@ InfAgent/
 │   ├── chat/                  # Qwen3 engine, prompts, tool dispatch, splitter
 │   ├── scripts/               # script toolbox (header, registry, runner)
 │   ├── capabilities/          # web search, page fetching, alerts
-│   ├── mcp/                   # stdio JSON-RPC client + server manager
+│   ├── mcp/                   # JSON-RPC clients (stdio + Streamable HTTP) + manager + guards
 │   ├── skills/                # markdown skill registry
 │   └── server/                # HTTP API (scripts + chat SSE) + static UI
 ├── ui/                        # Vue 3 + Tailwind + daisyUI interface
 ├── scripts/                   # agent-authored .js / .py callbacks
-├── mcp/                       # bundled example MCP server
+├── mcp/                       # bundled MCP servers (filesystem, fetch, sqlite) + lib/ + data/
 ├── skills/                    # markdown skill files (see skills/README.md)
-├── tests/                     # vitest: env, agent, scripts, search, skills, mcp
+├── tests/                     # vitest: env, agent, scripts, search, skills, mcp, http
 └── tools/                     # env generator, GitHub publish helper
 ```
 

@@ -445,6 +445,7 @@ export class QwenEngine {
                     server,
                     name: tool.name,
                     description: tool.description,
+                    inputSchema: tool.inputSchema,
                 }))
                 : [];
             const systemPrompt = request.systemPrompt?.trim() ||

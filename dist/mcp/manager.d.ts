@@ -7,6 +7,10 @@ export interface McpServerStatus {
     description: string;
     command: string;
     args: string[];
+    /** How the server is reached: a local process or a remote endpoint. */
+    transport: 'stdio' | 'http';
+    /** Redacted endpoint for http servers, null for stdio ones. */
+    url: string | null;
     enabled: boolean;
     tools: McpTool[];
     serverInfo: {
@@ -35,6 +39,8 @@ export declare function parseQualifiedTool(raw: string, servers: readonly string
 export declare class McpManager {
     readonly configPath: string;
     private clients;
+    /** Config-level refusals, kept per server so the console can show them. */
+    private failures;
     private config;
     constructor(options?: {
         configPath?: string;

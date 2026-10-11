@@ -39,6 +39,24 @@ export default tseslint.config(
     },
   },
   {
+    // The MCP servers and their helpers are plain Node .mjs modules.
+    files: ['mcp/**/*.mjs', 'scripts/*.js'],
+    languageOptions: {
+      globals: {
+        console: 'readonly',
+        process: 'readonly',
+        Buffer: 'readonly',
+        URL: 'readonly',
+        URLSearchParams: 'readonly',
+        fetch: 'readonly',
+        setTimeout: 'readonly',
+        clearTimeout: 'readonly',
+        TextDecoder: 'readonly',
+        AbortController: 'readonly',
+      },
+    },
+  },
+  {
     files: ['tests/**/*.ts'],
     rules: {
       '@typescript-eslint/no-non-null-assertion': 'off',

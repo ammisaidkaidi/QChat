@@ -1,10 +1,44 @@
 {
   "servers": {
+    "filesystem": {
+      "command": "node",
+      "args": [
+        "mcp/servers/filesystem.mjs",
+        "{\"roots\":[\"./scripts\",\"./skills\",\"./screenshot\"],\"allow_write\":false,\"max_bytes\":1048576}"
+      ],
+      "enabled": true,
+      "description": "Hardened filesystem server — read-only over scripts/, skills/ and screenshot/. Raise allow_write in mcp.json to allow writes."
+    },
+    "fetch": {
+      "command": "node",
+      "args": [
+        "mcp/servers/fetch.mjs",
+        "{\"allow_http\":false,\"allow_private\":[],\"max_bytes\":1048576,\"max_redirects\":3,\"timeout_ms\":20000}"
+      ],
+      "enabled": true,
+      "description": "Hardened fetch server — https only, SSRF-blocked, size and time capped. Add hosts to allow_private for internal endpoints."
+    },
+    "sqlite": {
+      "command": "python3",
+      "args": [
+        "mcp/servers/sqlite.py",
+        "{\"databases\":{\"demo\":\"./mcp/data/demo.db\"},\"read_only\":true,\"max_rows\":200,\"max_bytes\":262144,\"timeout_ms\":5000}"
+      ],
+      "enabled": true,
+      "description": "Hardened SQLite server — read-only, one statement per call, bound parameters, row/time caps. Point the databases map at your own files."
+    },
+    "supabase": {
+      "transport": "http",
+      "url": "https://mcp.supabase.com/mcp?project_ref=${SUPABASE_PROJECT_REF}&read_only=true&features=database,docs",
+      "headers": { "Authorization": "Bearer ${SUPABASE_ACCESS_TOKEN}" },
+      "enabled": false,
+      "description": "Official Supabase remote MCP (read-only). Needs SUPABASE_ACCESS_TOKEN and SUPABASE_PROJECT_REF in .env, then set enabled to true. Writes need INFAGENT_ALLOW_SUPABASE_WRITES=1."
+    },
     "example": {
       "command": "node",
       "args": ["mcp/example-server.mjs"],
-      "description": "Bundled demo server (echo, add, now) — replace or remove it.",
-      "enabled": true
+      "enabled": true,
+      "description": "Bundled demo server (echo, add, now) — replace or remove it."
     }
   }
 }

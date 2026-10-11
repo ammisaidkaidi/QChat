@@ -6,6 +6,12 @@ export interface McpTool {
     inputSchema: Record<string, unknown>;
 }
 export interface McpServerConfig {
+    /** `stdio` (default) spawns `command`; `http` talks to a remote endpoint. */
+    transport?: 'stdio' | 'http';
+    /** Endpoint for `transport: "http"`, e.g. https://mcp.supabase.com/mcp?… */
+    url?: string;
+    /** Headers for `transport: "http"`; read tokens through ${ENV} placeholders. */
+    headers?: Record<string, string>;
     /** Executable to run, e.g. `node` or `npx`. */
     command: string;
     args?: string[];
