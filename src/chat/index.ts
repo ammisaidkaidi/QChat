@@ -1,4 +1,6 @@
 export { QwenEngine, ChatError, EventChannel, DEFAULT_MODEL, DEFAULT_MODELS_DIR } from './qwen.js';
+export { ModelStore, PROJECT_ROOT } from './modelStore.js';
+export type { ModelCatalogue, ModelRecord, ModelSettings } from './modelStore.js';
 export {
   buildSystemPrompt,
   formatToolResult,

@@ -1,38 +1,29 @@
-# dependencies
+# ---------------------------------------------------------------------------
+# Everything in this repository is committed, with three deliberate exceptions:
+#
+#   1. node_modules/    — hundreds of MB and 20k+ files; `npm install` restores it
+#   2. *.gguf           — 380 MB model weights; fetched once by `npm run chat:model`
+#   3. .env / env.txt   — real credentials; they must never enter git history
+#
+# Build output (dist/, ui/dist/), logs, coverage and the model settings files are
+# all tracked on purpose: the repository is meant to be complete without them.
+# ---------------------------------------------------------------------------
+
+# 1. dependencies
 node_modules/
 .pnp/
 .pnp.js
 
-# build output
-dist/
-build/
-*.tsbuildinfo
+# 2. model weights (the settings files next to them ARE committed)
+/models/*.gguf
+/models/*.gguf.part
+*.gguf
 
-# env files — never commit secrets
+# 3. secrets — never committed
 .env
 .env.*
 !.env.example
 env.txt
-
-# logs
-logs/
-*.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-
-# test / coverage
-coverage/
-.nyc_output/
-
-# editors & OS
-.vscode/*
-!.vscode/extensions.json
-.idea/
-.DS_Store
-Thumbs.db
-
-# caches
-.cache/
-.vitest/
-.eslintcache
+*.env.bak
+.netrc
+.git-credentials

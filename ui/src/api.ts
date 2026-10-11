@@ -4,6 +4,7 @@
  */
 import type {
   ChatConfig,
+  ModelCatalog,
   ChatEvent,
   ChatMessage,
   CreateScriptInput,
@@ -17,7 +18,7 @@ import type {
 } from './types';
 
 interface RequestOptions {
-  method?: 'GET' | 'POST' | 'PATCH' | 'DELETE';
+  method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
   body?: unknown;
 }
 
@@ -171,11 +172,22 @@ export const chatApi = {
 
   unload: (): Promise<{ status: EngineStatus }> => request('/api/chat/model', { method: 'DELETE' }),
 
-  /** Downloads the GGUF, reporting progress until it finishes. */
+  /** The `models/` catalogue. */
+  models: (): Promise<ModelCatalog> => request('/api/models'),
+
+  /** Switch the active model; the engine reloads lazily on the next message. */
+  useModel: (id: string): Promise<ModelCatalog & { status: EngineStatus }> =>
+    request('/api/models/active', { method: 'PUT', body: { id } }),
+
+  /** Adopt GGUFs dropped into either folder by hand. */
+  refreshModels: (): Promise<ModelCatalog> => request('/api/models/refresh', { method: 'POST' }),
+
+  /** Downloads a model's weights, reporting progress until it finishes. */
   download: (
     onProgress: (progress: number, status: EngineStatus) => void,
     onDone: (status: EngineStatus) => void,
     onError: (message: string) => void,
+    id?: string,
   ): ChatStreamHandle => {
     const controller = new AbortController();
 
@@ -184,7 +196,8 @@ export const chatApi = {
         const response = await fetch('/api/chat/model/download', {
           method: 'POST',
           signal: controller.signal,
-          headers: { accept: 'text/event-stream' },
+          headers: { accept: 'text/event-stream', 'content-type': 'application/json' },
+          body: JSON.stringify(id ? { id } : {}),
         });
         if (!response.ok || !response.body) {
           onError(`Download failed (${response.status}).`);

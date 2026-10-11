@@ -40,7 +40,7 @@ The model runs in-process through llama.cpp; nothing leaves the machine.
 | | |
 | --- | --- |
 | Model | `Qwen3-0.6B-Q4_K_M.gguf` (~380 MB, `unsloth/Qwen3-0.6B-GGUF`) |
-| Folder | `~/.cache/infagent/models` (override with `INFAGENT_MODELS_DIR`) |
+| Folder | `models/` next to the project — see [models/README.md](models/README.md) |
 | Backend | CPU only, 2 threads by default, 2048-token context |
 | Speed | ~10-17 tok/s on 2 cores; first token ≈ 1.3 s warm, ~4 s cold |
 | Memory | ~1 GB RSS while loaded; unloads automatically after 10 idle minutes |
@@ -73,11 +73,27 @@ Practical notes:
 - `INFAGENT_ALLOW_RUN=0` disables tool execution and the model is told it has no tools.
 
 ```bash
-infagent chat status              # engine state, context, RAM
-infagent chat download            # fetch the GGUF
+infagent chat status              # active model, folder, context, RAM
+infagent chat models              # every model in the folder
+infagent chat use Qwen3-0.6B-Q4_K_M   # switch the active model
+infagent chat download [model-id] # fetch the GGUF into models/
 infagent chat ask "…" [--thinking] [--no-tools] [--temp 0.4] [--max 512]
 infagent chat unload              # free ~1 GB of RAM now
 ```
+
+### Models folder
+
+```
+models/
+  models-settings.json                  # which model is active, and the order
+  Qwen3-0.6B-Q4_K_M.settings.json       # how to run the model (committed)
+  Qwen3-0.6B-Q4_K_M.gguf               # the weights (git-ignored, ~380 MB)
+```
+
+Each model is a GGUF plus a settings file carrying its context size, threads,
+sampling defaults, chat wrapper and download source. Drop a new `.gguf` in and
+the next scan writes a settings file for it; `GET /api/models` and
+`PUT /api/models/active` drive the picker in the Chat tab.
 
 CLI equivalents: `npm run chat:model`, `npm run chat:ask -- "…"`.
 
@@ -185,7 +201,10 @@ infagent config | run <task> | --version
 | `GET /api/chat/status` | engine state, model path, context, RAM, defaults |
 | `POST /api/chat/model/download` | SSE progress while fetching the GGUF |
 | `DELETE /api/chat/model` | unload the model from memory |
-| `POST /api/chat/completions` | SSE token stream (`status`, `thinking`, `token`, `tool_call`, `tool_result`, `stats`, `done`) |
+| `POST /api/chat/completions` | SSE token stream (`status`, `thinking`, `token`, `tool_call`, `tool_result`, `reset`, `stats`, `done`) |
+| `GET /api/models` | the `models/` catalogue (ids, sizes, active flag) |
+| `PUT /api/models/active` | switch the active model |
+| `POST /api/models/refresh` | adopt GGUFs dropped into the folder |
 
 ## Interface (Vue 3 + Tailwind + daisyUI)
 
@@ -193,10 +212,11 @@ infagent config | run <task> | --version
 
 Two tabs in the header: **Chat** and **Scripts**.
 
-- **Chat** — local Qwen3-0.6B conversation: model status, download button with
-  progress, streaming bubbles, collapsible reasoning, tool-call cards with
-  arguments and results, settings (temperature, max tokens, thinking, tools,
-  custom system prompt), Stop / Retry / Clear, history kept in `localStorage`
+- **Chat** — local Qwen3-0.6B conversation: model picker over the `models/`
+  folder, download button with progress, streaming bubbles, collapsible
+  reasoning, tool-call cards with arguments and results, **copy** and retry on
+  every reply, settings (temperature, max tokens, thinking, tools, custom system
+  prompt), Stop / Clear, history kept in `localStorage`
 - **Scripts** — searchable script list, detail tabs (overview, *Agent prompt*
   copyable, source, run console with the parsed envelope) and the tool console
   that invokes the built-in callbacks as an LLM would
@@ -222,7 +242,7 @@ Relevant InfAgent variables:
 | `INFAGENT_ALLOW_RUN` | `1` | set to `0` to disable script execution |
 | `INFAGENT_PYTHON` | `python3` | interpreter for `.py` scripts |
 | `INFAGENT_NAME` | `InfAgent` | agent display name |
-| `INFAGENT_MODELS_DIR` | `~/.cache/infagent/models` | GGUF cache folder |
+| `INFAGENT_MODELS_DIR` | `<project>/models` | models folder |
 | `INFAGENT_MODEL_PATH` | `<modelsDir>/Qwen3-0.6B-Q4_K_M.gguf` | explicit model file |
 | `INFAGENT_LLM_CONTEXT` | `2048` | context window |
 | `INFAGENT_LLM_THREADS` | `2` | llama.cpp threads |

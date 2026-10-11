@@ -12,8 +12,7 @@
  *  - The model is unloaded after an idle period so a small box stays healthy.
  */
 import { existsSync, statSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { basename, join, resolve } from 'node:path';
+import { basename } from 'node:path';
 import process from 'node:process';
 
 import type {
@@ -26,6 +25,8 @@ import type {
 } from 'node-llama-cpp';
 
 import { ScriptRegistry } from '../scripts/registry.js';
+import { DEFAULT_MODELS_DIR, ModelStore } from './modelStore.js';
+import type { ModelRecord, ModelSettings } from './modelStore.js';
 import {
   answerUsesResult,
   asksAboutToolbox,
@@ -46,14 +47,32 @@ import type {
   EngineStatus,
 } from './types.js';
 
-export const DEFAULT_MODEL = {
-  repo: 'unsloth/Qwen3-0.6B-GGUF',
+/**
+ * The model InfAgent ships with: its settings file is committed under `models/`
+ * and the 380 MB of weights are fetched on first use into the weights cache.
+ */
+export const DEFAULT_MODEL: ModelSettings = {
+  version: 'infagent-model/v1',
+  id: 'Qwen3-0.6B-Q4_K_M',
+  name: 'Qwen3 0.6B (Q4_K_M)',
   file: 'Qwen3-0.6B-Q4_K_M.gguf',
+  family: 'qwen3',
   quantization: 'Q4_K_M',
-  url: 'https://huggingface.co/unsloth/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-Q4_K_M.gguf',
-} as const;
+  description: 'Small, fast, tool-calling capable local chat model. The default choice on CPU.',
+  source: {
+    repo: 'unsloth/Qwen3-0.6B-GGUF',
+    url: 'https://huggingface.co/unsloth/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-Q4_K_M.gguf',
+  },
+  contextSize: 2048,
+  threads: 2,
+  temperature: 0.4,
+  maxTokens: 512,
+  thinking: false,
+  chatWrapper: 'chatml',
+};
 
-export const DEFAULT_MODELS_DIR = join(homedir(), '.cache', 'infagent', 'models');
+export { DEFAULT_MODELS_DIR, ModelStore };
+export type { ModelCatalogue, ModelRecord, ModelSettings } from './modelStore.js';
 
 export class ChatError extends Error {
   public readonly code: 'busy' | 'unavailable' | 'not_ready' | 'download' | 'aborted';
@@ -67,7 +86,11 @@ export class ChatError extends Error {
 
 export interface QwenEngineOptions {
   registry?: ScriptRegistry;
+  /** Settings folder. Defaults to `INFAGENT_SETTINGS_DIR`, then `<project>/models`. */
   modelsDir?: string;
+  /** Weights folder override; defaults to `INFAGENT_WEIGHTS_DIR`. */
+  weightsDir?: string;
+  /** Explicit weights that bypass the catalogue entirely. */
   modelPath?: string;
   modelUrl?: string;
   contextSize?: number;
@@ -131,13 +154,14 @@ export class EventChannel<T> {
 
 export class QwenEngine {
   public readonly registry: ScriptRegistry;
-  public readonly modelsDir: string;
-  public readonly modelPath: string;
-  public readonly modelUrl: string;
-  public readonly contextSize: number;
-  public readonly threads: number;
+  /** Catalogue over `models/`: which model is used, and how. */
+  public readonly store: ModelStore;
   private readonly idleUnloadMs: number;
   private readonly allowRun: boolean;
+  /** Explicit overrides; unset values follow the active model's settings. */
+  private readonly contextOverride: number | null;
+  private readonly threadsOverride: number | null;
+  private readonly urlOverride: string | null;
 
   private loaded: Loaded | null = null;
   /**
@@ -159,42 +183,139 @@ export class QwenEngine {
 
   constructor(options: QwenEngineOptions = {}) {
     this.registry = options.registry ?? new ScriptRegistry();
-    this.modelsDir = resolve(
-      options.modelsDir ?? process.env['INFAGENT_MODELS_DIR'] ?? DEFAULT_MODELS_DIR,
-    );
-    this.modelPath = resolve(
-      options.modelPath ??
-        process.env['INFAGENT_MODEL_PATH'] ??
-        join(this.modelsDir, DEFAULT_MODEL.file),
-    );
-    this.modelUrl = options.modelUrl ?? process.env['INFAGENT_MODEL_URL'] ?? DEFAULT_MODEL.url;
-    this.contextSize = options.contextSize ?? Number(process.env['INFAGENT_LLM_CONTEXT'] ?? 2048);
-    this.threads = options.threads ?? Number(process.env['INFAGENT_LLM_THREADS'] ?? 2);
+    this.store = new ModelStore({
+      ...(options.modelsDir === undefined ? {} : { dir: options.modelsDir }),
+      ...(options.weightsDir === undefined ? {} : { weightsDir: options.weightsDir }),
+      ...(options.modelPath === undefined ? {} : { overridePath: options.modelPath }),
+    });
+    this.store.ensureDir();
+    // Ship the bundled model's settings file on first run, so the folder is
+    // self-describing even before the weights are fetched.
+    if (this.store.list().length === 0) this.store.register(DEFAULT_MODEL);
+
+    const env = (key: string): number | null => {
+      const raw = process.env[key];
+      if (raw === undefined) return null;
+      const value = Number(raw);
+      return Number.isFinite(value) ? value : null;
+    };
+    this.contextOverride = options.contextSize ?? env('INFAGENT_LLM_CONTEXT');
+    this.threadsOverride = options.threads ?? env('INFAGENT_LLM_THREADS');
+    this.urlOverride = options.modelUrl ?? process.env['INFAGENT_MODEL_URL'] ?? null;
     this.idleUnloadMs =
       options.idleUnloadMs ?? Number(process.env['INFAGENT_LLM_IDLE_UNLOAD_MS'] ?? 600_000);
     this.allowRun = options.allowRun ?? process.env['INFAGENT_ALLOW_RUN'] !== '0';
-    this.state = existsSync(this.modelPath) ? 'idle' : 'absent';
+    this.state = this.activeModel().present ? 'idle' : 'absent';
+  }
+
+  /** Folder holding the model settings files. */
+  public get modelsDir(): string {
+    return this.store.dir;
+  }
+
+  /** Folder the weights live in (outside the repository by default). */
+  public get weightsDir(): string {
+    return this.store.weightsDir;
+  }
+
+  /** Weights of the active model. */
+  public get modelPath(): string {
+    return this.activeModel().path;
+  }
+
+  /** Where the active model is fetched from. */
+  public get modelUrl(): string {
+    return this.activeModel().url;
+  }
+
+  /** Context window actually used for the active model. */
+  public get contextSize(): number {
+    return this.contextOverride ?? this.store.activeContext().contextSize;
+  }
+
+  /** llama.cpp threads actually used for the active model. */
+  public get threads(): number {
+    return this.threadsOverride ?? this.store.activeContext().threads;
+  }
+
+  /** The active record plus the resolved download URL. */
+  private activeModel(): ModelRecord & { url: string } {
+    const record = this.store.active();
+    const fallback = record?.settings.id === DEFAULT_MODEL.id ? DEFAULT_MODEL : null;
+    const url = this.urlOverride ?? record?.settings.source?.url ?? fallback?.source?.url ?? '';
+    if (record) return { ...record, url };
+
+    const path = `${this.store.weightsDir}/${DEFAULT_MODEL.file}`;
+    const present = existsSync(path);
+    const size = present ? statSync(path).size : 0;
+    return {
+      settings: { ...DEFAULT_MODEL },
+      path,
+      settingsPath: `${this.store.dir}/${DEFAULT_MODEL.id}.settings.json`,
+      weightsDir: this.store.weightsDir,
+      present,
+      sizeBytes: size,
+      bytesOnDisk: size,
+      active: true,
+      url,
+    };
   }
 
   public status(): EngineStatus {
-    const present = existsSync(this.modelPath);
+    const model = this.activeModel();
+    const present = model.present && existsSync(model.path);
+    const settings = model.settings;
     return {
       state: this.state === 'idle' && this.loaded ? 'ready' : this.state,
-      modelPath: this.modelPath,
+      modelId: settings.id,
+      modelPath: model.path,
       modelPresent: present,
-      modelBytes: present ? statSync(this.modelPath).size : 0,
-      modelUrl: this.modelUrl,
+      modelBytes: present ? statSync(model.path).size : 0,
+      modelUrl: model.url,
+      modelsDir: this.store.dir,
+      weightsDir: model.weightsDir,
+      settingsFile: model.settingsPath,
       downloadProgress: this.downloadProgress,
       downloadedBytes: this.downloadedBytes,
       downloadTotalBytes: this.downloadTotalBytes,
       contextSize: this.contextSize,
       threads: this.threads,
-      modelName: `Qwen3-0.6B (${DEFAULT_MODEL.quantization})`,
-      quantization: DEFAULT_MODEL.quantization,
+      modelName: settings.name,
+      quantization: settings.quantization ?? '',
+      description: settings.description ?? '',
       toolsAvailable: this.allowRun,
       ramUsedMb: Math.round(process.memoryUsage().rss / 1048576),
       lastError: this.lastError,
     };
+  }
+
+  /** Every model in the catalogue, with the active one flagged. */
+  public models(): {
+    dir: string;
+    weightsDir: string;
+    active: string;
+    models: ModelRecord[];
+  } {
+    const models = this.store.list();
+    return {
+      dir: this.store.dir,
+      weightsDir: this.store.weightsDir,
+      active: models.find((model) => model.active)?.settings.id ?? '',
+      models,
+    };
+  }
+
+  /**
+   * Switch the active model. The current one is dropped from memory first, so
+   * the switch costs nothing but a lazy reload on the next message.
+   */
+  public async useModel(id: string): Promise<ModelRecord> {
+    if (this.busy) throw new ChatError('busy', 'The model is generating — try again in a moment.');
+    const record = this.store.setActive(id);
+    await this.unload();
+    this.state = record.present ? 'idle' : 'absent';
+    this.lastError = null;
+    return record;
   }
 
   public isLoaded(): boolean {
@@ -205,11 +326,27 @@ export class QwenEngine {
     return this.busy;
   }
 
-  /** Download the GGUF into `modelsDir`, reporting progress through `status()`. */
-  public async downloadModel(): Promise<string> {
+  /**
+   * Fetch a model's weights into the weights folder.
+   *
+   * Defaults to the active model; its settings file is kept in sync with what
+   * actually landed on disk.
+   */
+  public async downloadModel(id?: string): Promise<string> {
     if (this.downloading) return await this.downloading;
 
     this.downloading = (async (): Promise<string> => {
+      const requested = id ? this.store.get(id) : null;
+      if (id && !requested) throw new ChatError('download', `Unknown model "${id}".`);
+      const active = this.activeModel();
+      const settings = requested?.settings ?? active.settings;
+      const url = requested?.settings.source?.url ?? active.url;
+      const targetPath = requested?.path ?? active.path;
+
+      if (!url) {
+        throw new ChatError('download', `No download source is defined for ${settings.name}.`);
+      }
+
       this.state = 'downloading';
       this.lastError = null;
       this.downloadProgress = 0;
@@ -219,9 +356,9 @@ export class QwenEngine {
       try {
         const { createModelDownloader } = await import('node-llama-cpp');
         const downloader = await createModelDownloader({
-          modelUrl: this.modelUrl,
-          dirPath: this.modelsDir,
-          fileName: basename(this.modelPath),
+          modelUrl: url,
+          dirPath: this.store.weightsDir,
+          fileName: basename(settings.file || targetPath),
           onProgress: ({ totalSize, downloadedSize }) => {
             this.downloadTotalBytes = totalSize;
             this.downloadedBytes = downloadedSize;
@@ -231,11 +368,18 @@ export class QwenEngine {
 
         const file = await downloader.download();
         this.downloadProgress = 1;
+        // Keep the settings file truthful about what is now on disk.
+        const landed = existsSync(file) ? statSync(file).size : 0;
+        this.store.writeSettings({
+          ...settings,
+          file: basename(file),
+          ...(landed > 0 ? { sizeBytes: landed } : {}),
+        });
         this.state = 'idle';
         return file;
       } catch (error) {
         this.lastError = error instanceof Error ? error.message : String(error);
-        this.state = existsSync(this.modelPath) ? 'idle' : 'error';
+        this.state = existsSync(targetPath) ? 'idle' : 'error';
         throw new ChatError('download', `Model download failed: ${this.lastError}`);
       } finally {
         this.downloading = null;
@@ -281,12 +425,23 @@ export class QwenEngine {
           threads: this.threads,
         });
 
+        // The wrapper comes from the model's settings file: Qwen3 GGUFs ship a
+        // Jinja template that llama.cpp stops on immediately, so ChatML is the
+        // safe default while other models can opt out.
+        const wrapper = this.store.activeContext().chatWrapper;
+        const chatWrapper =
+          wrapper === 'qwen'
+            ? new llamaModule.QwenChatWrapper({})
+            : wrapper === 'auto'
+              ? undefined
+              : new llamaModule.ChatMLChatWrapper();
+
         this.loaded = {
           llama,
           model,
           context,
           sequence: context.getSequence(),
-          chatWrapper: new llamaModule.ChatMLChatWrapper(),
+          chatWrapper,
         };
         this.state = 'ready';
         this.touchIdleTimer();
@@ -355,16 +510,23 @@ export class QwenEngine {
       const lastUser = lastUserIndex === -1 ? undefined : history[lastUserIndex];
       if (!lastUser) throw new ChatError('not_ready', 'No user message to answer.');
 
+      const model = this.store.activeContext();
+      const defaults = {
+        temperature: model.temperature,
+        maxTokens: model.maxTokens,
+        thinking: model.thinking,
+      };
+
       const useTools = request.tools !== false && this.allowRun;
+      const thinking = request.thinking ?? defaults.thinking;
       const systemPrompt =
         request.systemPrompt?.trim() ||
-        buildSystemPrompt({
-          records: this.registry.list(),
-          tools: useTools,
-          thinking: request.thinking ?? false,
-        });
-
-      const thinking = request.thinking ?? false;
+        [
+          model.agentPrompt,
+          buildSystemPrompt({ records: this.registry.list(), tools: useTools, thinking }),
+        ]
+          .filter(Boolean)
+          .join('\n\n');
       const prompt = thinking ? lastUser.content : `${lastUser.content}\n/no_think`;
 
       const session = await this.sessionFor(loaded, systemPrompt, history.slice(0, lastUserIndex));
@@ -380,8 +542,8 @@ export class QwenEngine {
       }
       // Qwen3 spends 150-250 tokens on a reasoning block before answering, so the
       // budget must cover thinking *and* the reply, or the visible answer is cut off.
-      const maxTokens = request.maxTokens ?? 512;
-      const temperature = request.temperature ?? 0.4;
+      const maxTokens = request.maxTokens ?? defaults.maxTokens;
+      const temperature = request.temperature ?? defaults.temperature;
       const splitter = new OutputSplitter();
       const channel = new EventChannel<ChatEvent>();
       /** Visible assistant text for the whole turn (thinking and tool blocks excluded). */

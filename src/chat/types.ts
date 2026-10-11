@@ -61,6 +61,8 @@ export type EngineState =
 
 export interface EngineStatus {
   state: EngineState;
+  /** Identifier from the model's settings file. */
+  modelId: string;
   /** Model file backing the engine. */
   modelPath: string;
   modelPresent: boolean;
@@ -71,10 +73,17 @@ export interface EngineStatus {
   downloadProgress: number;
   downloadedBytes: number;
   downloadTotalBytes: number;
+  /** Folder holding the settings files (project `models/`). */
+  modelsDir: string;
+  /** Folder holding the weights (outside the repository). */
+  weightsDir: string;
+  /** Settings file describing the active model. */
+  settingsFile: string;
   contextSize: number;
   threads: number;
   modelName: string;
   quantization: string;
+  description: string;
   /** True when the script toolbox is offered to the model. */
   toolsAvailable: boolean;
   ramUsedMb: number;

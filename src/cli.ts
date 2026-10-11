@@ -44,8 +44,10 @@ Commands:
   help                       Show this help
 
 Chat subcommands:
-  status                     Model, context, threads, RAM, tools
-  download                   Fetch the GGUF (~380 MB) into the models folder
+  status                     Active model, models folder, context, RAM, tools
+  models                     List every model in the models folder
+  use <model-id>             Switch the active model (settings file decides)
+  download [model-id]        Fetch the GGUF (~380 MB) into the models folder
   ask "<message>"            One-shot question, streamed token by token
       --thinking               Show the model's reasoning block (on stderr)
       --no-tools               Disable script tool calls
@@ -280,26 +282,61 @@ async function chatCommand(sub: string | undefined, rest: string[]): Promise<num
     case undefined: {
       const status = engine.status();
       if (wantsJson) {
-        print(JSON.stringify(status, null, 2));
+        print(JSON.stringify({ status, models: engine.models() }, null, 2));
       } else {
         print(`${status.modelName} — ${status.state}`);
         print(`model   : ${status.modelPath}${status.modelPresent ? '' : ' (not downloaded)'}`);
+        print(`settings: ${status.settingsFile}`);
         print(
           `context : ${status.contextSize} tokens · threads ${status.threads} · RAM ${status.ramUsedMb} MB`,
         );
+        print(`models  : ${engine.models().models.length} in ${engine.modelsDir}`);
         print(`tools   : ${status.toolsAvailable ? 'enabled' : 'disabled (INFAGENT_ALLOW_RUN=0)'}`);
       }
       return 0;
     }
 
+    case 'use': {
+      const id = rest.find((arg) => !arg.startsWith('--'));
+      if (!id) {
+        process.stderr.write('error: usage: infagent chat use <model-id>\n');
+        return 2;
+      }
+      const record = await engine.useModel(id);
+      print(`✔ active model: ${record.settings.name} (${record.settings.id})`);
+      if (!record.present) {
+        print(`  weights missing — run: infagent chat download ${id}`);
+      }
+      return 0;
+    }
+
     case 'download': {
-      if (engine.status().modelPresent) {
-        print(`✔ already present: ${engine.status().modelPath}`);
+      const id = rest.find((arg) => !arg.startsWith('--'));
+      const status = engine.status();
+      if (!id && status.modelPresent) {
+        print(`✔ already present: ${status.modelPath}`);
         return 0;
       }
-      print(`→ downloading ${engine.status().modelUrl}`);
-      const file = await engine.downloadModel();
+      print(`→ downloading ${(id ?? status.modelId) || status.modelName}`);
+      const file = await engine.downloadModel(id);
       print(`✔ ${file}`);
+      return 0;
+    }
+
+    case 'models': {
+      const catalog = engine.models();
+      print(`folder: ${catalog.dir}`);
+      for (const record of catalog.models) {
+        const marker = record.settings.id === catalog.active ? '●' : '○';
+        const size = record.present
+          ? `${(record.bytesOnDisk / 1048576).toFixed(1)} MB`
+          : record.sizeBytes > 0
+            ? `${(record.sizeBytes / 1048576).toFixed(1)} MB (not downloaded)`
+            : 'not downloaded';
+        print(
+          `${marker} ${record.settings.id.padEnd(24)} ${size.padEnd(26)} ${record.settings.description ?? ''}`,
+        );
+      }
       return 0;
     }
 

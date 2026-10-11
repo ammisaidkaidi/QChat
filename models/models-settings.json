@@ -1,0 +1,5 @@
+{
+  "version": "infagent-models/v1",
+  "active": "Qwen3-0.6B-Q4_K_M",
+  "order": ["Qwen3-0.6B-Q4_K_M"]
+}

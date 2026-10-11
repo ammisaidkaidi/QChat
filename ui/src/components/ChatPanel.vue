@@ -3,7 +3,15 @@ import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue';
 
 import { chatApi, streamChat } from '../api';
 import type { ChatStreamHandle } from '../api';
-import type { ChatConfig, ChatEvent, ChatMessage, ChatTurn, EngineStatus } from '../types';
+import type {
+  ChatConfig,
+  ChatEvent,
+  ChatMessage,
+  ChatTurn,
+  EngineStatus,
+  ModelCatalog,
+  ModelRecord,
+} from '../types';
 
 const emit = defineEmits<{
   (event: 'notify', message: string, tone: 'success' | 'error'): void;
@@ -13,6 +21,10 @@ const STORAGE_KEY = 'infagent.chat.v1';
 
 const status = ref<EngineStatus | null>(null);
 const config = ref<ChatConfig | null>(null);
+const catalog = ref<ModelCatalog | null>(null);
+const switching = ref(false);
+/** Turn id whose text was copied last, for the "copied" tick. */
+const copied = ref<string | null>(null);
 const turns = ref<ChatTurn[]>([]);
 const draft = ref('');
 const busy = ref(false);
@@ -90,6 +102,99 @@ watch(
 
 /* ── engine status ───────────────────────────────────────────────────────── */
 
+const activeModel = computed<ModelRecord | null>(
+  () => catalog.value?.models.find((model) => model.settings.id === catalog.value?.active) ?? null,
+);
+
+function formatSize(bytes: number): string {
+  return bytes > 0 ? `${(bytes / 1048576).toFixed(0)} MB` : 'not downloaded';
+}
+
+async function loadModels(): Promise<void> {
+  try {
+    catalog.value = await chatApi.models();
+  } catch (error) {
+    emit('notify', (error as Error).message, 'error');
+  }
+}
+
+/** Switch the model backing the chat; the weights load lazily. */
+async function selectModel(event: Event): Promise<void> {
+  const id = (event.target as HTMLSelectElement).value;
+  if (!id || id === catalog.value?.active) return;
+
+  switching.value = true;
+  try {
+    const response = await chatApi.useModel(id);
+    catalog.value = {
+      dir: response.dir,
+      weightsDir: response.weightsDir,
+      active: response.active,
+      models: response.models,
+    };
+    status.value = response.status;
+    if (!response.status.modelPresent) {
+      emit(
+        'notify',
+        `${response.status.modelName} is selected — download its weights to chat`,
+        'error',
+      );
+    } else {
+      emit('notify', `Now using ${response.status.modelName}`, 'success');
+    }
+  } catch (error) {
+    emit('notify', (error as Error).message, 'error');
+    await loadModels();
+  } finally {
+    switching.value = false;
+  }
+}
+
+/**
+ * Copy a reply to the clipboard.
+ *
+ * The console is often embedded in an iframe where the async clipboard API is
+ * blocked, so a hidden textarea + `execCommand` is kept as a fallback.
+ */
+async function copyText(text: string): Promise<boolean> {
+  const value = text.trim();
+  if (!value) return false;
+
+  try {
+    await navigator.clipboard.writeText(value);
+    return true;
+  } catch {
+    /* fall through to the legacy path */
+  }
+
+  try {
+    const area = document.createElement('textarea');
+    area.value = value;
+    area.setAttribute('readonly', '');
+    area.style.position = 'fixed';
+    area.style.opacity = '0';
+    document.body.appendChild(area);
+    area.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(area);
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
+async function copyTurn(turn: ChatTurn): Promise<void> {
+  const ok = await copyText(turn.text);
+  if (!ok) {
+    emit('notify', 'Copy failed — select the text and copy manually', 'error');
+    return;
+  }
+  copied.value = turn.id;
+  window.setTimeout(() => {
+    if (copied.value === turn.id) copied.value = null;
+  }, 1600);
+}
+
 async function refresh(): Promise<void> {
   try {
     const response = await chatApi.status();
@@ -118,6 +223,7 @@ async function download(): Promise<void> {
       downloading.value = false;
       emit('notify', message, 'error');
     },
+    status.value && !status.value.modelPresent ? status.value.modelId : undefined,
   );
 }
 
@@ -272,11 +378,25 @@ function clear(): void {
 }
 
 /** Drop the last exchange and ask the same question again. */
-function regenerate(): void {
-  const index = turns.value.map((turn) => turn.role).lastIndexOf('user');
+/**
+ * Ask the last question again.
+ *
+ * With a turn id the retry happens right after that exchange (the button on each
+ * reply); without one it repeats the newest question (the composer button).
+ */
+function regenerate(turnId?: string): void {
+  const index = turnId
+    ? turns.value.findIndex((turn) => turn.id === turnId)
+    : turns.value.map((turn) => turn.role).lastIndexOf('user');
   if (index === -1) return;
-  const question = turns.value[index]?.text ?? '';
-  turns.value.splice(index);
+
+  let userIndex = index;
+  while (userIndex >= 0 && turns.value[userIndex]?.role !== 'user') userIndex -= 1;
+  if (userIndex === -1) return;
+
+  const question = turns.value[userIndex]?.text ?? '';
+  if (!question.trim()) return;
+  turns.value.splice(userIndex);
   draft.value = question;
   void send();
 }
@@ -298,6 +418,8 @@ function promptPreview(): string {
     `thinking: ${settings.thinking ? 'on' : 'off (default — a 0.6B model is much faster without it)'}`,
     '',
     'The model runs entirely on this machine through llama.cpp.',
+    `Model settings: ${status.value?.settingsFile ?? '—'}`,
+    `Weights folder: ${status.value?.weightsDir ?? '—'}`,
     'Tool calls are `<tool_call>{"name": "...", "args": {...}}</tool_call>` blocks,',
     'executed against the same script folder as the Scripts tab.',
   ].join('\n');
@@ -305,8 +427,11 @@ function promptPreview(): string {
 
 onMounted(async () => {
   restore();
-  await refresh();
-  window.setInterval(() => void refresh(), 20_000);
+  await Promise.all([refresh(), loadModels()]);
+  window.setInterval(() => {
+    void refresh();
+    if (!switching.value) void loadModels();
+  }, 20_000);
 });
 </script>
 
@@ -321,9 +446,9 @@ onMounted(async () => {
             >
             <div>
               <h2 class="card-title text-base">
-                {{ status?.modelName ?? 'Qwen3-0.6B' }}
-                <span class="badge badge-sm badge-ghost font-mono">{{
-                  status?.quantization ?? 'Q4_K_M'
+                {{ status?.modelName ?? 'Qwen3 0.6B (Q4_K_M)' }}
+                <span v-if="status?.quantization" class="badge badge-sm badge-ghost font-mono">{{
+                  status.quantization
                 }}</span>
               </h2>
               <p class="text-[11px] opacity-70">
@@ -335,6 +460,24 @@ onMounted(async () => {
           </div>
 
           <div class="flex flex-wrap items-center gap-2">
+            <select
+              v-if="catalog && catalog.models.length > 0"
+              class="select select-bordered select-xs max-w-[13rem] font-mono"
+              :value="catalog.active"
+              :disabled="switching || busy"
+              :title="activeModel?.settings.description ?? status?.description ?? ''"
+              aria-label="Active model"
+              @change="selectModel"
+            >
+              <option
+                v-for="model in catalog.models"
+                :key="model.settings.id"
+                :value="model.settings.id"
+              >
+                {{ model.settings.id }}{{ model.present ? '' : ' — needs download' }}
+              </option>
+            </select>
+
             <span
               class="badge badge-sm gap-1"
               :class="{
@@ -353,13 +496,15 @@ onMounted(async () => {
             </span>
 
             <button
-              v-if="status?.state === 'absent'"
+              v-if="status?.state === 'absent' || (activeModel && !activeModel.present)"
               class="btn btn-primary btn-xs"
               :disabled="downloading"
               @click="download"
             >
               <span v-if="downloading" class="loading loading-spinner loading-xs" />
-              {{ downloading ? 'Downloading' : 'Download model' }}
+              {{
+                downloading ? 'Downloading' : `Download ${formatSize(activeModel?.sizeBytes ?? 0)}`
+              }}
             </button>
             <button
               v-if="status?.modelPresent && status?.state === 'ready'"
@@ -544,11 +689,29 @@ onMounted(async () => {
             </div>
 
             <div
-              v-if="turn.role === 'assistant' && turn.stats && !turn.streaming"
-              class="chat-footer text-[10px] opacity-50"
+              v-if="turn.role === 'assistant' && !turn.streaming && (turn.text || turn.stats)"
+              class="chat-footer flex items-center gap-2 text-[10px] opacity-60"
             >
-              {{ turn.stats.totalTokens }} tok · {{ turn.stats.tokensPerSecond }} tok/s ·
-              {{ (turn.stats.durationMs / 1000).toFixed(1) }}s
+              <span v-if="turn.stats" class="opacity-80">
+                {{ turn.stats.totalTokens }} tok · {{ turn.stats.tokensPerSecond }} tok/s ·
+                {{ (turn.stats.durationMs / 1000).toFixed(1) }}s
+              </span>
+              <button
+                v-if="turn.text.trim()"
+                class="btn btn-ghost btn-xs gap-1 px-2"
+                :title="copied === turn.id ? 'Copied to the clipboard' : 'Copy this response'"
+                @click="copyTurn(turn)"
+              >
+                {{ copied === turn.id ? '✓ Copied' : '⧉ Copy' }}
+              </button>
+              <button
+                v-if="turn.text.trim()"
+                class="btn btn-ghost btn-xs gap-1 px-2"
+                title="Ask again with the same message"
+                @click="regenerate(turn.id)"
+              >
+                ↻ Retry
+              </button>
             </div>
           </div>
         </div>
@@ -579,7 +742,7 @@ onMounted(async () => {
               <span class="loading loading-spinner loading-xs" /> Stop
               {{ elapsed ? `${elapsed}s` : '' }}
             </button>
-            <button v-if="turns.length > 1" class="btn btn-ghost btn-sm" @click="regenerate">
+            <button v-if="turns.length > 1" class="btn btn-ghost btn-sm" @click="regenerate()">
               Retry
             </button>
           </div>

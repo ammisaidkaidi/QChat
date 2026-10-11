@@ -1,0 +1,21 @@
+{
+  "version": "infagent-model/v1",
+  "id": "Qwen3-0.6B-Q4_K_M",
+  "name": "Qwen3 0.6B (Q4_K_M)",
+  "file": "Qwen3-0.6B-Q4_K_M.gguf",
+  "family": "qwen3",
+  "quantization": "Q4_K_M",
+  "description": "Small, fast, tool-calling capable local chat model. The default choice on CPU.",
+  "source": {
+    "repo": "unsloth/Qwen3-0.6B-GGUF",
+    "url": "https://huggingface.co/unsloth/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-Q4_K_M.gguf"
+  },
+  "sizeBytes": 396705472,
+  "contextSize": 2048,
+  "threads": 2,
+  "temperature": 0.4,
+  "maxTokens": 512,
+  "thinking": false,
+  "chatWrapper": "chatml",
+  "agentPrompt": ""
+}

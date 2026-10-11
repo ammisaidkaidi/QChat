@@ -97,6 +97,34 @@ await step('second turn in the same session', async () => {
 });
 await page.screenshot({ path: `${OUT}/04-chat-follow-up.png` });
 
+await step('copy a response to the clipboard', async () => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  // Targeted by title: the label itself flips to "Copied" after the click.
+  const button = page.locator('button[title="Copy this response"]').last();
+  await button.click();
+  await page.waitForFunction(
+    () =>
+      [...document.querySelectorAll('.chat-footer button')].some((element) =>
+        element.textContent.includes('Copied'),
+      ),
+    undefined,
+    { timeout: 5_000 },
+  );
+  const clipboard = await page.evaluate(() => navigator.clipboard.readText());
+  if (!clipboard.trim()) throw new Error('the clipboard stayed empty');
+  console.log(`   copied ${clipboard.length} chars: ${JSON.stringify(clipboard.slice(0, 60))}`);
+});
+await page.screenshot({ path: `${OUT}/08-chat-copy.png` });
+
+await step('the header lists the models folder', async () => {
+  const selector = page.locator('select[aria-label="Active model"]');
+  const options = await selector.locator('option').allInnerTexts();
+  console.log(`   options: ${JSON.stringify(options)}`);
+  if (!options.some((option) => option.includes('Qwen3-0.6B-Q4_K_M'))) {
+    throw new Error('the active model is missing from the picker');
+  }
+});
+
 await step('third turn (plain knowledge)', async () => {
   const answer = await ask('In one short sentence: what is the capital of Algeria?');
   console.log(`   answer: ${JSON.stringify(answer.split('\n').slice(0, 2).join(' / '))}`);

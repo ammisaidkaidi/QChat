@@ -98,6 +98,8 @@ export type EngineState =
 
 export interface EngineStatus {
   state: EngineState;
+  /** Identifier from the model's settings file. */
+  modelId: string;
   modelPath: string;
   modelPresent: boolean;
   modelBytes: number;
@@ -105,10 +107,17 @@ export interface EngineStatus {
   downloadProgress: number;
   downloadedBytes: number;
   downloadTotalBytes: number;
+  /** Folder holding the settings files (project `models/`). */
+  modelsDir: string;
+  /** Folder holding the weights (outside the repository). */
+  weightsDir: string;
+  /** Settings file describing the active model. */
+  settingsFile: string;
   contextSize: number;
   threads: number;
   modelName: string;
   quantization: string;
+  description: string;
   toolsAvailable: boolean;
   ramUsedMb: number;
   lastError: string | null;
@@ -149,6 +158,42 @@ export interface ChatTurn {
   stats?: { totalTokens: number; tokensPerSecond: number; durationMs: number };
   error?: string;
   streaming?: boolean;
+}
+
+/** One entry of the `models/` catalogue, as served by `GET /api/models`. */
+export interface ModelRecord {
+  settings: {
+    version: string;
+    id: string;
+    name: string;
+    file: string;
+    family?: string;
+    quantization?: string;
+    description?: string;
+    source?: { url?: string; repo?: string };
+    sizeBytes?: number;
+    contextSize?: number;
+    threads?: number;
+    temperature?: number;
+    maxTokens?: number;
+    thinking?: boolean;
+    chatWrapper?: 'chatml' | 'qwen' | 'auto';
+    agentPrompt?: string;
+  };
+  path: string;
+  settingsPath: string;
+  weightsDir: string;
+  present: boolean;
+  sizeBytes: number;
+  bytesOnDisk: number;
+  active: boolean;
+}
+
+export interface ModelCatalog {
+  dir: string;
+  weightsDir: string;
+  active: string;
+  models: ModelRecord[];
 }
 
 export type ChatEvent =

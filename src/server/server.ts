@@ -157,7 +157,7 @@ export function createServer(options: ServerOptions = {}): Server {
                 contextSize: engine.contextSize,
                 threads: engine.threads,
                 defaultTemperature: 0.4,
-                defaultMaxTokens: 360,
+                defaultMaxTokens: 512,
                 thinking: false,
                 tools: engine.status().toolsAvailable,
               },
@@ -166,9 +166,11 @@ export function createServer(options: ServerOptions = {}): Server {
           }
 
           if (sub === 'model' && segments[3] === 'download' && method === 'POST') {
+            const body = await readBody(req).catch(() => ({}) as Record<string, unknown>);
+            const requested = typeof body['id'] === 'string' ? body['id'] : undefined;
             const sse = openSse(res);
             try {
-              await engine.downloadModel();
+              await engine.downloadModel(requested);
               sse.send({ type: 'done', status: engine.status() });
             } catch (error) {
               sse.send({
@@ -225,6 +227,42 @@ export function createServer(options: ServerOptions = {}): Server {
           }
 
           sendJson(res, 404, { error: `Unknown chat route: ${pathname}` });
+          return;
+        }
+
+        if (segments[1] === 'models') {
+          // GET /api/models — the catalogue of the models folder
+          if (segments.length === 2 && method === 'GET') {
+            sendJson(res, 200, engine.models());
+            return;
+          }
+
+          // PUT /api/models/active — switch model
+          if (segments[2] === 'active' && method === 'PUT') {
+            const body = await readBody(req);
+            const id = typeof body['id'] === 'string' ? body['id'] : '';
+            if (!id) {
+              sendJson(res, 400, { error: 'Body must include a model `id`.' });
+              return;
+            }
+            try {
+              await engine.useModel(id);
+              sendJson(res, 200, { ...engine.models(), status: engine.status() });
+            } catch (error) {
+              sendJson(res, error instanceof ChatError ? 409 : 400, {
+                error: error instanceof Error ? error.message : 'Could not switch model.',
+              });
+            }
+            return;
+          }
+
+          // POST /api/models/refresh — adopt GGUFs that have no settings yet
+          if (segments[2] === 'refresh' && method === 'POST') {
+            sendJson(res, 200, engine.models());
+            return;
+          }
+
+          sendJson(res, 404, { error: `Unknown models route: ${pathname}` });
           return;
         }
 

@@ -1,0 +1,323 @@
+/**
+ * HTTP surface for the agent UI.
+ *
+ * Serves the Vue interface from `ui/dist` and exposes the built-in script
+ * toolbox at `/api/*`. Same origin for UI and API, so the browser never needs
+ * an absolute host (works behind any proxy or tunnel).
+ */
+import { createServer as createHttpServer } from 'node:http';
+import { existsSync, readFileSync, statSync } from 'node:fs';
+import { extname, join, normalize, resolve } from 'node:path';
+import process from 'node:process';
+import { ScriptError, ScriptRegistry } from '../scripts/registry.js';
+import { QwenEngine, ChatError } from '../chat/qwen.js';
+import { openSse } from './sse.js';
+import { VERSION } from '../version.js';
+const MAX_BODY_BYTES = 1_000_000;
+const MIME = {
+    '.html': 'text/html; charset=utf-8',
+    '.js': 'text/javascript; charset=utf-8',
+    '.mjs': 'text/javascript; charset=utf-8',
+    '.css': 'text/css; charset=utf-8',
+    '.json': 'application/json; charset=utf-8',
+    '.svg': 'image/svg+xml',
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.ico': 'image/x-icon',
+    '.woff2': 'font/woff2',
+    '.map': 'application/json; charset=utf-8',
+};
+function sendJson(res, status, payload) {
+    const body = JSON.stringify(payload, null, 2);
+    res.writeHead(status, {
+        'content-type': 'application/json; charset=utf-8',
+        'cache-control': 'no-store',
+    });
+    res.end(body);
+}
+async function readBody(req) {
+    const chunks = [];
+    let size = 0;
+    for await (const chunk of req) {
+        const buffer = chunk;
+        size += buffer.length;
+        if (size > MAX_BODY_BYTES)
+            throw new ScriptError('io', 'Request body too large.');
+        chunks.push(buffer);
+    }
+    if (chunks.length === 0)
+        return {};
+    try {
+        const parsed = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+            throw new ScriptError('io', 'Expected a JSON object body.');
+        }
+        return parsed;
+    }
+    catch {
+        throw new ScriptError('io', 'Body is not valid JSON.');
+    }
+}
+function defaultUiDir() {
+    // src/server/*.ts and dist/server/*.js are both two levels below the repo root.
+    return resolve(new URL('../../ui/dist', import.meta.url).pathname);
+}
+function serveStatic(res, uiDir, pathname) {
+    const safePath = normalize(pathname).replace(/^(\.\.[/\\])+/, '');
+    let file = join(uiDir, safePath);
+    if (!existsSync(file) || statSync(file).isDirectory())
+        file = join(uiDir, 'index.html');
+    if (!existsSync(file)) {
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+        res.end(`<!doctype html><meta charset="utf-8"><title>InfAgent</title>
+       <body style="font:16px/1.6 system-ui;max-width:44rem;margin:12vh auto;padding:0 1.5rem;background:#0f1115;color:#e6e6e6">
+       <h1>InfAgent API is running</h1>
+       <p>The Vue interface has not been built yet. Run <code>npm run ui:build</code> in the project root, then reload.</p>
+       <p>API is live: <a style="color:#7dd3fc" href="/api/health">/api/health</a> · <a style="color:#7dd3fc" href="/api/scripts">/api/scripts</a> · <a style="color:#7dd3fc" href="/api/tools">/api/tools</a></p>
+       </body>`);
+        return;
+    }
+    const type = MIME[extname(file)] ?? 'application/octet-stream';
+    res.writeHead(200, { 'content-type': type });
+    res.end(readFileSync(file));
+}
+export function createServer(options = {}) {
+    const registry = options.registry ?? new ScriptRegistry();
+    const engine = options.engine ?? new QwenEngine({ registry });
+    const uiDir = options.uiDir ?? defaultUiDir();
+    registry.ensureRoot();
+    return createHttpServer((req, res) => {
+        void (async () => {
+            const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
+            const pathname = url.pathname;
+            const method = req.method ?? 'GET';
+            if (!pathname.startsWith('/api/')) {
+                serveStatic(res, uiDir, pathname === '/' ? '/index.html' : pathname);
+                return;
+            }
+            const segments = pathname.split('/').filter(Boolean); // ['api', 'scripts', name, tail]
+            try {
+                if (segments[1] === 'health') {
+                    sendJson(res, 200, {
+                        ok: true,
+                        name: 'InfAgent',
+                        version: VERSION,
+                        node: process.version,
+                        scriptsDir: registry.root,
+                        allowRun: !process.env['INFAGENT_ALLOW_RUN'] || process.env['INFAGENT_ALLOW_RUN'] !== '0',
+                        stats: registry.stats(),
+                    });
+                    return;
+                }
+                if (segments[1] === 'tools') {
+                    sendJson(res, 200, {
+                        tools: registry.toolDefinitions(),
+                        systemPrompt: registry.systemPrompt(),
+                    });
+                    return;
+                }
+                if (segments[1] === 'chat') {
+                    const sub = segments[2];
+                    if (sub === 'status' && method === 'GET') {
+                        sendJson(res, 200, {
+                            status: engine.status(),
+                            config: {
+                                scriptCount: registry.list().length,
+                                modelsDir: engine.modelsDir,
+                                contextSize: engine.contextSize,
+                                threads: engine.threads,
+                                defaultTemperature: 0.4,
+                                defaultMaxTokens: 512,
+                                thinking: false,
+                                tools: engine.status().toolsAvailable,
+                            },
+                        });
+                        return;
+                    }
+                    if (sub === 'model' && segments[3] === 'download' && method === 'POST') {
+                        const body = await readBody(req).catch(() => ({}));
+                        const requested = typeof body['id'] === 'string' ? body['id'] : undefined;
+                        const sse = openSse(res);
+                        try {
+                            await engine.downloadModel(requested);
+                            sse.send({ type: 'done', status: engine.status() });
+                        }
+                        catch (error) {
+                            sse.send({
+                                type: 'error',
+                                message: error instanceof Error ? error.message : 'Download failed.',
+                                status: engine.status(),
+                            });
+                        }
+                        finally {
+                            sse.close();
+                        }
+                        return;
+                    }
+                    if (sub === 'model' && method === 'DELETE') {
+                        await engine.unload();
+                        sendJson(res, 200, { status: engine.status() });
+                        return;
+                    }
+                    if (sub === 'model' && method === 'GET') {
+                        sendJson(res, 200, { status: engine.status() });
+                        return;
+                    }
+                    if (sub === 'completions' && method === 'POST') {
+                        const body = await readBody(req);
+                        const request = body;
+                        if (!Array.isArray(request.messages) || request.messages.length === 0) {
+                            sendJson(res, 400, { error: 'Body must include a non-empty `messages` array.' });
+                            return;
+                        }
+                        const controller = new AbortController();
+                        const sse = openSse(res);
+                        req.on('close', () => controller.abort());
+                        try {
+                            for await (const event of engine.stream(request, controller.signal)) {
+                                if (sse.closed) {
+                                    controller.abort();
+                                    break;
+                                }
+                                sse.send(event, event.type);
+                            }
+                        }
+                        catch (error) {
+                            sse.send({
+                                type: 'error',
+                                message: error instanceof Error ? error.message : 'Generation failed.',
+                            });
+                        }
+                        finally {
+                            sse.close();
+                        }
+                        return;
+                    }
+                    sendJson(res, 404, { error: `Unknown chat route: ${pathname}` });
+                    return;
+                }
+                if (segments[1] === 'models') {
+                    // GET /api/models — the catalogue of the models folder
+                    if (segments.length === 2 && method === 'GET') {
+                        sendJson(res, 200, engine.models());
+                        return;
+                    }
+                    // PUT /api/models/active — switch model
+                    if (segments[2] === 'active' && method === 'PUT') {
+                        const body = await readBody(req);
+                        const id = typeof body['id'] === 'string' ? body['id'] : '';
+                        if (!id) {
+                            sendJson(res, 400, { error: 'Body must include a model `id`.' });
+                            return;
+                        }
+                        try {
+                            await engine.useModel(id);
+                            sendJson(res, 200, { ...engine.models(), status: engine.status() });
+                        }
+                        catch (error) {
+                            sendJson(res, error instanceof ChatError ? 409 : 400, {
+                                error: error instanceof Error ? error.message : 'Could not switch model.',
+                            });
+                        }
+                        return;
+                    }
+                    // POST /api/models/refresh — adopt GGUFs that have no settings yet
+                    if (segments[2] === 'refresh' && method === 'POST') {
+                        sendJson(res, 200, engine.models());
+                        return;
+                    }
+                    sendJson(res, 404, { error: `Unknown models route: ${pathname}` });
+                    return;
+                }
+                if (segments[1] === 'scripts') {
+                    const name = segments[2] ? decodeURIComponent(segments[2]) : undefined;
+                    const tail = segments[3];
+                    if (!name) {
+                        if (method === 'GET') {
+                            sendJson(res, 200, {
+                                scripts: registry.list(),
+                                stats: registry.stats(),
+                                systemPrompt: registry.systemPrompt(),
+                            });
+                            return;
+                        }
+                        if (method === 'POST') {
+                            const body = await readBody(req);
+                            const created = registry.create(body);
+                            sendJson(res, 201, { script: created });
+                            return;
+                        }
+                        sendJson(res, 405, { error: 'Method not allowed.' });
+                        return;
+                    }
+                    if (method === 'GET') {
+                        if (tail === 'prompt') {
+                            sendJson(res, 200, { prompt: registry.agentPrompt(name) });
+                            return;
+                        }
+                        sendJson(res, 200, { script: registry.read(name) });
+                        return;
+                    }
+                    if (method === 'PATCH' || method === 'PUT') {
+                        const body = await readBody(req);
+                        sendJson(res, 200, { script: registry.update(name, body) });
+                        return;
+                    }
+                    if (method === 'DELETE') {
+                        sendJson(res, 200, { removed: registry.remove(name) });
+                        return;
+                    }
+                    if (method === 'POST' && tail === 'run') {
+                        const body = await readBody(req);
+                        const args = body['args'] ?? {};
+                        const result = await registry.run(name, args);
+                        sendJson(res, result.ok ? 200 : 422, { result });
+                        return;
+                    }
+                    sendJson(res, 405, { error: `Method ${method} not allowed on /api/scripts/${name}.` });
+                    return;
+                }
+                sendJson(res, 404, { error: `Unknown API route: ${pathname}` });
+            }
+            catch (error) {
+                if (error instanceof ChatError) {
+                    const status = error.code === 'busy' ? 429 : error.code === 'unavailable' ? 503 : 409;
+                    sendJson(res, status, { error: error.message, code: error.code });
+                    return;
+                }
+                if (error instanceof ScriptError) {
+                    const status = error.code === 'not_found'
+                        ? 404
+                        : error.code === 'exists'
+                            ? 409
+                            : error.code === 'disabled'
+                                ? 403
+                                : 400;
+                    sendJson(res, status, { error: error.message, code: error.code });
+                    return;
+                }
+                sendJson(res, 500, { error: error instanceof Error ? error.message : 'Unexpected error.' });
+            }
+        })();
+    });
+}
+export async function startServer(options = {}) {
+    const port = options.port ?? Number(process.env['PORT'] ?? 8787);
+    const host = options.host ?? process.env['HOST'] ?? '0.0.0.0';
+    const server = createServer(options);
+    await new Promise((resolveListen, rejectListen) => {
+        server.once('error', rejectListen);
+        server.listen(port, host, () => resolveListen());
+    });
+    const address = server.address();
+    const actualPort = typeof address === 'object' && address ? address.port : port;
+    return {
+        server,
+        port: actualPort,
+        url: `http://${host}:${actualPort}`,
+        close: async () => {
+            await new Promise((done) => server.close(() => done()));
+        },
+    };
+}
+//# sourceMappingURL=server.js.map
