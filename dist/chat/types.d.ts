@@ -52,6 +52,8 @@ export type ChatEvent = {
     message: string;
 };
 export interface ChatRequest {
+    /** Allow internet capabilities (webSearch/webFetch) for this turn. */
+    net?: boolean;
     messages: ChatMessage[];
     temperature?: number;
     maxTokens?: number;

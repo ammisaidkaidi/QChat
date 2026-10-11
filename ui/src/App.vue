@@ -3,6 +3,8 @@ import { computed, onMounted, ref, watch } from 'vue';
 
 import { api } from './api';
 import ChatPanel from './components/ChatPanel.vue';
+import McpPanel from './components/McpPanel.vue';
+import SkillsPanel from './components/SkillsPanel.vue';
 import CreateScriptModal from './components/CreateScriptModal.vue';
 import ScriptDetail from './components/ScriptDetail.vue';
 import ScriptsPanel from './components/ScriptsPanel.vue';
@@ -15,18 +17,20 @@ import type {
   ToolDefinition,
 } from './types';
 
-type Tab = 'chat' | 'scripts';
+type Tab = 'chat' | 'scripts' | 'skills' | 'mcp';
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'chat', label: '💬 Chat' },
   { id: 'scripts', label: '🧩 Scripts' },
+  { id: 'skills', label: '📚 Skills' },
+  { id: 'mcp', label: '🔌 MCP' },
 ];
 
 const TAB_KEY = 'infagent.tab';
 const storedTab = ((): Tab => {
   try {
     const value = localStorage.getItem(TAB_KEY);
-    return value === 'scripts' ? 'scripts' : 'chat';
+    return value === 'scripts' || value === 'skills' || value === 'mcp' ? value : 'chat';
   } catch {
     return 'chat';
   }
@@ -202,6 +206,17 @@ onMounted(async () => {
           @changed="loadScripts({ keepSelection: true })"
         />
       </div>
+    </main>
+
+    <main
+      v-else-if="tab === 'skills'"
+      class="mx-auto max-w-7xl p-3 sm:p-4"
+    >
+      <SkillsPanel @notify="notify" />
+    </main>
+
+    <main v-else-if="tab === 'mcp'" class="mx-auto max-w-7xl p-3 sm:p-4">
+      <McpPanel @notify="notify" />
     </main>
 
     <main v-else class="mx-auto max-w-7xl p-3 sm:p-4">

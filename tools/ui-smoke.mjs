@@ -8,7 +8,8 @@
  *   node tools/ui-smoke.mjs                              # in another
  *
  * It walks the Chat tab through a tool turn and a plain turn, opens the
- * settings drawer, switches tabs, reloads to prove localStorage persistence,
+ * settings drawer, switches through the Scripts, Skills and MCP tabs (calling a
+ * bundled MCP tool from the console), reloads to prove localStorage persistence,
  * and fails on any console error, page error or 4xx/5xx API response.
  * Screenshots and a request log land in ./preview.
  */
@@ -135,6 +136,26 @@ await step('switch to the Scripts tab', async () => {
   await page.waitForSelector('text=disk_report', { timeout: 15_000 });
 });
 await page.screenshot({ path: `${OUT}/05-scripts-tab.png` });
+
+await step('switch to the Skills tab', async () => {
+  await page.click('.tabs .tab:has-text("Skills")');
+  await page.waitForSelector('text=web-research', { timeout: 15_000 });
+  const titles = await page.locator('article, .card').filter({ hasText: 'disk-hygiene' }).count();
+  if (titles === 0) throw new Error('the bundled skills are missing from the list');
+});
+await page.screenshot({ path: `${OUT}/09-skills-tab.png` });
+
+await step('switch to the MCP tab and call a tool', async () => {
+  await page.click('.tabs .tab:has-text("MCP")');
+  await page.waitForSelector('text=example__echo', { timeout: 20_000 });
+  const console = page.locator('.card', { hasText: 'Try a tool' }).first();
+  await console.locator('input').fill('{"text": "smoke test"}');
+  await console.locator('button:has-text("Call")').click();
+  await page.waitForSelector('text=✔ ok', { timeout: 20_000 });
+  const echoed = await console.locator('pre').innerText();
+  if (!echoed.includes('smoke test')) throw new Error(`unexpected MCP result: ${echoed}`);
+});
+await page.screenshot({ path: `${OUT}/10-mcp-tab.png` });
 
 await step('back to Chat keeps the conversation', async () => {
   await page.click('.tabs .tab:has-text("Chat")');

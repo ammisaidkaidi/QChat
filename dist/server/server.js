@@ -10,7 +10,10 @@ import { existsSync, readFileSync, statSync } from 'node:fs';
 import { extname, join, normalize, resolve } from 'node:path';
 import process from 'node:process';
 import { ScriptError, ScriptRegistry } from '../scripts/registry.js';
+import { webFetch, webSearch, WebError } from '../capabilities/search.js';
 import { QwenEngine, ChatError } from '../chat/qwen.js';
+import { McpManager } from '../mcp/manager.js';
+import { asSkillInput, SkillError, SkillRegistry } from '../skills/registry.js';
 import { openSse } from './sse.js';
 import { VERSION } from '../version.js';
 const MAX_BODY_BYTES = 1_000_000;
@@ -83,9 +86,15 @@ function serveStatic(res, uiDir, pathname) {
 }
 export function createServer(options = {}) {
     const registry = options.registry ?? new ScriptRegistry();
-    const engine = options.engine ?? new QwenEngine({ registry });
+    const skills = options.skills ?? new SkillRegistry();
+    const mcp = options.mcp ?? new McpManager();
+    const engine = options.engine ?? new QwenEngine({ registry, skills, mcp });
     const uiDir = options.uiDir ?? defaultUiDir();
     registry.ensureRoot();
+    skills.ensureRoot();
+    // Connect the configured servers in the background: the console reports state,
+    // and a slow or broken server never blocks startup.
+    void mcp.startEnabled();
     return createHttpServer((req, res) => {
         void (async () => {
             const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
@@ -194,6 +203,159 @@ export function createServer(options = {}) {
                         return;
                     }
                     sendJson(res, 404, { error: `Unknown chat route: ${pathname}` });
+                    return;
+                }
+                if (segments[1] === 'search') {
+                    if (method !== 'GET') {
+                        sendJson(res, 405, { error: 'Use GET /api/search?q=…' });
+                        return;
+                    }
+                    try {
+                        const query = url.searchParams.get('q') ?? '';
+                        const limit = Number(url.searchParams.get('limit') ?? 5);
+                        const report = await webSearch(query, { limit: Number.isFinite(limit) ? limit : 5 });
+                        sendJson(res, 200, report);
+                    }
+                    catch (error) {
+                        const status = error instanceof WebError && error.code === 'disabled' ? 403 : 400;
+                        sendJson(res, status, { error: error instanceof Error ? error.message : 'Search failed.' });
+                    }
+                    return;
+                }
+                if (segments[1] === 'web' && segments[2] === 'fetch') {
+                    if (method !== 'POST') {
+                        sendJson(res, 405, { error: 'Use POST /api/web/fetch' });
+                        return;
+                    }
+                    try {
+                        const body = await readBody(req);
+                        const page = await webFetch(String(body['url'] ?? ''), {
+                            maxChars: Number(body['maxChars'] ?? 4000) || 4000,
+                        });
+                        sendJson(res, 200, page);
+                    }
+                    catch (error) {
+                        const status = error instanceof WebError && error.code === 'disabled' ? 403 : 400;
+                        sendJson(res, status, {
+                            error: error instanceof Error ? error.message : 'Fetch failed.',
+                        });
+                    }
+                    return;
+                }
+                if (segments[1] === 'skills') {
+                    const name = segments[2] ? decodeURIComponent(segments[2]) : undefined;
+                    try {
+                        if (!name) {
+                            if (method === 'GET') {
+                                sendJson(res, 200, skills.summary());
+                                return;
+                            }
+                            if (method === 'POST') {
+                                const body = await readBody(req);
+                                sendJson(res, 201, { skill: skills.create(asSkillInput(body)) });
+                                return;
+                            }
+                        }
+                        else {
+                            if (method === 'GET') {
+                                sendJson(res, 200, { skill: skills.read(name) });
+                                return;
+                            }
+                            if (method === 'PUT') {
+                                const body = await readBody(req);
+                                sendJson(res, 200, {
+                                    skill: skills.update(name, {
+                                        ...(typeof body['description'] === 'string'
+                                            ? { description: body['description'] }
+                                            : {}),
+                                        ...(typeof body['when'] === 'string' ? { when: body['when'] } : {}),
+                                        ...(typeof body['body'] === 'string' ? { body: body['body'] } : {}),
+                                    }),
+                                });
+                                return;
+                            }
+                            if (method === 'DELETE') {
+                                sendJson(res, 200, { removed: skills.remove(name) });
+                                return;
+                            }
+                        }
+                    }
+                    catch (error) {
+                        const code = error instanceof SkillError ? error.code : 'io';
+                        const status = code === 'not_found' ? 404 : code === 'conflict' ? 409 : 400;
+                        sendJson(res, status, { error: error instanceof Error ? error.message : 'Skill error.' });
+                        return;
+                    }
+                    sendJson(res, 404, { error: `Unknown skills route: ${pathname}` });
+                    return;
+                }
+                if (segments[1] === 'mcp') {
+                    const serverName = segments[3] ? decodeURIComponent(segments[3]) : undefined;
+                    try {
+                        if (segments.length === 2 && method === 'GET') {
+                            sendJson(res, 200, mcp.catalogue());
+                            return;
+                        }
+                        if (segments[2] === 'servers' && segments.length === 2 && method === 'POST') {
+                            const body = await readBody(req);
+                            const name = String(body['name'] ?? '');
+                            const command = String(body['command'] ?? '');
+                            if (!name || !command) {
+                                sendJson(res, 400, { error: 'A server needs a `name` and a `command`.' });
+                                return;
+                            }
+                            const args = Array.isArray(body['args']) ? body['args'].map(String) : [];
+                            mcp.addServer(name, {
+                                command,
+                                args,
+                                ...(typeof body['description'] === 'string'
+                                    ? { description: body['description'] }
+                                    : {}),
+                                enabled: body['enabled'] !== false,
+                            });
+                            await mcp.start(name);
+                            sendJson(res, 201, mcp.catalogue());
+                            return;
+                        }
+                        if (segments[2] === 'servers' && serverName) {
+                            if (method === 'DELETE') {
+                                await mcp.removeServer(serverName);
+                                sendJson(res, 200, mcp.catalogue());
+                                return;
+                            }
+                            if (method === 'POST' && segments[4] === 'start') {
+                                sendJson(res, 200, { server: await mcp.start(serverName) });
+                                return;
+                            }
+                            if (method === 'POST' && segments[4] === 'stop') {
+                                await mcp.stop(serverName);
+                                sendJson(res, 200, { server: mcp.status(serverName) });
+                                return;
+                            }
+                        }
+                        if (segments[2] === 'tools' && method === 'POST') {
+                            const body = await readBody(req);
+                            const tool = String(body['tool'] ?? '');
+                            const args = typeof body['args'] === 'object' && body['args'] !== null
+                                ? body['args']
+                                : {};
+                            const called = await mcp.call(tool, args);
+                            sendJson(res, 200, {
+                                server: called.server,
+                                tool: called.tool,
+                                ok: called.result.ok,
+                                text: called.result.text,
+                                content: called.result.content,
+                                durationMs: called.result.durationMs,
+                            });
+                            return;
+                        }
+                    }
+                    catch (error) {
+                        sendJson(res, 502, { error: error instanceof Error ? error.message : 'MCP error.' });
+                        return;
+                    }
+                    sendJson(res, 404, { error: `Unknown mcp route: ${pathname}` });
                     return;
                 }
                 if (segments[1] === 'models') {

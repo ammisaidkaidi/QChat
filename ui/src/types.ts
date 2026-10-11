@@ -196,6 +196,66 @@ export interface ModelCatalog {
   models: ModelRecord[];
 }
 
+/** One skill in `skills/`. */
+export interface SkillRecord {
+  meta: { version: string; name: string; description: string; when: string; updatedAt: string };
+  file: string;
+  relativePath: string;
+  bytes: number;
+  modifiedAt: string;
+}
+
+export interface SkillDetailFull extends SkillRecord {
+  body: string;
+  source: string;
+}
+
+/** A web search result. */
+export interface SearchResult {
+  title: string;
+  url: string;
+  snippet: string;
+}
+
+export interface SearchReport {
+  provider: string;
+  query: string;
+  results: SearchResult[];
+}
+
+export interface WebPage {
+  url: string;
+  title: string;
+  text: string;
+  truncated: boolean;
+}
+
+/** MCP server state as reported by `/api/mcp`. */
+export interface McpTool {
+  name: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+}
+
+export interface McpServerStatus {
+  name: string;
+  state: 'stopped' | 'starting' | 'ready' | 'error';
+  description: string;
+  command: string;
+  args: string[];
+  enabled: boolean;
+  tools: McpTool[];
+  serverInfo: { name?: string; version?: string };
+  lastError: string | null;
+  stderr: string[];
+}
+
+export interface McpCatalogue {
+  configPath: string;
+  servers: McpServerStatus[];
+  tools: { server: string; name: string; qualified: string; description: string }[];
+}
+
 export type ChatEvent =
   | { type: 'status'; state: EngineState; detail?: string }
   | { type: 'thinking'; text: string }

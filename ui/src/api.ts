@@ -4,6 +4,11 @@
  */
 import type {
   ChatConfig,
+  McpCatalogue,
+  SearchReport,
+  SkillDetailFull,
+  SkillRecord,
+  WebPage,
   ModelCatalog,
   ChatEvent,
   ChatMessage,
@@ -86,6 +91,8 @@ interface ChatStreamOptions {
   maxTokens?: number;
   thinking?: boolean;
   tools?: boolean;
+  /** Allow webSearch/webFetch for this turn. */
+  net?: boolean;
   systemPrompt?: string;
   onEvent: (event: ChatEvent) => void;
   onError: (message: string) => void;
@@ -111,6 +118,7 @@ export function streamChat(options: ChatStreamOptions): ChatStreamHandle {
           ...(options.maxTokens === undefined ? {} : { maxTokens: options.maxTokens }),
           ...(options.thinking === undefined ? {} : { thinking: options.thinking }),
           ...(options.tools === undefined ? {} : { tools: options.tools }),
+          ...(options.net === undefined ? {} : { net: options.net }),
           ...(options.systemPrompt ? { systemPrompt: options.systemPrompt } : {}),
         }),
       });
@@ -166,6 +174,57 @@ export function streamChat(options: ChatStreamOptions): ChatStreamHandle {
 
   return { abort: () => controller.abort() };
 }
+
+/** Skills (`skills/*.md`). */
+export const skillsApi = {
+  list: (): Promise<{ count: number; root: string; skills: SkillRecord[] }> =>
+    request('/api/skills'),
+  read: (name: string): Promise<{ skill: SkillDetailFull }> =>
+    request(`/api/skills/${encodeURIComponent(name)}`),
+  create: (input: {
+    name: string;
+    description: string;
+    when?: string;
+    body?: string;
+  }): Promise<{ skill: SkillDetailFull }> => request('/api/skills', { method: 'POST', body: input }),
+  update: (
+    name: string,
+    patch: { description?: string; when?: string; body?: string },
+  ): Promise<{ skill: SkillDetailFull }> =>
+    request(`/api/skills/${encodeURIComponent(name)}`, { method: 'PUT', body: patch }),
+  remove: (name: string): Promise<{ removed: { name: string } }> =>
+    request(`/api/skills/${encodeURIComponent(name)}`, { method: 'DELETE' }),
+};
+
+/** Internet capabilities. */
+export const webApi = {
+  search: (query: string, limit = 5): Promise<SearchReport> =>
+    request(`/api/search?q=${encodeURIComponent(query)}&limit=${limit}`),
+  fetch: (url: string, maxChars = 4000): Promise<WebPage> =>
+    request('/api/web/fetch', { method: 'POST', body: { url, maxChars } }),
+};
+
+/** MCP server pool. */
+export const mcpApi = {
+  list: (): Promise<McpCatalogue> => request('/api/mcp'),
+  add: (input: {
+    name: string;
+    command: string;
+    args?: string[];
+    description?: string;
+  }): Promise<McpCatalogue> => request('/api/mcp/servers', { method: 'POST', body: input }),
+  remove: (name: string): Promise<McpCatalogue> =>
+    request(`/api/mcp/servers/${encodeURIComponent(name)}`, { method: 'DELETE' }),
+  start: (name: string): Promise<unknown> =>
+    request(`/api/mcp/servers/${encodeURIComponent(name)}/start`, { method: 'POST', body: {} }),
+  stop: (name: string): Promise<unknown> =>
+    request(`/api/mcp/servers/${encodeURIComponent(name)}/stop`, { method: 'POST', body: {} }),
+  call: (
+    tool: string,
+    args: Record<string, unknown>,
+  ): Promise<{ server: string; tool: string; ok: boolean; text: string; durationMs: number }> =>
+    request('/api/mcp/tools', { method: 'POST', body: { tool, args } }),
+};
 
 export const chatApi = {
   status: (): Promise<{ status: EngineStatus; config: ChatConfig }> => request('/api/chat/status'),

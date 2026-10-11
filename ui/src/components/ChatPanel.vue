@@ -43,6 +43,8 @@ const settings = reactive({
   maxTokens: 512,
   thinking: false,
   tools: true,
+  /** Let the model search the internet and read pages. */
+  net: true,
   systemPrompt: '',
 });
 
@@ -338,6 +340,7 @@ async function send(): Promise<void> {
     maxTokens: settings.maxTokens,
     thinking: settings.thinking,
     tools: settings.tools,
+    net: settings.net,
     systemPrompt: settings.systemPrompt,
     onEvent: (event) => {
       applyEvent(assistant, event);
@@ -594,6 +597,10 @@ onMounted(async () => {
           <label class="flex items-center gap-2 text-xs">
             <input v-model="settings.tools" type="checkbox" class="toggle toggle-sm" />
             Let the model call scripts as tools
+          </label>
+          <label class="flex items-center gap-2 text-xs">
+            <input v-model="settings.net" type="checkbox" class="toggle toggle-sm" />
+            Internet access (webSearch, webFetch)
           </label>
           <label class="form-control sm:col-span-2">
             <span class="mb-1 text-xs opacity-70"

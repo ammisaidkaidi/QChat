@@ -1,4 +1,6 @@
+import type { McpManager } from '../mcp/manager.js';
 import { ScriptRegistry } from '../scripts/registry.js';
+import { SkillRegistry } from '../skills/registry.js';
 import { DEFAULT_MODELS_DIR, ModelStore } from './modelStore.js';
 import type { ModelRecord, ModelSettings } from './modelStore.js';
 import type { ChatEvent, ChatRequest, EngineStatus } from './types.js';
@@ -15,6 +17,10 @@ export declare class ChatError extends Error {
 }
 export interface QwenEngineOptions {
     registry?: ScriptRegistry;
+    /** Skill library offered to the model. */
+    skills?: SkillRegistry;
+    /** MCP servers whose tools are callable. */
+    mcp?: McpManager;
     /** Settings folder. Defaults to `INFAGENT_SETTINGS_DIR`, then `<project>/models`. */
     modelsDir?: string;
     /** Weights folder override; defaults to `INFAGENT_WEIGHTS_DIR`. */
@@ -40,6 +46,10 @@ export declare class EventChannel<T> {
 }
 export declare class QwenEngine {
     readonly registry: ScriptRegistry;
+    /** Skill library (`skills/*.md`). */
+    readonly skills: SkillRegistry;
+    /** MCP servers, if any are configured. */
+    readonly mcp: McpManager | null;
     /** Catalogue over `models/`: which model is used, and how. */
     readonly store: ModelStore;
     private readonly idleUnloadMs;

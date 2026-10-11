@@ -11,8 +11,12 @@
  * Dispatch order: built-in callbacks first (`listScripts`, `createScript`, …),
  * then a registered script called by name, then `runScript` with a nested name.
  */
+import { webFetch, webSearch, WebError } from '../capabilities/search.js';
+import type { McpManager } from '../mcp/manager.js';
 import { SCRIPT_NAME_PATTERN, ScriptError } from '../scripts/registry.js';
 import type { ScriptRegistry } from '../scripts/registry.js';
+import type { SkillRegistry } from '../skills/registry.js';
+import { asSkillInput, SkillError } from '../skills/registry.js';
 import type { ChatToolCall } from './types.js';
 
 /** Walk `text` and return every balanced `{…}` slice (string literals respected). */
@@ -60,6 +64,11 @@ export const BUILTIN_TOOLS = [
   'removeScript',
   'runScript',
   'scriptStats',
+  'webSearch',
+  'webFetch',
+  'listSkills',
+  'readSkill',
+  'createSkill',
 ] as const;
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -213,6 +222,8 @@ function isToolName(name: string, knownScripts: readonly string[], strict = fals
   const matches =
     (BUILTIN_TOOLS as readonly string[]).some((tool) => normalize(tool) === target) ||
     knownScripts.some((script) => normalize(script) === target);
+  // MCP names are `server__tool`, which the normaliser folds to `servertool`.
+  if (name.includes('__')) return true;
   return matches || (!strict && SCRIPT_NAME_PATTERN.test(name));
 }
 
@@ -240,6 +251,12 @@ export interface DispatchOptions {
   registry: ScriptRegistry;
   /** Allow `runScript` and script execution at all. */
   allowRun?: boolean;
+  /** Skill library, used by listSkills/readSkill/createSkill. */
+  skills?: SkillRegistry;
+  /** Connected MCP servers, addressed as `server__tool`. */
+  mcp?: McpManager;
+  /** Internet capabilities (webSearch/webFetch). */
+  net?: boolean;
 }
 
 /** Execute one parsed call against the script toolbox. */
@@ -249,6 +266,7 @@ export async function dispatchTool(
 ): Promise<ChatToolCall> {
   const { registry } = options;
   const allowRun = options.allowRun ?? true;
+  const net = options.net ?? false;
   const startedAt = Date.now();
 
   const finish = (result: ChatToolCall): ChatToolCall => ({
@@ -279,7 +297,88 @@ export async function dispatchTool(
       }
     }
 
+    // MCP tools are addressed as `server__tool`.
+    if (options.mcp && name.includes('__')) {
+      const { server, tool, result } = await options.mcp.call(name, call.args);
+      return finish({
+        name,
+        args: call.args,
+        ok: result.ok,
+        result: { server, tool, output: result.text, isError: result.isError },
+        durationMs: result.durationMs,
+      });
+    }
+
     switch (name) {
+      case 'webSearch': {
+        if (!net) throw new WebError('disabled', 'Internet access is switched off for this chat.');
+        const query = String(call.args['query'] ?? call.args['q'] ?? '');
+        const limit = Number(call.args['limit'] ?? 5);
+        const report = await webSearch(query, { limit: Number.isFinite(limit) ? limit : 5 });
+        return finish({
+          name,
+          args: call.args,
+          ok: true,
+          result: report.results.map((item) => ({
+            title: item.title,
+            url: item.url,
+            snippet: item.snippet,
+          })),
+        });
+      }
+
+      case 'webFetch': {
+        if (!net) throw new WebError('disabled', 'Internet access is switched off for this chat.');
+        const url = String(call.args['url'] ?? '');
+        const maxChars = Number(call.args['maxChars'] ?? 4000);
+        const page = await webFetch(url, { maxChars: Number.isFinite(maxChars) ? maxChars : 4000 });
+        return finish({
+          name,
+          args: call.args,
+          ok: true,
+          result: { title: page.title, url: page.url, text: page.text },
+        });
+      }
+
+      case 'listSkills': {
+        const skills = options.skills;
+        if (!skills) throw new SkillError('invalid', 'No skill library is configured.');
+        return finish({
+          name,
+          args: call.args,
+          ok: true,
+          result: skills.list().map((skill) => ({
+            name: skill.meta.name,
+            description: skill.meta.description,
+            when: skill.meta.when,
+          })),
+        });
+      }
+
+      case 'readSkill': {
+        const skills = options.skills;
+        if (!skills) throw new SkillError('invalid', 'No skill library is configured.');
+        const detail = skills.read(String(call.args['name'] ?? ''));
+        return finish({
+          name,
+          args: call.args,
+          ok: true,
+          result: { name: detail.meta.name, description: detail.meta.description, body: detail.body },
+        });
+      }
+
+      case 'createSkill': {
+        const skills = options.skills;
+        if (!skills) throw new SkillError('invalid', 'No skill library is configured.');
+        const created = skills.create(asSkillInput({ ...call.args, overwrite: true }));
+        return finish({
+          name,
+          args: call.args,
+          ok: true,
+          result: { name: created.meta.name, file: created.relativePath },
+        });
+      }
+
       case 'listScripts':
         // Compact projection: the full header blobs drown a 0.6B model in noise.
         return finish({

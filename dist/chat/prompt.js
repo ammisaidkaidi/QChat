@@ -64,8 +64,73 @@ export const TOOL_PROTOCOL = [
     'Emit the <tool_call> block alone, with no prose around it.',
     'A tool result is then supplied to you: answer the user in one short sentence of plain language, without repeating the JSON.',
 ].join('\n');
+/** Tools every installation has: internet access and the skill library. */
+const CAPABILITY_TOOLS = [
+    {
+        name: 'webSearch',
+        description: 'Search the internet and return titles, URLs and snippets. Call this for ' +
+            'current facts, news, prices or anything newer than your training data.',
+        parameters: {
+            type: 'object',
+            properties: {
+                query: { type: 'string', description: 'Search keywords.' },
+                limit: { type: 'number', description: 'How many results, 1-10 (default 5).' },
+            },
+            required: ['query'],
+        },
+    },
+    {
+        name: 'webFetch',
+        description: 'Fetch one http(s) page and return its readable text. Use it after webSearch ' +
+            'to read a result properly.',
+        parameters: {
+            type: 'object',
+            properties: {
+                url: { type: 'string', description: 'Absolute http(s) URL.' },
+                maxChars: { type: 'number', description: 'Character cap (default 4000).' },
+            },
+            required: ['url'],
+        },
+    },
+    {
+        name: 'listSkills',
+        description: 'List the available skills (procedures) with their descriptions.',
+        parameters: { type: 'object', properties: {} },
+    },
+    {
+        name: 'readSkill',
+        description: 'Read the full instructions of one skill before following it.',
+        parameters: {
+            type: 'object',
+            properties: { name: { type: 'string', description: 'Skill name.' } },
+            required: ['name'],
+        },
+    },
+    {
+        name: 'createSkill',
+        description: 'Save a new reusable procedure as a skill after solving a task.',
+        parameters: {
+            type: 'object',
+            properties: {
+                name: { type: 'string', description: 'Lowercase slug.' },
+                description: { type: 'string', description: 'One line describing the skill.' },
+                when: { type: 'string', description: 'When to use it.' },
+                body: { type: 'string', description: 'Markdown steps.' },
+            },
+            required: ['name', 'description'],
+        },
+    },
+];
+/** Tool declaration for one MCP tool, namespaced `server__tool`. */
+function mcpFunctionSchema(server, tool) {
+    return {
+        name: `${server}__${tool.name}`,
+        description: `[MCP: ${server}] ${tool.description || tool.name}`,
+        parameters: { type: 'object', properties: {} },
+    };
+}
 export function buildSystemPrompt(options) {
-    const { records, tools, thinking, identity = IDENTITY } = options;
+    const { records, tools, thinking, identity = IDENTITY, net = false, skills, mcp = [] } = options;
     const parts = [identity];
     if (!thinking) {
         // Qwen3 honours two soft switches: the token itself and an explicit
@@ -76,8 +141,20 @@ export function buildSystemPrompt(options) {
         // Verbatim Qwen3 preamble: the model was fine-tuned on this exact wording,
         // line layout (`<tools>` holds one JSON object per line, not an array) and
         // `arguments` key, so it must not be "improved".
-        parts.push('', '# Tools', '', 'You may call one or more functions to assist with the user query.', '', 'You are provided with function signatures within <tools></tools> XML tags:', '<tools>', ...toolSchemas(records).map((schema) => JSON.stringify(asNativeTool(schema))), '</tools>', '', 'For each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:', '<tool_call>', '{"name": <function-name>, "arguments": <args-json-object>}', '</tool_call>');
+        parts.push('', '# Tools', '', 'You may call one or more functions to assist with the user query.', '', 'You are provided with function signatures within <tools></tools> XML tags:', '<tools>', ...[
+            ...toolSchemas(records),
+            ...(net ? CAPABILITY_TOOLS : []),
+            ...mcp.map((tool) => mcpFunctionSchema(tool.server, tool)),
+        ].map((schema) => JSON.stringify(asNativeTool(schema))), '</tools>', '', 'For each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:', '<tool_call>', '{"name": <function-name>, "arguments": <args-json-object>}', '</tool_call>');
         parts.push('', TOOL_PROTOCOL);
+        if (net) {
+            parts.push('', 'webSearch and webFetch reach the internet; use them instead of guessing about current events.');
+        }
+        if (skills)
+            parts.push('', '# Skills', skills, 'Call readSkill before following a skill.');
+        if (mcp.length > 0) {
+            parts.push('', `MCP tools are prefixed with their server (${[...new Set(mcp.map((tool) => tool.server))].join(', ')}).`);
+        }
         if (records.length === 0) {
             parts.push('', 'No scripts are installed yet; offer to create one with createScript.');
         }

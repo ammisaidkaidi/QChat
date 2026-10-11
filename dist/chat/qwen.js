@@ -14,7 +14,9 @@
 import { existsSync, statSync } from 'node:fs';
 import { basename } from 'node:path';
 import process from 'node:process';
+import { netEnabled } from '../capabilities/search.js';
 import { ScriptRegistry } from '../scripts/registry.js';
+import { SkillRegistry } from '../skills/registry.js';
 import { DEFAULT_MODELS_DIR, ModelStore } from './modelStore.js';
 import { answerUsesResult, asksAboutToolbox, buildSystemPrompt, fallbackAnswer, formatToolResult, stripJsonBlobs, toolResultPrompt, } from './prompt.js';
 import { OutputSplitter } from './splitter.js';
@@ -95,6 +97,10 @@ export class EventChannel {
 }
 export class QwenEngine {
     registry;
+    /** Skill library (`skills/*.md`). */
+    skills;
+    /** MCP servers, if any are configured. */
+    mcp;
     /** Catalogue over `models/`: which model is used, and how. */
     store;
     idleUnloadMs;
@@ -121,6 +127,8 @@ export class QwenEngine {
     downloading = null;
     constructor(options = {}) {
         this.registry = options.registry ?? new ScriptRegistry();
+        this.skills = options.skills ?? new SkillRegistry();
+        this.mcp = options.mcp ?? null;
         this.store = new ModelStore({
             ...(options.modelsDir === undefined ? {} : { dir: options.modelsDir }),
             ...(options.weightsDir === undefined ? {} : { weightsDir: options.weightsDir }),
@@ -421,10 +429,26 @@ export class QwenEngine {
             };
             const useTools = request.tools !== false && this.allowRun;
             const thinking = request.thinking ?? defaults.thinking;
+            // Internet access is a per-request switch so the interface can turn it off.
+            const net = request.net ?? netEnabled();
+            const mcpTools = this.mcp
+                ? this.mcp.tools().map(({ server, tool }) => ({
+                    server,
+                    name: tool.name,
+                    description: tool.description,
+                }))
+                : [];
             const systemPrompt = request.systemPrompt?.trim() ||
                 [
                     model.agentPrompt,
-                    buildSystemPrompt({ records: this.registry.list(), tools: useTools, thinking }),
+                    buildSystemPrompt({
+                        records: this.registry.list(),
+                        tools: useTools,
+                        thinking,
+                        net: useTools && net,
+                        skills: this.skills.listing(),
+                        mcp: useTools ? mcpTools : [],
+                    }),
                 ]
                     .filter(Boolean)
                     .join('\n\n');
@@ -528,6 +552,9 @@ export class QwenEngine {
                     const dispatched = await dispatchTool(call, {
                         registry: this.registry,
                         allowRun: this.allowRun,
+                        skills: this.skills,
+                        net,
+                        ...(this.mcp ? { mcp: this.mcp } : {}),
                     });
                     yield { type: 'tool_result', call: dispatched };
                     lastTool = {

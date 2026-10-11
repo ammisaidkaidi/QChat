@@ -20,7 +20,10 @@
  */
 import process from 'node:process';
 import { ensureEnv, envKeys, envSource, isEnvLoaded, snapshot } from './config/env.js';
+import { webFetch, webSearch } from './capabilities/search.js';
 import { ChatError, QwenEngine } from './chat/qwen.js';
+import { McpManager } from './mcp/manager.js';
+import { SkillRegistry } from './skills/registry.js';
 import { Agent } from './lib/agent.js';
 import { SCRIPT_LANGUAGES } from './scripts/types.js';
 import { ScriptError, defaultRegistry } from './scripts/registry.js';
@@ -36,6 +39,10 @@ Commands:
   serve [--port <n>]         Start the API + Vue interface (default port 8787)
   config                     Show resolved configuration (secrets redacted)
   scripts <subcommand>       Manage agent scripts (see below)
+  skills <subcommand>        Manage skills (list|read|create|remove)
+  mcp <subcommand>           MCP servers (list|start|stop|call)
+  search "<query>"           Internet search, no API key required
+  fetch <url>                Fetch a page as text
   chat <subcommand>          Talk to the local Qwen3 model
   tools                      JSON-schema tool definitions for an LLM
   help                       Show this help
@@ -48,6 +55,7 @@ Chat subcommands:
   ask "<message>"            One-shot question, streamed token by token
       --thinking               Show the model's reasoning block (on stderr)
       --no-tools               Disable script tool calls
+      --no-net                 Disable webSearch / webFetch for this turn
       --temp 0.4 --max 512     Sampling controls
   unload                     Free the model from memory
 
@@ -88,6 +96,23 @@ function flag(name) {
     }
     const inline = args.find((arg) => arg.startsWith(`--${name}=`));
     return inline ? inline.slice(name.length + 3) : undefined;
+}
+/** Flags that expect a value, so `--limit 3` is not mistaken for a query word. */
+const VALUE_FLAGS = new Set(['limit', 'max', 'provider', 'desc', 'when', 'body', 'lang', 'temp']);
+/** Arguments left over once flags and their values are removed. */
+function positional(args) {
+    const out = [];
+    for (let index = 0; index < args.length; index += 1) {
+        const arg = args[index] ?? '';
+        if (!arg.startsWith('--')) {
+            out.push(arg);
+            continue;
+        }
+        const name = arg.replace(/^--/, '').split('=')[0] ?? '';
+        if (!arg.includes('=') && VALUE_FLAGS.has(name))
+            index += 1;
+    }
+    return out;
 }
 function print(value) {
     process.stdout.write(`${value}\n`);
@@ -329,6 +354,7 @@ async function chatCommand(sub, rest) {
                 messages: [{ role: 'user', content: message }],
                 thinking: argv.includes('--thinking'),
                 tools: !argv.includes('--no-tools'),
+                net: !argv.includes('--no-net'),
                 ...(flag('temp') ? { temperature: Number(flag('temp')) } : {}),
                 ...(flag('max') ? { maxTokens: Number(flag('max')) } : {}),
             })) {
@@ -409,6 +435,139 @@ async function main() {
     }
     if (command === 'chat') {
         return await chatCommand(rest[0], rest.slice(1));
+    }
+    if (command === 'search') {
+        const query = positional(rest).join(' ').trim();
+        if (!query) {
+            process.stderr.write('error: usage: infagent search "<query>" [--limit 5]\n');
+            return 2;
+        }
+        const limit = Number(flag('limit') ?? 5) || 5;
+        const report = await webSearch(query, { limit });
+        if (wantsJson) {
+            print(JSON.stringify(report, null, 2));
+        }
+        else {
+            print(`${report.provider} — ${report.results.length} result(s) for "${report.query}"`);
+            for (const item of report.results) {
+                print(`\n• ${item.title}\n  ${item.url}\n  ${item.snippet.slice(0, 200)}`);
+            }
+        }
+        return 0;
+    }
+    if (command === 'fetch') {
+        const url = positional(rest)[0];
+        if (!url) {
+            process.stderr.write('error: usage: infagent fetch <url>\n');
+            return 2;
+        }
+        const page = await webFetch(url, { maxChars: Number(flag('max') ?? 4000) || 4000 });
+        print(wantsJson ? JSON.stringify(page, null, 2) : `${page.title}\n${page.url}\n\n${page.text}`);
+        return 0;
+    }
+    if (command === 'skills') {
+        const skills = new SkillRegistry();
+        const [sub, ...args] = rest;
+        switch (sub) {
+            case undefined:
+            case 'list':
+                print(skills.listing());
+                print(`\nfolder: ${skills.root}`);
+                return 0;
+            case 'read':
+            case 'show': {
+                const name = args.find((arg) => !arg.startsWith('--'));
+                if (!name) {
+                    process.stderr.write('error: usage: infagent skills read <name>\n');
+                    return 2;
+                }
+                const skill = skills.read(name);
+                print(wantsJson ? JSON.stringify(skill, null, 2) : skill.source);
+                return 0;
+            }
+            case 'create': {
+                const name = args.find((arg) => !arg.startsWith('--'));
+                if (!name) {
+                    process.stderr.write('error: usage: infagent skills create <name> --desc "…"\n');
+                    return 2;
+                }
+                const created = skills.create({
+                    name,
+                    description: flag('desc') ?? '',
+                    ...(flag('when') ? { when: flag('when') } : {}),
+                    ...(flag('body') ? { body: flag('body') } : {}),
+                });
+                print(`✔ created ${created.relativePath}`);
+                return 0;
+            }
+            case 'remove': {
+                const name = args.find((arg) => !arg.startsWith('--'));
+                if (!name) {
+                    process.stderr.write('error: usage: infagent skills remove <name>\n');
+                    return 2;
+                }
+                skills.remove(name);
+                print(`✔ removed ${name}`);
+                return 0;
+            }
+            default:
+                process.stderr.write(`error: unknown skills subcommand "${sub}"\n`);
+                return 2;
+        }
+    }
+    if (command === 'mcp') {
+        const manager = new McpManager();
+        const [sub, ...args] = rest;
+        switch (sub) {
+            case undefined:
+            case 'list': {
+                const catalogue = manager.catalogue();
+                print(`config: ${catalogue.configPath}`);
+                for (const server of catalogue.servers) {
+                    print(`\n${server.state === 'ready' ? '●' : '○'} ${server.name} [${server.state}] — ${server.description || server.command}`);
+                    for (const tool of server.tools)
+                        print(`    ${server.name}__${tool.name} — ${tool.description}`);
+                    if (server.lastError)
+                        print(`    error: ${server.lastError}`);
+                }
+                return 0;
+            }
+            case 'start':
+            case 'stop': {
+                const name = args.find((arg) => !arg.startsWith('--'));
+                if (!name) {
+                    process.stderr.write(`error: usage: infagent mcp ${sub} <server>\n`);
+                    return 2;
+                }
+                if (sub === 'start') {
+                    const status = await manager.start(name);
+                    print(`${status.state === 'ready' ? '✔' : '✘'} ${name}: ${status.state}`);
+                    for (const tool of status.tools)
+                        print(`    ${tool.name} — ${tool.description}`);
+                }
+                else {
+                    await manager.stop(name);
+                    print(`✔ stopped ${name}`);
+                }
+                await manager.stopAll();
+                return 0;
+            }
+            case 'call': {
+                const [tool, rawArgs] = [args[0], args[1]];
+                if (!tool) {
+                    process.stderr.write('error: usage: infagent mcp call <server__tool> [json]\n');
+                    return 2;
+                }
+                const parsed = rawArgs ? JSON.parse(rawArgs) : {};
+                const called = await manager.call(tool, parsed);
+                print(called.result.text);
+                await manager.stopAll();
+                return 0;
+            }
+            default:
+                process.stderr.write(`error: unknown mcp subcommand "${sub}"\n`);
+                return 2;
+        }
     }
     if (command === 'run') {
         const task = rest.join(' ').trim();

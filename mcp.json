@@ -1,0 +1,10 @@
+{
+  "servers": {
+    "example": {
+      "command": "node",
+      "args": ["mcp/example-server.mjs"],
+      "description": "Bundled demo server (echo, add, now) — replace or remove it.",
+      "enabled": true
+    }
+  }
+}

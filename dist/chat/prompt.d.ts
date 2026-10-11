@@ -30,6 +30,16 @@ export interface SystemPromptOptions {
     tools: boolean;
     thinking: boolean;
     identity?: string;
+    /** Internet capabilities (webSearch/webFetch) are available. */
+    net?: boolean;
+    /** One line per skill, shown so the model knows what it can load. */
+    skills?: string;
+    /** Tools exposed by connected MCP servers. */
+    mcp?: readonly {
+        server: string;
+        name: string;
+        description: string;
+    }[];
 }
 export declare function buildSystemPrompt(options: SystemPromptOptions): string;
 /** One-line-per-script summary, used by the CLI and the interface. */

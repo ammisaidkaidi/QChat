@@ -168,6 +168,63 @@ console.log(result.envelope);
 const tools = scriptSystemPrompt();
 ```
 
+## Internet, MCP servers and skills
+
+The agent is not limited to the scripts folder. Three capabilities extend what
+it can do, and all three are visible in the interface, the REST API and the CLI.
+
+**Internet search and page fetching** — `webSearch` and `webFetch` are declared
+to the model as tools, so it can look things up on its own:
+
+```bash
+infagent search "node.js lts release" --limit 5
+infagent fetch https://example.com --max 2000
+```
+
+No key is needed: DuckDuckGo's HTML endpoint answers first and Bing's RSS
+endpoint takes over when a network (datacenters, some VPNs) gets the DuckDuckGo
+"select all squares containing a duck" challenge. Set `BRAVE_API_KEY` or
+`TAVILY_API_KEY` and those providers are used instead, because they return
+cleaner data. `INFAGENT_SEARCH_PROVIDER=bing|brave|tavily|duckduckgo` forces an
+order, `INFAGENT_ALLOW_NET=0` switches the whole capability off, and the Chat
+tab has an *Internet access* switch per conversation.
+
+**MCP servers** — `mcp.json` declares stdio servers in the standard
+[JSON-RPC 2.0](https://spec.modelcontextprotocol.io) protocol:
+
+```json
+{ "servers": { "example": { "command": "node", "args": ["mcp/example-server.mjs"], "enabled": true } } }
+```
+
+Enabled servers start in the background at boot, their tools are offered to the
+model as `server__tool` (so `example__echo`), and the console's **MCP** tab can
+connect, disconnect, add servers and call any tool by hand. A dependency-free
+demo server ships in `mcp/example-server.mjs` (`echo`, `add`, `now`) so the loop
+can be verified before a real server is wired in. Prefer a package? Paste
+`npx -y @modelcontextprotocol/server-filesystem .` into the Add server form.
+
+```bash
+infagent mcp list
+infagent mcp call example__now '{}'
+```
+
+**Skills** — reusable procedures kept as markdown files in `skills/`. Only the
+one-line summary (`name`, `description`, `when to use it`) goes into the system
+prompt; the steps are read on demand through `readSkill`, so a long playbook
+costs nothing until it is used. The model can also save a new one with
+`createSkill`, and the **Skills** tab edits them with a live markdown preview.
+
+```bash
+infagent skills list
+infagent skills read web-research
+infagent skills create deploy-check --desc "Pre-deploy sanity checks" --when "Before a release"
+```
+
+Two starter skills are included: `web-research` (search, read two sources,
+answer in three sentences with URLs) and `disk-hygiene` (use the `disk_report`
+script, then propose what to clean). The file format is documented in
+[skills/README.md](skills/README.md).
+
 ## CLI
 
 ```bash
@@ -202,6 +259,18 @@ infagent config | run <task> | --version
 | `POST /api/chat/model/download` | SSE progress while fetching the GGUF |
 | `DELETE /api/chat/model` | unload the model from memory |
 | `POST /api/chat/completions` | SSE token stream (`status`, `thinking`, `token`, `tool_call`, `tool_result`, `reset`, `stats`, `done`) |
+| `GET /api/search?q=…&limit=…` | web search → `{ provider, query, results[] }` |
+| `POST /api/web/fetch` | `{ "url": "…", "maxChars": 4000 }` → `{ title, text, truncated }` |
+| `GET /api/skills` | list skills with their file metadata |
+| `POST /api/skills` | create a skill |
+| `GET /api/skills/:name` | one skill (front matter + body) |
+| `PUT /api/skills/:name` | update a skill |
+| `DELETE /api/skills/:name` | remove a skill |
+| `GET /api/mcp` | `{ configPath, servers[], tools[] }` |
+| `POST /api/mcp/servers` | add a server to `mcp.json` |
+| `DELETE /api/mcp/servers/:name` | remove a server |
+| `POST /api/mcp/servers/:name/start` \| `/stop` | connect or disconnect it |
+| `POST /api/mcp/tools` | `{ "tool": "server__tool", "args": {…} }` → call result |
 | `GET /api/models` | the `models/` catalogue (ids, sizes, active flag) |
 | `PUT /api/models/active` | switch the active model |
 | `POST /api/models/refresh` | adopt GGUFs dropped into the folder |
@@ -210,16 +279,22 @@ infagent config | run <task> | --version
 
 `ui/` is a small console that follows the same design language as the API:
 
-Two tabs in the header: **Chat** and **Scripts**.
+Four tabs in the header: **Chat**, **Scripts**, **Skills** and **MCP**.
 
 - **Chat** — local Qwen3-0.6B conversation: model picker over the `models/`
   folder, download button with progress, streaming bubbles, collapsible
   reasoning, tool-call cards with arguments and results, **copy** and retry on
   every reply, settings (temperature, max tokens, thinking, tools, custom system
-  prompt), Stop / Clear, history kept in `localStorage`
+  prompt), an *Internet access* switch for `webSearch` / `webFetch`, Stop /
+  Clear, history kept in `localStorage`
 - **Scripts** — searchable script list, detail tabs (overview, *Agent prompt*
   copyable, source, run console with the parsed envelope) and the tool console
   that invokes the built-in callbacks as an LLM would
+- **Skills** — clickable list, rendered markdown body, *New* / *Edit* / *Copy* /
+  *Delete*, and the same files the model reads through `readSkill`
+- **MCP** — a card per server with a live state badge (`ready`, `starting`,
+  `error`), connect / disconnect / remove, an add-server form and a *Try a tool*
+  console that calls `server__tool` through the same dispatcher the model uses
 
 ## Environment: `env.txt` is the source of truth
 
@@ -272,10 +347,15 @@ InfAgent/
 │   ├── lib/                   # Agent runtime + public library surface
 │   ├── chat/                  # Qwen3 engine, prompts, tool dispatch, splitter
 │   ├── scripts/               # script toolbox (header, registry, runner)
+│   ├── capabilities/          # web search + page fetching
+│   ├── mcp/                   # stdio JSON-RPC client + server manager
+│   ├── skills/                # markdown skill registry
 │   └── server/                # HTTP API (scripts + chat SSE) + static UI
 ├── ui/                        # Vue 3 + Tailwind + daisyUI interface
 ├── scripts/                   # agent-authored .js / .py callbacks
-├── tests/                     # vitest: env, agent, script toolbox
+├── mcp/                       # bundled example MCP server
+├── skills/                    # markdown skill files (see skills/README.md)
+├── tests/                     # vitest: env, agent, scripts, search, skills, mcp
 └── tools/                     # env generator, GitHub publish helper
 ```
 
