@@ -180,6 +180,26 @@ export function fallbackAnswer(toolName: string, result: unknown): string {
     const envelope = value as { ok: boolean; result?: unknown; error?: unknown };
     value = envelope.ok ? envelope.result : { error: envelope.error ?? 'failed' };
   }
+  // A list of named records reads best as "name — description" pairs.
+  if (
+    Array.isArray(value) &&
+    value.length > 0 &&
+    value.every((item) => typeof item === 'object' && item !== null)
+  ) {
+    const items = value
+      .slice(0, 6)
+      .map((item) => {
+        const record = item as Record<string, unknown>;
+        const name = typeof record['name'] === 'string' ? record['name'] : undefined;
+        const description =
+          typeof record['description'] === 'string' ? record['description'] : undefined;
+        if (!name) return flatten(item).split('\n').filter(Boolean).join(' · ');
+        return description ? `${name} — ${description}` : name;
+      })
+      .filter(Boolean);
+    if (items.length > 0) return `${toolName}: ${items.join('; ')}`;
+  }
+
   const flat = flatten(value).split('\n').filter(Boolean).slice(0, 4).join(' · ');
   return `${toolName} → ${flat || 'done'}`;
 }
