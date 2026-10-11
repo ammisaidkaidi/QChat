@@ -84,10 +84,23 @@ export function extractToolCalls(text: string): { calls: ChatToolCall[]; rest: s
     }
   };
 
-  let rest = text.replace(TOOL_CALL_BLOCK, (_full, body: string) => {
+  // Salvage an unterminated block: the model often stops right after the JSON
+  // (no `</tool_call>`), and the call would otherwise be lost.
+  let tail = '';
+  const lastOpen = text.lastIndexOf('<tool_call>');
+  if (lastOpen !== -1 && text.lastIndexOf('</tool_call>') < lastOpen) {
+    const body = text.slice(lastOpen + '<tool_call>'.length);
+    if (body.trim().startsWith('{')) {
+      scan(body);
+      tail = text.slice(0, lastOpen);
+    }
+  }
+
+  let rest = (tail || text).replace(TOOL_CALL_BLOCK, (_full, body: string) => {
     scan(body);
     return '';
   });
+  if (calls.length === 0) rest = text;
 
   if (calls.length === 0) {
     // No explicit block: accept a fenced JSON object naming a callable tool.

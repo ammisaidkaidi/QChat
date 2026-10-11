@@ -400,6 +400,14 @@ export class QwenEngine {
 
       let combined = yield* runGeneration(prompt);
 
+      // A 0.6B model occasionally returns a completely empty completion. One
+      // silent retry is far cheaper for the user than a blank bubble.
+      if (!visibleText.trim() && extractToolCalls(combined).calls.length === 0) {
+        if (process.env['INFAGENT_CHAT_DEBUG'] === '1')
+          process.stderr.write('[chat] empty reply, retrying\n');
+        combined = yield* runGeneration(prompt);
+      }
+
       let iteration = 0;
       const maxIterations = Math.min(request.maxToolIterations ?? 2, 4);
       let calls = useTools ? extractToolCalls(combined).calls : [];
@@ -455,6 +463,10 @@ export class QwenEngine {
           type: 'token',
           text: `${visibleText.trim() ? ' ' : ''}${fallbackAnswer(lastTool.name, lastTool.result)}`,
         };
+      }
+
+      if (!stripJsonBlobs(visibleText).trim() && !lastTool) {
+        yield { type: 'token', text: 'The model could not produce an answer — please try again.' };
       }
 
       const durationMs = Date.now() - startedAt;

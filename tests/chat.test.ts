@@ -87,6 +87,14 @@ describe('extractToolCalls', () => {
     expect(calls[0]?.name).toBe('listScripts');
   });
 
+  it('salvages an unterminated block when generation stops after the JSON', () => {
+    const { calls, rest } = extractToolCalls(
+      '<think></think>\n<tool_call>\n{"name": "listScripts"}',
+    );
+    expect(calls[0]?.name).toBe('listScripts');
+    expect(rest).not.toContain('listScripts');
+  });
+
   it('ignores malformed blocks and deduplicates', () => {
     const { calls } = extractToolCalls(
       '<tool_call>not json</tool_call><tool_call>{"name":"a","args":{}}</tool_call><tool_call>{"name":"a","args":{}}</tool_call>',
