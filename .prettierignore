@@ -7,3 +7,6 @@ package-lock.json
 !.env.example
 env.txt
 *.md
+
+# Agent-authored scripts are the agent's own output — never reformat them.
+scripts/
