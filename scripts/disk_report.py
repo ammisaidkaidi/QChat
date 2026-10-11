@@ -7,7 +7,7 @@
 @usage python3 scripts/disk_report.py '{"example":true}'
 @params [{"name":"min_free_gb","type":"number","required":false,"description":"Only flag volumes below this free space."}]
 @agent
-  Use this script when: Report free and used disk space for every mounted volume..
+  Use this script when: Report free and used disk space for every mounted volume.
   Call it with JSON arguments: { "min_free_gb": <number> }.
   It prints a single JSON envelope on stdout: { "ok": true, "result": ... }.
   On failure it prints { "ok": false, "error": "..." } and exits non-zero — check the envelope before retrying.
