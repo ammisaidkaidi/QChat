@@ -1,4 +1,5 @@
 import type { McpManager } from '../mcp/manager.js';
+import { AlertBus } from '../capabilities/alerts.js';
 import { ScriptRegistry } from '../scripts/registry.js';
 import { SkillRegistry } from '../skills/registry.js';
 import { DEFAULT_MODELS_DIR, ModelStore } from './modelStore.js';
@@ -21,6 +22,8 @@ export interface QwenEngineOptions {
     skills?: SkillRegistry;
     /** MCP servers whose tools are callable. */
     mcp?: McpManager;
+    /** Alert display shared with the interface. */
+    alerts?: AlertBus;
     /** Settings folder. Defaults to `INFAGENT_SETTINGS_DIR`, then `<project>/models`. */
     modelsDir?: string;
     /** Weights folder override; defaults to `INFAGENT_WEIGHTS_DIR`. */
@@ -50,6 +53,8 @@ export declare class QwenEngine {
     readonly skills: SkillRegistry;
     /** MCP servers, if any are configured. */
     readonly mcp: McpManager | null;
+    /** Where `showAlert` puts alerts and where the interface reads them from. */
+    readonly alerts: AlertBus;
     /** Catalogue over `models/`: which model is used, and how. */
     readonly store: ModelStore;
     private readonly idleUnloadMs;

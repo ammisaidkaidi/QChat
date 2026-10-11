@@ -14,6 +14,7 @@ import { webFetch, webSearch, WebError } from '../capabilities/search.js';
 import { QwenEngine, ChatError } from '../chat/qwen.js';
 import { McpManager } from '../mcp/manager.js';
 import { asSkillInput, SkillError, SkillRegistry } from '../skills/registry.js';
+import { AlertError, asAlertInput } from '../capabilities/alerts.js';
 import { openSse } from './sse.js';
 import { VERSION } from '../version.js';
 const MAX_BODY_BYTES = 1_000_000;
@@ -88,7 +89,16 @@ export function createServer(options = {}) {
     const registry = options.registry ?? new ScriptRegistry();
     const skills = options.skills ?? new SkillRegistry();
     const mcp = options.mcp ?? new McpManager();
-    const engine = options.engine ?? new QwenEngine({ registry, skills, mcp });
+    // One alert bus per server: the engine raises on it through showAlert and the
+    // interface follows it live at GET /api/alerts/stream.
+    const engine = options.engine ??
+        new QwenEngine({
+            registry,
+            skills,
+            mcp,
+            ...(options.alerts ? { alerts: options.alerts } : {}),
+        });
+    const alerts = options.alerts ?? engine.alerts;
     const uiDir = options.uiDir ?? defaultUiDir();
     registry.ensureRoot();
     skills.ensureRoot();
@@ -182,8 +192,16 @@ export function createServer(options = {}) {
                         const controller = new AbortController();
                         const sse = openSse(res);
                         req.on('close', () => controller.abort());
+                        // Iterated by hand so the engine's generator can be closed on
+                        // disconnect: a generator nobody drains never runs its `finally`,
+                        // which would leave the engine marked busy forever.
+                        const turn = engine.stream(request, controller.signal)[Symbol.asyncIterator]();
                         try {
-                            for await (const event of engine.stream(request, controller.signal)) {
+                            for (;;) {
+                                const step = await turn.next();
+                                if (step.done)
+                                    break;
+                                const event = step.value;
                                 if (sse.closed) {
                                     controller.abort();
                                     break;
@@ -192,12 +210,17 @@ export function createServer(options = {}) {
                             }
                         }
                         catch (error) {
-                            sse.send({
-                                type: 'error',
-                                message: error instanceof Error ? error.message : 'Generation failed.',
-                            });
+                            if (!sse.closed) {
+                                sse.send({
+                                    type: 'error',
+                                    message: error instanceof Error ? error.message : 'Generation failed.',
+                                });
+                            }
                         }
                         finally {
+                            // Abort the model call and let the generator finish its cleanup.
+                            controller.abort();
+                            await turn.return?.({ done: true, value: undefined });
                             sse.close();
                         }
                         return;
@@ -218,7 +241,9 @@ export function createServer(options = {}) {
                     }
                     catch (error) {
                         const status = error instanceof WebError && error.code === 'disabled' ? 403 : 400;
-                        sendJson(res, status, { error: error instanceof Error ? error.message : 'Search failed.' });
+                        sendJson(res, status, {
+                            error: error instanceof Error ? error.message : 'Search failed.',
+                        });
                     }
                     return;
                 }
@@ -283,7 +308,9 @@ export function createServer(options = {}) {
                     catch (error) {
                         const code = error instanceof SkillError ? error.code : 'io';
                         const status = code === 'not_found' ? 404 : code === 'conflict' ? 409 : 400;
-                        sendJson(res, status, { error: error instanceof Error ? error.message : 'Skill error.' });
+                        sendJson(res, status, {
+                            error: error instanceof Error ? error.message : 'Skill error.',
+                        });
                         return;
                     }
                     sendJson(res, 404, { error: `Unknown skills route: ${pathname}` });
@@ -356,6 +383,45 @@ export function createServer(options = {}) {
                         return;
                     }
                     sendJson(res, 404, { error: `Unknown mcp route: ${pathname}` });
+                    return;
+                }
+                if (segments[1] === 'alerts') {
+                    const sub = segments[2];
+                    if (sub === undefined && method === 'GET') {
+                        const limit = Number(url.searchParams.get('limit') ?? 20);
+                        sendJson(res, 200, {
+                            count: alerts.size,
+                            alerts: alerts.list(Number.isFinite(limit) ? limit : 20),
+                        });
+                        return;
+                    }
+                    if (sub === undefined && method === 'POST') {
+                        const body = await readBody(req);
+                        const alert = alerts.raise(asAlertInput(body), String(body['source'] ?? 'api'));
+                        sendJson(res, 201, { alert });
+                        return;
+                    }
+                    if (sub === undefined && method === 'DELETE') {
+                        sendJson(res, 200, { removed: alerts.clear() });
+                        return;
+                    }
+                    // Live feed the console listens to: one event per alert, plus an
+                    // opening event so the client knows the channel is up.
+                    if (sub === 'stream' && method === 'GET') {
+                        const sse = openSse(res);
+                        sse.send({ type: 'ready', count: alerts.size }, 'ready');
+                        const unsubscribe = alerts.subscribe((alert) => {
+                            if (sse.closed)
+                                return;
+                            sse.send({ type: 'alert', alert }, 'alert');
+                        });
+                        req.on('close', () => {
+                            unsubscribe();
+                            sse.close();
+                        });
+                        return;
+                    }
+                    sendJson(res, 404, { error: `Unknown alerts route: ${pathname}` });
                     return;
                 }
                 if (segments[1] === 'models') {
@@ -445,6 +511,11 @@ export function createServer(options = {}) {
                 if (error instanceof ChatError) {
                     const status = error.code === 'busy' ? 429 : error.code === 'unavailable' ? 503 : 409;
                     sendJson(res, status, { error: error.message, code: error.code });
+                    return;
+                }
+                if (error instanceof AlertError ||
+                    (error instanceof WebError && error.code === 'blocked')) {
+                    sendJson(res, 400, { error: error.message });
                     return;
                 }
                 if (error instanceof ScriptError) {

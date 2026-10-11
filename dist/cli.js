@@ -20,6 +20,7 @@
  */
 import process from 'node:process';
 import { ensureEnv, envKeys, envSource, isEnvLoaded, snapshot } from './config/env.js';
+import { AlertBus, asAlertInput } from './capabilities/alerts.js';
 import { webFetch, webSearch } from './capabilities/search.js';
 import { ChatError, QwenEngine } from './chat/qwen.js';
 import { McpManager } from './mcp/manager.js';
@@ -74,6 +75,11 @@ Script subcommands:
   run <name> ['{json args}'] Execute a script and print its envelope
   stats [--json]             Script counters
 
+Alert options:
+  --title "text"              Heading shown above the message
+  --level info|success|warning|error   Colour of the alert (default info)
+  --url http://host:port     Console to notify (default INFAGENT_URL or :8787)
+
 Options:
   -h, --help                 Show help
   -v, --version              Show version
@@ -98,7 +104,19 @@ function flag(name) {
     return inline ? inline.slice(name.length + 3) : undefined;
 }
 /** Flags that expect a value, so `--limit 3` is not mistaken for a query word. */
-const VALUE_FLAGS = new Set(['limit', 'max', 'provider', 'desc', 'when', 'body', 'lang', 'temp']);
+const VALUE_FLAGS = new Set([
+    'limit',
+    'max',
+    'provider',
+    'desc',
+    'when',
+    'body',
+    'lang',
+    'temp',
+    'title',
+    'level',
+    'url',
+]);
 /** Arguments left over once flags and their values are removed. */
 function positional(args) {
     const out = [];
@@ -371,6 +389,17 @@ async function chatCommand(sub, rest) {
                     case 'tool_result':
                         print(`   ${event.call.ok ? 'ok' : 'failed'} in ${event.call.durationMs ?? 0}ms`);
                         break;
+                    case 'alert': {
+                        const icon = event.alert.level === 'error'
+                            ? '⛔'
+                            : event.alert.level === 'warning'
+                                ? '⚠️'
+                                : event.alert.level === 'success'
+                                    ? '✅'
+                                    : '🔔';
+                        print(`\n${icon} ${event.alert.title}: ${event.alert.message}`);
+                        break;
+                    }
                     case 'stats':
                         print(`\n— ${event.totalTokens} tok · ${event.tokensPerSecond} tok/s · ${(event.durationMs / 1000).toFixed(1)}s`);
                         break;
@@ -454,6 +483,41 @@ async function main() {
             }
         }
         return 0;
+    }
+    if (command === 'alert') {
+        const message = positional(rest).join(' ').trim();
+        if (!message) {
+            process.stderr.write('error: usage: infagent alert "message" [--title t] [--level info|success|warning|error] [--url http://127.0.0.1:8787]\n');
+            return 2;
+        }
+        const input = asAlertInput({
+            message,
+            ...(flag('title') ? { title: flag('title') } : {}),
+            ...(flag('level') ? { level: flag('level') } : {}),
+        });
+        // Prefer the running console so the alert shows up in the interface; a
+        // standalone CLI has nobody to notify, so a terminal banner is the fallback.
+        const target = (flag('url') ?? process.env['INFAGENT_URL'] ?? 'http://127.0.0.1:8787').replace(/\/$/, '');
+        try {
+            const response = await fetch(`${target}/api/alerts`, {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ ...input, source: 'cli' }),
+                signal: AbortSignal.timeout(4000),
+            });
+            if (!response.ok)
+                throw new Error(`${response.status} ${response.statusText}`);
+            const payload = (await response.json());
+            print(wantsJson ? JSON.stringify(payload, null, 2) : `🔔 alert ${payload.alert.id} sent`);
+            return 0;
+        }
+        catch (error) {
+            const bus = new AlertBus();
+            const alert = bus.raise(input, 'cli');
+            print(`${alert.level === 'error' ? '⛔' : '🔔'} [${alert.title}] ${alert.message}`);
+            print(`(no console answered at ${target} — printed here instead: ${error instanceof Error ? error.message : 'unknown error'})`);
+            return 0;
+        }
     }
     if (command === 'fetch') {
         const url = positional(rest)[0];

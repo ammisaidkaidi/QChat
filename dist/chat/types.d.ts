@@ -1,6 +1,7 @@
 /**
  * Chat-layer types shared by the engine, the HTTP API and the Vue interface.
  */
+import type { Alert } from '../capabilities/alerts.js';
 export type ChatRole = 'system' | 'user' | 'assistant';
 export interface ChatMessage {
     role: ChatRole;
@@ -40,6 +41,11 @@ export type ChatEvent = {
 } | {
     type: 'tool_result';
     call: ChatToolCall;
+}
+/** The model (or anything else) raised a user-facing alert. */
+ | {
+    type: 'alert';
+    alert: Alert;
 } | {
     type: 'stats';
     totalTokens: number;

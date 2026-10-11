@@ -4,6 +4,7 @@ import type { ScriptLanguage } from '../scripts/types.js';
 import { QwenEngine } from '../chat/qwen.js';
 import { McpManager } from '../mcp/manager.js';
 import { SkillRegistry } from '../skills/registry.js';
+import type { AlertBus } from '../capabilities/alerts.js';
 export interface ServerOptions {
     /** Registry backing `/api/scripts`. Defaults to `<cwd>/scripts`. */
     registry?: ScriptRegistry;
@@ -11,6 +12,8 @@ export interface ServerOptions {
     skills?: SkillRegistry;
     /** MCP server pool backing `/api/mcp`. */
     mcp?: McpManager;
+    /** Alert bus backing `/api/alerts` — shared with the chat engine. */
+    alerts?: AlertBus;
     /** Local model engine backing `/api/chat`. Defaults to a CPU Qwen3 engine. */
     engine?: QwenEngine;
     /** Folder with the built Vue app. Defaults to `<repo>/ui/dist`. */

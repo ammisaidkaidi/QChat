@@ -1,8 +1,9 @@
+import type { AlertBus } from '../capabilities/alerts.js';
 import type { McpManager } from '../mcp/manager.js';
 import type { ScriptRegistry } from '../scripts/registry.js';
 import type { SkillRegistry } from '../skills/registry.js';
 import type { ChatToolCall } from './types.js';
-export declare const BUILTIN_TOOLS: readonly ["listScripts", "searchScripts", "readScript", "describeScript", "createScript", "updateScript", "removeScript", "runScript", "scriptStats", "webSearch", "webFetch", "listSkills", "readSkill", "createSkill"];
+export declare const BUILTIN_TOOLS: readonly ["listScripts", "searchScripts", "readScript", "describeScript", "createScript", "updateScript", "removeScript", "runScript", "scriptStats", "webSearch", "webFetch", "listSkills", "readSkill", "createSkill", "showAlert"];
 declare function asRecord(value: unknown): Record<string, unknown> | undefined;
 /**
  * Extract candidate calls from a model reply.
@@ -25,6 +26,8 @@ export interface DispatchOptions {
     mcp?: McpManager;
     /** Internet capabilities (webSearch/webFetch). */
     net?: boolean;
+    /** Alert display, used by showAlert. */
+    alerts?: AlertBus;
 }
 /** Execute one parsed call against the script toolbox. */
 export declare function dispatchTool(call: ChatToolCall, options: DispatchOptions): Promise<ChatToolCall>;

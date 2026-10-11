@@ -64,8 +64,8 @@ export const TOOL_PROTOCOL = [
     'Emit the <tool_call> block alone, with no prose around it.',
     'A tool result is then supplied to you: answer the user in one short sentence of plain language, without repeating the JSON.',
 ].join('\n');
-/** Tools every installation has: internet access and the skill library. */
-const CAPABILITY_TOOLS = [
+/** The internet tools, offered only when internet access is on. */
+const NET_TOOLS = [
     {
         name: 'webSearch',
         description: 'Search the internet and return titles, URLs and snippets. Call this for ' +
@@ -90,6 +90,24 @@ const CAPABILITY_TOOLS = [
                 maxChars: { type: 'number', description: 'Character cap (default 4000).' },
             },
             required: ['url'],
+        },
+    },
+];
+/** Tools that are always available with the toolbox: alerts and the skills. */
+const ALWAYS_ON_TOOLS = [
+    {
+        name: 'showAlert',
+        description: 'Show an alert in the InfAgent interface so the user cannot miss it. Call ' +
+            'this whenever the user asks to be alerted, notified, warned, or asks for ' +
+            'an alert, popup, message box or reminder.',
+        parameters: {
+            type: 'object',
+            properties: {
+                message: { type: 'string', description: 'The text shown to the user.' },
+                title: { type: 'string', description: 'Short heading (optional).' },
+                level: { type: 'string', description: 'info, success, warning or error (default info).' },
+            },
+            required: ['message'],
         },
     },
     {
@@ -143,13 +161,15 @@ export function buildSystemPrompt(options) {
         // `arguments` key, so it must not be "improved".
         parts.push('', '# Tools', '', 'You may call one or more functions to assist with the user query.', '', 'You are provided with function signatures within <tools></tools> XML tags:', '<tools>', ...[
             ...toolSchemas(records),
-            ...(net ? CAPABILITY_TOOLS : []),
+            ...ALWAYS_ON_TOOLS,
+            ...(net ? NET_TOOLS : []),
             ...mcp.map((tool) => mcpFunctionSchema(tool.server, tool)),
         ].map((schema) => JSON.stringify(asNativeTool(schema))), '</tools>', '', 'For each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:', '<tool_call>', '{"name": <function-name>, "arguments": <args-json-object>}', '</tool_call>');
         parts.push('', TOOL_PROTOCOL);
         if (net) {
             parts.push('', 'webSearch and webFetch reach the internet; use them instead of guessing about current events.');
         }
+        parts.push('', 'showAlert puts a message in front of the user; use it when they ask to be alerted.');
         if (skills)
             parts.push('', '# Skills', skills, 'Call readSkill before following a skill.');
         if (mcp.length > 0) {

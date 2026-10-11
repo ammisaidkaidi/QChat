@@ -11,6 +11,7 @@
  * Dispatch order: built-in callbacks first (`listScripts`, `createScript`, …),
  * then a registered script called by name, then `runScript` with a nested name.
  */
+import { AlertError, asAlertInput } from '../capabilities/alerts.js';
 import { webFetch, webSearch, WebError } from '../capabilities/search.js';
 import { SCRIPT_NAME_PATTERN, ScriptError } from '../scripts/registry.js';
 import { asSkillInput, SkillError } from '../skills/registry.js';
@@ -66,6 +67,7 @@ export const BUILTIN_TOOLS = [
     'listSkills',
     'readSkill',
     'createSkill',
+    'showAlert',
 ];
 function asRecord(value) {
     return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -305,6 +307,24 @@ export async function dispatchTool(call, options) {
                     result: { title: page.title, url: page.url, text: page.text },
                 });
             }
+            case 'showAlert': {
+                const alerts = options.alerts;
+                if (!alerts)
+                    throw new AlertError('No alert display is attached to this session.');
+                const alert = alerts.raise(asAlertInput(call.args), call.args['source'] === undefined ? 'agent' : String(call.args['source']));
+                return finish({
+                    name,
+                    args: call.args,
+                    ok: true,
+                    result: {
+                        shown: true,
+                        id: alert.id,
+                        level: alert.level,
+                        title: alert.title,
+                        message: alert.message,
+                    },
+                });
+            }
             case 'listSkills': {
                 const skills = options.skills;
                 if (!skills)
@@ -329,7 +349,11 @@ export async function dispatchTool(call, options) {
                     name,
                     args: call.args,
                     ok: true,
-                    result: { name: detail.meta.name, description: detail.meta.description, body: detail.body },
+                    result: {
+                        name: detail.meta.name,
+                        description: detail.meta.description,
+                        body: detail.body,
+                    },
                 });
             }
             case 'createSkill': {

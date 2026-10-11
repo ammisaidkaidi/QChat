@@ -179,6 +179,7 @@ to the model as tools, so it can look things up on its own:
 ```bash
 infagent search "node.js lts release" --limit 5
 infagent fetch https://example.com --max 2000
+infagent alert "Build finished" --level success
 ```
 
 No key is needed: DuckDuckGo's HTML endpoint answers first and Bing's RSS
@@ -220,6 +221,22 @@ infagent skills read web-research
 infagent skills create deploy-check --desc "Pre-deploy sanity checks" --when "Before a release"
 ```
 
+**Alerts** — the one callback whose output is for the human rather than the
+model. Ask for one in plain language ("show me an alert when the export
+finishes") and the model calls `showAlert`, which pops a toast in the console
+with a title, a message and a level (`info`, `success`, `warning`, `error`):
+
+```bash
+infagent alert "Backup finished" --title "Nightly" --level success
+curl -X POST localhost:8787/api/alerts -d '{"message":"Deploy done","level":"success"}'
+```
+
+The CLI posts to the running console so the toast appears there (and prints a
+terminal banner when no console is up), scripts can do the same over HTTP, and a
+script that raises an alert while the console is closed still shows it once on
+the next visit. Alerts are also mirrored to the desktop notification area when
+the browser allows it and the tab is in the background.
+
 Two starter skills are included: `web-research` (search, read two sources,
 answer in three sentences with URLs) and `disk-hygiene` (use the `disk_report`
 script, then propose what to clean). The file format is documented in
@@ -259,6 +276,10 @@ infagent config | run <task> | --version
 | `POST /api/chat/model/download` | SSE progress while fetching the GGUF |
 | `DELETE /api/chat/model` | unload the model from memory |
 | `POST /api/chat/completions` | SSE token stream (`status`, `thinking`, `token`, `tool_call`, `tool_result`, `reset`, `stats`, `done`) |
+| `GET /api/alerts?limit=…` | recent alerts, newest first |
+| `POST /api/alerts` | raise one (`{ message, title?, level? }`) → 201 |
+| `DELETE /api/alerts` | clear the stored alerts |
+| `GET /api/alerts/stream` | SSE feed: every alert as it is raised |
 | `GET /api/search?q=…&limit=…` | web search → `{ provider, query, results[] }` |
 | `POST /api/web/fetch` | `{ "url": "…", "maxChars": 4000 }` → `{ title, text, truncated }` |
 | `GET /api/skills` | list skills with their file metadata |
@@ -285,8 +306,10 @@ Four tabs in the header: **Chat**, **Scripts**, **Skills** and **MCP**.
   folder, download button with progress, streaming bubbles, collapsible
   reasoning, tool-call cards with arguments and results, **copy** and retry on
   every reply, settings (temperature, max tokens, thinking, tools, custom system
-  prompt), an *Internet access* switch for `webSearch` / `webFetch`, Stop /
-  Clear, history kept in `localStorage`
+  prompt), an *Internet access* switch for `webSearch` / `webFetch`, a *Send a
+  test alert* button, Stop / Clear, history kept in `localStorage`
+- **Alerts** — toasts for anything raised by `showAlert`, the CLI or the API,
+  with a bell counter in the header and *Dismiss* / *Dismiss all*
 - **Scripts** — searchable script list, detail tabs (overview, *Agent prompt*
   copyable, source, run console with the parsed envelope) and the tool console
   that invokes the built-in callbacks as an LLM would
@@ -347,7 +370,7 @@ InfAgent/
 │   ├── lib/                   # Agent runtime + public library surface
 │   ├── chat/                  # Qwen3 engine, prompts, tool dispatch, splitter
 │   ├── scripts/               # script toolbox (header, registry, runner)
-│   ├── capabilities/          # web search + page fetching
+│   ├── capabilities/          # web search, page fetching, alerts
 │   ├── mcp/                   # stdio JSON-RPC client + server manager
 │   ├── skills/                # markdown skill registry
 │   └── server/                # HTTP API (scripts + chat SSE) + static UI

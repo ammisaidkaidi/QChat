@@ -256,6 +256,18 @@ export interface McpCatalogue {
   tools: { server: string; name: string; qualified: string; description: string }[];
 }
 
+export type AlertLevel = 'info' | 'success' | 'warning' | 'error';
+
+/** One user-facing alert, raised by the model, the CLI or the API. */
+export interface AlertRecord {
+  id: string;
+  title: string;
+  message: string;
+  level: AlertLevel;
+  source: string;
+  at: string;
+}
+
 export type ChatEvent =
   | { type: 'status'; state: EngineState; detail?: string }
   | { type: 'thinking'; text: string }
@@ -264,6 +276,8 @@ export type ChatEvent =
   | { type: 'reset' }
   | { type: 'tool_call'; call: ChatToolCall }
   | { type: 'tool_result'; call: ChatToolCall }
+  /** A user-facing alert was raised (showAlert, the CLI or the API). */
+  | { type: 'alert'; alert: AlertRecord }
   | { type: 'stats'; totalTokens: number; tokensPerSecond: number; durationMs: number }
   | { type: 'done' }
   | { type: 'error'; message: string };

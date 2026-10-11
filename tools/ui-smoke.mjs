@@ -8,8 +8,9 @@
  *   node tools/ui-smoke.mjs                              # in another
  *
  * It walks the Chat tab through a tool turn and a plain turn, opens the
- * settings drawer, switches through the Scripts, Skills and MCP tabs (calling a
- * bundled MCP tool from the console), reloads to prove localStorage persistence,
+ * settings drawer (raising a test alert, which must appear as a toast), switches
+ * through the Scripts, Skills and MCP tabs (calling a bundled MCP tool from the
+ * console), reloads to prove localStorage persistence,
  * and fails on any console error, page error or 4xx/5xx API response.
  * Screenshots and a request log land in ./preview.
  */
@@ -90,6 +91,17 @@ await step('settings drawer', async () => {
   await page.waitForSelector('text=Max new tokens', { timeout: 10_000 });
 });
 await page.screenshot({ path: `${OUT}/03-chat-settings.png` });
+
+await step('the alert path shows a toast', async () => {
+  await page.click('button:has-text("Send a test alert")');
+  const toast = page.locator('[data-testid="alert-toast"]', { hasText: 'Test alert' }).first();
+  await toast.waitFor({ timeout: 10_000 });
+  const text = await toast.innerText();
+  console.log(`   toast: ${JSON.stringify(text.split('\n').slice(0, 2).join(' / '))}`);
+});
+await page.waitForTimeout(250); // let the fixed overlay paint before the shot
+await page.screenshot({ path: `${OUT}/11-alert-toast.png` });
+await page.locator('button[title="Dismiss this alert"]').first().click();
 await page.click('button:has-text("Settings")');
 
 await step('second turn in the same session', async () => {

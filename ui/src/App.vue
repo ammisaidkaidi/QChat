@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue';
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 
 import { api } from './api';
+import { alertState, dismissAll, startAlertStream } from './alerts';
+import AlertToasts from './components/AlertToasts.vue';
 import ChatPanel from './components/ChatPanel.vue';
 import McpPanel from './components/McpPanel.vue';
 import SkillsPanel from './components/SkillsPanel.vue';
@@ -57,11 +59,16 @@ const createOpen = ref(false);
 const toast = ref<{ message: string; tone: 'success' | 'error' } | null>(null);
 
 const allowRun = computed(() => health.value?.allowRun ?? true);
+const alertCount = alertState.count;
 
 function notify(message: string, tone: 'success' | 'error'): void {
   toast.value = { message, tone };
   window.setTimeout(() => (toast.value = null), 3200);
 }
+
+onUnmounted(() => {
+  stopAlerts?.();
+});
 
 async function loadScripts(options: { keepSelection?: boolean } = {}): Promise<void> {
   loading.value = true;
@@ -119,7 +126,10 @@ async function onCreated(name: string): Promise<void> {
   await loadScripts({ keepSelection: true });
 }
 
+let stopAlerts: (() => void) | null = null;
+
 onMounted(async () => {
+  stopAlerts = startAlertStream();
   try {
     health.value = await api.health();
     tools.value = (await api.tools()).tools;
@@ -132,6 +142,8 @@ onMounted(async () => {
 
 <template>
   <div class="grid-lines min-h-screen bg-base-100 text-base-content">
+    <!-- Alerts raised by the model (showAlert), the CLI or the API. -->
+    <AlertToasts />
     <header class="sticky top-0 z-20 border-b border-base-300 bg-base-100/85 backdrop-blur">
       <div class="navbar mx-auto max-w-7xl gap-2 px-3">
         <div class="flex flex-1 items-center gap-3">
@@ -167,6 +179,16 @@ onMounted(async () => {
             {{ allowRun ? 'exec enabled' : 'exec disabled' }}
           </span>
         </div>
+
+        <button
+          v-if="alertCount > 0"
+          class="btn btn-ghost btn-sm"
+          title="Dismiss every alert"
+          data-testid="alert-count"
+          @click="dismissAll"
+        >
+          🔔 {{ alertCount }}
+        </button>
 
         <button
           class="btn btn-ghost btn-sm btn-circle"

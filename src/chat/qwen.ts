@@ -26,6 +26,8 @@ import type {
 
 import { netEnabled } from '../capabilities/search.js';
 import type { McpManager } from '../mcp/manager.js';
+import { AlertBus } from '../capabilities/alerts.js';
+import type { Alert } from '../capabilities/alerts.js';
 import { ScriptRegistry } from '../scripts/registry.js';
 import { SkillRegistry } from '../skills/registry.js';
 import { DEFAULT_MODELS_DIR, ModelStore } from './modelStore.js';
@@ -93,6 +95,8 @@ export interface QwenEngineOptions {
   skills?: SkillRegistry;
   /** MCP servers whose tools are callable. */
   mcp?: McpManager;
+  /** Alert display shared with the interface. */
+  alerts?: AlertBus;
   /** Settings folder. Defaults to `INFAGENT_SETTINGS_DIR`, then `<project>/models`. */
   modelsDir?: string;
   /** Weights folder override; defaults to `INFAGENT_WEIGHTS_DIR`. */
@@ -165,6 +169,8 @@ export class QwenEngine {
   public readonly skills: SkillRegistry;
   /** MCP servers, if any are configured. */
   public readonly mcp: McpManager | null;
+  /** Where `showAlert` puts alerts and where the interface reads them from. */
+  public readonly alerts: AlertBus;
   /** Catalogue over `models/`: which model is used, and how. */
   public readonly store: ModelStore;
   private readonly idleUnloadMs: number;
@@ -196,6 +202,7 @@ export class QwenEngine {
     this.registry = options.registry ?? new ScriptRegistry();
     this.skills = options.skills ?? new SkillRegistry();
     this.mcp = options.mcp ?? null;
+    this.alerts = options.alerts ?? new AlertBus();
     this.store = new ModelStore({
       ...(options.modelsDir === undefined ? {} : { dir: options.modelsDir }),
       ...(options.weightsDir === undefined ? {} : { weightsDir: options.weightsDir }),
@@ -512,6 +519,11 @@ export class QwenEngine {
 
     const startedAt = Date.now();
     let totalTokens = 0;
+    // Alerts raised while this turn runs are forwarded to the caller, so a
+    // toast appears the moment showAlert fires. Declared outside the `try`
+    // because a `finally` block cannot see the `try` block's own bindings.
+    const pendingAlerts: Alert[] = [];
+    const stopAlerts = this.alerts.subscribe((alert) => pendingAlerts.push(alert));
 
     try {
       const loaded = await this.ensureLoaded();
@@ -674,9 +686,11 @@ export class QwenEngine {
             allowRun: this.allowRun,
             skills: this.skills,
             net,
+            alerts: this.alerts,
             ...(this.mcp ? { mcp: this.mcp } : {}),
           });
           yield { type: 'tool_result', call: dispatched };
+          for (const alert of pendingAlerts.splice(0)) yield { type: 'alert', alert };
           lastTool = {
             name: dispatched.name,
             result: dispatched.ok ? dispatched.result : dispatched.error,
@@ -724,8 +738,12 @@ export class QwenEngine {
           durationMs > 0 ? Number(((totalTokens / durationMs) * 1000).toFixed(1)) : 0,
         durationMs,
       };
+      // Alerts raised after the last tool result still reach the caller.
+      for (const alert of pendingAlerts.splice(0)) yield { type: 'alert', alert };
+
       yield { type: 'done' };
     } finally {
+      stopAlerts();
       this.busy = false;
       this.touchIdleTimer();
     }

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue';
 
+import { pushAlert, raiseAlert } from '../alerts';
 import { chatApi, streamChat } from '../api';
 import type { ChatStreamHandle } from '../api';
 import type {
@@ -289,6 +290,10 @@ function applyEvent(turn: ChatTurn, event: ChatEvent): void {
       else turn.calls[index] = { ...event.call };
       break;
     }
+    case 'alert':
+      // showAlert fired during this turn: the toast (and bell counter) shows it.
+      pushAlert(event.alert);
+      break;
     case 'stats':
       turn.stats = {
         totalTokens: event.totalTokens,
@@ -301,6 +306,18 @@ function applyEvent(turn: ChatTurn, event: ChatEvent): void {
       break;
     default:
       break;
+  }
+}
+
+async function sendTestAlert(): Promise<void> {
+  try {
+    await raiseAlert({
+      title: 'Test alert',
+      message: 'Sent from the console — the model raises the same thing with showAlert.',
+      level: 'info',
+    });
+  } catch (error) {
+    emit('notify', (error as Error).message, 'error');
   }
 }
 
@@ -602,6 +619,18 @@ onMounted(async () => {
             <input v-model="settings.net" type="checkbox" class="toggle toggle-sm" />
             Internet access (webSearch, webFetch)
           </label>
+          <div class="flex items-center gap-2 sm:col-span-2">
+            <button
+              class="btn btn-ghost btn-xs"
+              title="Raise an alert the same way showAlert does"
+              @click="sendTestAlert"
+            >
+              🔔 Send a test alert
+            </button>
+            <span class="text-[11px] opacity-60">
+              the model calls showAlert on its own when you ask for an alert
+            </span>
+          </div>
           <label class="form-control sm:col-span-2">
             <span class="mb-1 text-xs opacity-70"
               >Custom system prompt (empty = generated with the script toolbox)</span

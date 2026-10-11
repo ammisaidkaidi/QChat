@@ -3,6 +3,7 @@
  * works identically when served by `infagent serve` or the Vite dev proxy.
  */
 import type {
+  AlertRecord,
   ChatConfig,
   McpCatalogue,
   SearchReport,
@@ -54,6 +55,22 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
 
   return payload as T;
 }
+
+export const alertsApi = {
+  list: (limit = 20): Promise<{ count: number; alerts: AlertRecord[] }> =>
+    request<{ count: number; alerts: AlertRecord[] }>(`/api/alerts?limit=${limit}`),
+
+  /** Raise an alert in the console from the interface itself. */
+  raise: (input: { message: string; title?: string; level?: AlertRecord['level'] }): Promise<{
+    alert: AlertRecord;
+  }> => request<{ alert: AlertRecord }>('/api/alerts', { method: 'POST', body: input }),
+
+  clear: (): Promise<{ removed: number }> =>
+    request<{ removed: number }>('/api/alerts', { method: 'DELETE' }),
+
+  /** SSE feed: every alert raised anywhere in the server, live. */
+  streamUrl: '/api/alerts/stream',
+};
 
 export const api = {
   health: (): Promise<Health> => request<Health>('/api/health'),
