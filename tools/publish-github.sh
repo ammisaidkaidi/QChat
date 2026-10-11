@@ -50,8 +50,10 @@ if [[ "$NAME" == */* ]]; then
   REPO_PATH="$NAME"
 	ENDPOINT="$API/orgs/$OWNER/repos"
 else
-  LOGIN="$(curl -sS -H "Authorization: Bearer $TOKEN" -H "Accept: application/vnd.github+json" \
-    "$API/user" | tr ',' '\n' | sed -n 's/.*"login":"\([^"]*\)".*/\1/p' | head -1)"
+  LOGIN="$(curl -sS -H "Authorization: Bearer $TOKEN" -H "Accept: application/vnd.github+json" "$API/user" \
+    | grep -oE '"login"[[:space:]]*:[[:space:]]*"[^"]+"' \
+    | head -1 \
+    | sed -E 's/.*"([^"]+)"$/\1/')"
   if [[ -z "$LOGIN" ]]; then
     echo "error: could not resolve your GitHub login from the token." >&2
     exit 1
