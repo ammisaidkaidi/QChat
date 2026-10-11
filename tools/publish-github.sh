@@ -41,22 +41,31 @@ fi
 
 API="https://api.github.com"
 BRANCH="$(git rev-parse --abbrev-ref HEAD)"
-REPO_PATH="$NAME"
 OWNER="${NAME%%/*}"
 SHORT_NAME="${NAME##*/}"
+
+# Resolve the account login when only a bare repo name was given, so the remote
+# URL is https://github.com/<login>/<repo>.git rather than https://github.com/<repo>.git
+if [[ "$NAME" == */* ]]; then
+  REPO_PATH="$NAME"
+	ENDPOINT="$API/orgs/$OWNER/repos"
+else
+  LOGIN="$(curl -sS -H "Authorization: Bearer $TOKEN" -H "Accept: application/vnd.github+json" \
+    "$API/user" | tr ',' '\n' | sed -n 's/.*"login":"\([^"]*\)".*/\1/p' | head -1)"
+  if [[ -z "$LOGIN" ]]; then
+    echo "error: could not resolve your GitHub login from the token." >&2
+    exit 1
+  fi
+  REPO_PATH="$LOGIN/$SHORT_NAME"
+	ENDPOINT="$API/user/repos"
+fi
 
 payload=$(printf '{"name":"%s","private":%s,"description":"InfAgent — TypeScript agent infrastructure toolkit","has_issues":true,"has_wiki":false,"auto_init":false}' \
   "$SHORT_NAME" "$([[ "$VISIBILITY" == "private" ]] && echo true || echo false)")
 
-if [[ "$NAME" == */* ]]; then
-  endpoint="$API/orgs/$OWNER/repos"
-else
-  endpoint="$API/user/repos"
-fi
-
-echo "→ creating or verifying repository $NAME ($VISIBILITY)…"
+echo "→ creating or verifying repository $REPO_PATH ($VISIBILITY)…"
 http_code=$(curl -sS -o /tmp/infagent-repo.json -w '%{http_code}' \
-  -X POST "$endpoint" \
+  -X POST "$ENDPOINT" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Accept: application/vnd.github+json" \
   -H "X-GitHub-Api-Version: 2022-11-28" \
