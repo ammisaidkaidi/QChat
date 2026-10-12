@@ -118,6 +118,33 @@ export declare function toolboxNames(options: {
         inputSchema?: Record<string, unknown>;
     }[];
 }): string[];
+/** One dispatched call as the guard sees it: what ran, and whether it worked. */
+export interface ToolOutcome {
+    name: string;
+    ok: boolean;
+    result?: unknown;
+    error?: string;
+}
+/**
+ * Is this result an *authoritative* empty?
+ *
+ * Only then may anything say "there are none": an empty list, an empty object,
+ * an empty string or nothing at all. A failed call is never empty — see
+ * `guardToolAnswer`, which reports the failure instead.
+ */
+export declare function resultIsEmpty(result: unknown): boolean;
+export declare function identifyingValues(result: unknown, limit?: number): string[];
+/** Does the reply say nothing is there, while the tool said otherwise? */
+export declare function answerClaimsEmpty(answer: string): boolean;
+/** The error text of a failed outcome, or `null` when the call succeeded. */
+export declare function outcomeError(outcome: ToolOutcome): string | null;
+/** The number the reply states about a list ("three scripts"), if it states one. */
+export declare function statedCount(answer: string): number | null;
+export declare function answerStatesWrongCount(answer: string, count: number): boolean;
+/** Does the reply mention the failure at all? */
+export declare function answerMentionsError(answer: string, error: string): boolean;
+/** What the model should be told after a tool ran: the facts, one readable line. */
+export declare function readableResult(result: unknown, limit?: number): string;
 /**
  * The concrete strings inside a tool result: name fields, scalar values and
  * short strings. They are what a faithful answer is expected to mention.
@@ -132,5 +159,26 @@ export declare function salientValues(result: unknown, limit?: number): string[]
  * vague sentence while the answer was right there.
  */
 export declare function answerUsesResult(answer: string, result: unknown): boolean;
+/**
+ * What the runtime must add to (or put in front of) the model's reply.
+ *
+ * `append` keeps the model's prose and adds the facts; `replace` throws the
+ * reply away because it states the opposite of what the tool returned — a
+ * contradiction the user must never be left with.
+ */
+export type GuardAction = {
+    kind: 'none';
+} | {
+    kind: 'append' | 'replace';
+    text: string;
+};
+/**
+ * Hold the reply against the tool result that produced it.
+ *
+ * The model is free to phrase the answer, but it is not free to contradict the
+ * payload: an empty claim over a non-empty list, or a silent failure, is
+ * corrected by the runtime, which is the only authority on what a tool returned.
+ */
+export declare function guardToolAnswer(answer: string, outcome: ToolOutcome | null): GuardAction;
 export {};
 //# sourceMappingURL=prompt.d.ts.map

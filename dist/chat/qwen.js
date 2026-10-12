@@ -20,7 +20,7 @@ import { ScriptRegistry } from '../scripts/registry.js';
 import { SkillRegistry } from '../skills/registry.js';
 import { DEFAULT_MODELS_DIR, ModelStore } from './modelStore.js';
 import { SystemPromptStore } from './prompts.js';
-import { answerUsesResult, asksAboutToolbox, buildSystemPrompt, fallbackAnswer, formatToolResult, stripJsonBlobs, toolResultPrompt, toolboxNames, } from './prompt.js';
+import { asksAboutToolbox, buildSystemPrompt, formatToolResult, guardToolAnswer, readableResult, stripJsonBlobs, toolResultPrompt, toolboxNames, } from './prompt.js';
 import { MAX_REPAIRS, ProtocolStream, TOOL_CALL_EXAMPLE, envelopeGrammarSchema, envelopeRepairPrompt, grammarEnabled, parseEnvelope, resolveProtocolMode, resultEnvelope, } from './protocol.js';
 import { OutputSplitter } from './splitter.js';
 import { dispatchTool, extractToolCalls } from './tools.js';
@@ -744,7 +744,9 @@ export class QwenEngine {
                         yield { type: 'alert', alert };
                     lastTool = {
                         name: dispatched.name,
-                        result: dispatched.ok ? dispatched.result : dispatched.error,
+                        ok: dispatched.ok === true,
+                        ...(dispatched.ok === true ? { result: dispatched.result } : {}),
+                        ...(dispatched.ok === true ? {} : { error: String(dispatched.error ?? 'failed') }),
                     };
                     const rendered = dispatched.ok
                         ? formatToolResult(dispatched.result)
@@ -755,7 +757,8 @@ export class QwenEngine {
                         result: dispatched.ok === true ? dispatched.result : (dispatched.error ?? 'failed'),
                     };
                     memo.set(signature, { rendered, outcome });
-                    results.push(`${call.name} → ${rendered}`);
+                    // The prompt gets the readable view (names first), not a nested dump.
+                    results.push(`${call.name} → ${dispatched.ok === true ? readableResult(dispatched.result) : rendered}`);
                 }
                 // The runtime — not the model — says what the tools answered, and the
                 // payload is a `tool_result` object the model can only read.
@@ -774,17 +777,18 @@ export class QwenEngine {
             }
             for (const event of splitter.flush())
                 yield event;
-            // A 0.6B model sometimes answers with an empty string or echoes the raw JSON
-            // payload. Guarantee the user still sees the outcome of the tool call.
-            const cleaned = stripJsonBlobs(visibleText).trim();
-            if (lastTool &&
-                (cleaned.length === 0 ||
-                    (cleaned.length < 12 && visibleText.includes('{')) ||
-                    !answerUsesResult(cleaned, lastTool.result))) {
-                yield {
-                    type: 'token',
-                    text: `${visibleText.trim() ? '\n\n' : ''}${fallbackAnswer(lastTool.name, lastTool.result)}`,
-                };
+            // The runtime — not the model — is the authority on what a tool returned.
+            // A reply that ignores the payload gets the facts appended; one that
+            // contradicts it ("there are no scripts" over a six-script list, or a
+            // silent failure) is replaced by them.
+            const guard = guardToolAnswer(stripJsonBlobs(visibleText).trim(), lastTool);
+            if (guard.kind === 'append') {
+                yield { type: 'token', text: `${visibleText.trim() ? '\n\n' : ''}${guard.text}` };
+            }
+            else if (guard.kind === 'replace') {
+                yield { type: 'reset' };
+                visibleText = guard.text;
+                yield { type: 'token', text: guard.text };
             }
             if (!stripJsonBlobs(visibleText).trim() && !lastTool) {
                 yield { type: 'token', text: 'The model could not produce an answer — please try again.' };

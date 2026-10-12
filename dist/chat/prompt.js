@@ -385,8 +385,15 @@ export function fallbackAnswer(toolName, result) {
     let value = result;
     if (typeof value === 'object' && value !== null && 'ok' in value) {
         const envelope = value;
-        value = envelope.ok ? envelope.result : { error: envelope.error ?? 'failed' };
+        // A failed call is reported as a failure — never as an empty list.
+        if (envelope.ok === false) {
+            return `${toolName} → failed: ${trimText(String(envelope.error ?? 'failed'), 160)}`;
+        }
+        value = envelope.result;
     }
+    // The authoritative empty: say so in the tool's own vocabulary.
+    if (resultIsEmpty(value))
+        return `${toolName} → no ${listNoun(toolName)} found.`;
     // A list of named records reads best as "name — description" pairs.
     if (Array.isArray(value) &&
         value.length > 0 &&
@@ -423,11 +430,17 @@ export function asksAboutToolbox(text) {
     // call" no. Forcing listScripts for a definition made small models answer
     // general knowledge with a script listing.
     const directed = /\b(your|you|me|my|available|installed|defined|can you)\b/.test(question);
-    const asksWhich = new RegExp(`\\b(which|how many|list|show|name|tell me)\\b(?:\\s+\\w+){0,3}\\s+${noun}\\b`).test(question);
+    const asksWhich = new RegExp(`\\b(which|what|how many|list|show|name|tell me)\\b(?:\\s+\\w+){0,3}\\s+${noun}\\b`).test(question);
     const availability = new RegExp(`\\b${noun}\\s+(are|is)\\s+(available|installed|there|defined)\\b`).test(question);
     // "do you have any scripts installed?"
     const hasAny = new RegExp(`\\b(any|some)\\s+${noun}\\b`).test(question);
-    return (((asksWhich || availability || hasAny) && directed) ||
+    // A bare command — the user typing the tool name itself ("listscripts",
+    // "list scripts", "list_scripts", "ls scripts"). It must never be answered
+    // with "there are no scripts": the registry knows, so the engine asks it.
+    const bare = question.replace(/[?!.,\s]+$/u, '').trim();
+    const bareCommand = /^(ls|list)[\s_-]*(all[\s_-]*)?(my[\s_-]*)?scripts?$/.test(bare);
+    return (bareCommand ||
+        ((asksWhich || availability || hasAny) && directed) ||
         /\bwhat can you do\b/.test(question) ||
         /\byour\s+(capabilit\w*|tools|scripts)\b/.test(question));
 }
@@ -451,17 +464,27 @@ export function toolResultPrompt(results, userQuestion, options = {}) {
     return [
         // Under the strict protocol the payload is a machine object the model can
         // tell apart from its own call; otherwise it is Qwen3's <tool_response>.
+        ...(envelope ? [envelope, '', 'What the tool returned (readable copy):'] : []),
         ...(envelope
-            ? [envelope]
+            ? results.map((result) => `- ${result}`)
             : results.map((result) => `<tool_response>\n${result}\n</tool_response>`)),
         '',
         `User question: ${userQuestion}`,
         '',
-        'Using only the tool output above, answer that user question in one short sentence of plain language.',
         envelope
-            ? 'Do not repeat the tool JSON and do not call a tool again: reply with the "final" object.'
+            ? [
+                'Answer that question from the tool output above.',
+                'If it listed items, name them; if it listed none, say that it is empty.',
+                'Never say a tool returned nothing — and never say it failed — unless the output above says so.',
+                'Do not repeat the tool JSON and do not call a tool again: reply with the "final" object.',
+            ].join('\n')
+            : 'Using only the tool output above, answer that user question in one short sentence of plain language.',
+        envelope
+            ? ''
             : 'Do not repeat the JSON, do not describe the tool call, and do not emit another <tool_call> block.',
-    ].join('\n');
+    ]
+        .filter((line, index, all) => !(line === '' && all[index - 1] === ''))
+        .join('\n');
 }
 /**
  * Every function name the system prompt lists, in the order it lists them.
@@ -492,6 +515,172 @@ function unwrapEnvelope(result) {
         return envelope.ok ? envelope.result : { error: envelope.error ?? 'failed' };
     }
     return result;
+}
+/**
+ * Is this result an *authoritative* empty?
+ *
+ * Only then may anything say "there are none": an empty list, an empty object,
+ * an empty string or nothing at all. A failed call is never empty — see
+ * `guardToolAnswer`, which reports the failure instead.
+ */
+export function resultIsEmpty(result) {
+    const value = unwrapEnvelope(result);
+    if (value === null || value === undefined)
+        return true;
+    if (typeof value === 'string')
+        return value.trim().length === 0;
+    if (Array.isArray(value))
+        return value.length === 0;
+    if (typeof value === 'object')
+        return Object.keys(value).length === 0;
+    return false;
+}
+/** `listScripts` → `scripts`, `list_files` → `files`: a noun for an empty list. */
+function listNoun(toolName) {
+    const stripped = toolName.replace(/^(list|search|find|get)[_\s-]*/i, '').trim();
+    return stripped.length >= 3 ? stripped.charAt(0).toLowerCase() + stripped.slice(1) : 'items';
+}
+/**
+ * The values that identify the payload's items: the `name` (or `title`, `id`, …)
+ * of every record in a list.
+ *
+ * These — and not the parameter names a listing also carries — are what a
+ * faithful answer has to mention. Matching on `name`/`path`/`limit` instead made
+ * "you need to specify a name" look like an answer that used the result, which
+ * is exactly how a wrong "there are no scripts" survived the factual fallback.
+ */
+const IDENTIFIER_KEYS = ['name', 'title', 'id', 'key', 'label', 'tool', 'script', 'file', 'path'];
+export function identifyingValues(result, limit = 12) {
+    const value = unwrapEnvelope(result);
+    const found = [];
+    const take = (item) => {
+        if (typeof item !== 'object' || item === null)
+            return;
+        const record = item;
+        for (const key of IDENTIFIER_KEYS) {
+            const candidate = record[key];
+            if (typeof candidate === 'string' && candidate.trim().length >= 2) {
+                found.push(candidate.trim());
+                return;
+            }
+        }
+    };
+    if (Array.isArray(value)) {
+        for (const item of value) {
+            if (found.length >= limit)
+                break;
+            take(item);
+        }
+    }
+    else {
+        take(value);
+    }
+    return [...new Set(found)];
+}
+/**
+ * Words that carry no evidence: the parameter names of the toolbox itself and
+ * structural JSON words. An answer that only repeats them has not read anything.
+ */
+const NON_EVIDENCE = new Set([
+    'args',
+    'argument',
+    'arguments',
+    'error',
+    'false',
+    'id',
+    'input',
+    'language',
+    'name',
+    'none',
+    'ok',
+    'parameters',
+    'path',
+    'result',
+    'true',
+    'type',
+    'value',
+]);
+/** Does the reply say nothing is there, while the tool said otherwise? */
+export function answerClaimsEmpty(answer) {
+    const text = answer.toLowerCase();
+    return (/\b(no|zero|0)\s+(scripts?|tools?|files?|results?|items?|records?|matches|entries|rows?|data)\b/.test(text) ||
+        /\bthere (are|is) (no|not any|none)\b/.test(text) ||
+        /\b(nothing|none)\s+(was|were|is|are|found|available|registered|returned)\b/.test(text) ||
+        /\b(empty|no results?|came back empty)\b/.test(text) ||
+        /\b(did not|didn't|could not|couldn't)\s+(find|return|list)\b/.test(text));
+}
+/** The error text of a failed outcome, or `null` when the call succeeded. */
+export function outcomeError(outcome) {
+    if (outcome.ok)
+        return null;
+    const text = String(outcome.error ?? '').trim();
+    if (text)
+        return text;
+    const value = outcome.result;
+    return typeof value === 'string' && value.trim() ? value.trim() : 'failed';
+}
+/**
+ * Does the reply state a count that the payload contradicts?
+ *
+ * "You have three scripts." over a six-script list is not a summary of the
+ * payload, it is a different claim about it — the same class of error as
+ * "there are none", one number later. Only an explicit count is judged here;
+ * prose that mentions no number is left to the model.
+ */
+const NUMBER_WORDS = {
+    one: 1,
+    two: 2,
+    three: 3,
+    four: 4,
+    five: 5,
+    six: 6,
+    seven: 7,
+    eight: 8,
+    nine: 9,
+    ten: 10,
+    eleven: 11,
+    twelve: 12,
+};
+/** The number the reply states about a list ("three scripts"), if it states one. */
+export function statedCount(answer) {
+    const match = /\b(\d{1,3}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+(scripts?|tools?|files?|items?|results?|records?|entries|rows?|matches)\b/.exec(answer.toLowerCase());
+    if (!match)
+        return null;
+    const value = NUMBER_WORDS[match[1] ?? ''] ?? Number(match[1]);
+    return Number.isFinite(value) ? value : null;
+}
+export function answerStatesWrongCount(answer, count) {
+    const stated = statedCount(answer);
+    return stated !== null && stated !== count;
+}
+/** Does the reply mention the failure at all? */
+export function answerMentionsError(answer, error) {
+    const text = answer.toLowerCase();
+    const target = error.toLowerCase();
+    if (target.length >= 4 && text.includes(target))
+        return true;
+    return /\b(error|failed|failure|could not|couldn't|refused|denied|unavailable|not supported)\b/.test(text);
+}
+/** What the model should be told after a tool ran: the facts, one readable line. */
+export function readableResult(result, limit = 8) {
+    const value = unwrapEnvelope(result);
+    if (Array.isArray(value) && value.length > 0) {
+        const pairs = value
+            .slice(0, limit)
+            .map((item) => {
+            if (typeof item !== 'object' || item === null)
+                return String(item);
+            const record = item;
+            const name = identifyingValues([item])[0] ?? flatten(item).split('\n')[0] ?? '';
+            const description = typeof record['description'] === 'string' ? record['description'].trim() : '';
+            return description ? `${name} — ${description}` : name;
+        })
+            .filter(Boolean);
+        if (pairs.length > 0)
+            return pairs.join('; ');
+    }
+    const flat = flatten(value).split('\n').filter(Boolean).slice(0, 6).join('; ');
+    return flat;
 }
 /**
  * The concrete strings inside a tool result: name fields, scalar values and
@@ -533,10 +722,72 @@ export function salientValues(result, limit = 12) {
  * vague sentence while the answer was right there.
  */
 export function answerUsesResult(answer, result) {
-    const values = salientValues(result).filter((value) => Number.isNaN(Number(value)));
+    const lower = answer.toLowerCase();
+    // A list of records is judged on the values that identify its items.
+    const identifiers = identifyingValues(result);
+    if (identifiers.length > 0) {
+        return identifiers.some((value) => lower.includes(value.toLowerCase()));
+    }
+    const values = salientValues(result).filter((value) => Number.isNaN(Number(value)) && !NON_EVIDENCE.has(value.toLowerCase().trim()));
     if (values.length === 0)
         return true;
-    const lower = answer.toLowerCase();
     return values.some((value) => lower.includes(value.toLowerCase()));
+}
+/**
+ * Hold the reply against the tool result that produced it.
+ *
+ * The model is free to phrase the answer, but it is not free to contradict the
+ * payload: an empty claim over a non-empty list, or a silent failure, is
+ * corrected by the runtime, which is the only authority on what a tool returned.
+ */
+export function guardToolAnswer(answer, outcome) {
+    if (!outcome)
+        return { kind: 'none' };
+    const text = answer.trim();
+    const facts = fallbackAnswer(outcome.name, {
+        ok: outcome.ok,
+        ...(outcome.result === undefined ? {} : { result: outcome.result }),
+        ...(outcome.error === undefined ? {} : { error: outcome.error }),
+    });
+    // A failure is never an empty result: say what went wrong, in any case.
+    if (!outcome.ok) {
+        const error = outcomeError(outcome);
+        if (text.length === 0)
+            return { kind: 'replace', text: facts };
+        // "you have no scripts" over a failed call is false in the same way: replace.
+        if (answerClaimsEmpty(text))
+            return { kind: 'replace', text: facts };
+        if (error && !answerMentionsError(text, error))
+            return { kind: 'append', text: facts };
+        return { kind: 'none' };
+    }
+    // An empty payload: the only truthful answer is that there is nothing.
+    if (resultIsEmpty(outcome.result)) {
+        if (text.length === 0)
+            return { kind: 'replace', text: facts };
+        // The model may have phrased the emptiness differently; do not contradict it.
+        return { kind: 'none' };
+    }
+    // Non-empty payload: a reply that says there is nothing is false.
+    if (answerClaimsEmpty(text))
+        return { kind: 'replace', text: facts };
+    // A list of named items the reply counts wrongly ("three scripts" over six)
+    // is as misleading as one it denies entirely.
+    const items = identifyingValues(outcome.result);
+    const stated = statedCount(text);
+    if (items.length > 1 && stated !== null && stated !== items.length) {
+        return { kind: 'replace', text: facts };
+    }
+    // Nothing usable came back (an empty reply, or the echoed JSON that
+    // `stripJsonBlobs` already removed): the facts stand on their own.
+    if (text.length === 0)
+        return { kind: 'append', text: facts };
+    // The right count is a use of the payload even when no name is repeated.
+    if (stated !== null && stated === items.length)
+        return { kind: 'none' };
+    // A reply that ignored the payload entirely gets the facts underneath it.
+    if (!answerUsesResult(text, outcome.result))
+        return { kind: 'append', text: facts };
+    return { kind: 'none' };
 }
 //# sourceMappingURL=prompt.js.map
