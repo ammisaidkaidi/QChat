@@ -1,0 +1,22 @@
+{
+  "version": "infagent-model/v1",
+  "id": "SmolLM2-360M-Instruct-Q4_K_M",
+  "name": "SmolLM2 360M Instruct (Q4_K_M)",
+  "file": "SmolLM2-360M-Instruct-Q4_K_M.gguf",
+  "family": "smollm2",
+  "quantization": "Q4_K_M",
+  "description": "Hugging Face SmolLM2 360M instruct \u2014 a chat-first toy model for quick offline answers. Apache-2.0.",
+  "source": {
+    "repo": "bartowski/SmolLM2-360M-Instruct-GGUF",
+    "url": "https://huggingface.co/bartowski/SmolLM2-360M-Instruct-GGUF/resolve/main/SmolLM2-360M-Instruct-Q4_K_M.gguf"
+  },
+  "sizeBytes": 270590880,
+  "contextSize": 4096,
+  "threads": 2,
+  "temperature": 0.6,
+  "maxTokens": 512,
+  "thinking": false,
+  "style": "plain",
+  "chatWrapper": "auto",
+  "agentPrompt": ""
+}

@@ -154,6 +154,14 @@ const CALL_FORMAT: Record<ModelStyle, string[]> = {
     '[{"name": <function-name>, "arguments": <args-json-object>}, …]',
     'If no function is needed, answer the user in plain text instead.',
   ],
+  // The ChatML/Hermes convention: what most non-Qwen3 small models were trained
+  // on, and what the parser reads most robustly.
+  plain: [
+    'To call a function, reply with a JSON object inside <tool_call></tool_call> tags, on its own, with no other text:',
+    '<tool_call>',
+    '{"name": <function-name>, "arguments": <args-json-object>}',
+    '</tool_call>',
+  ],
 };
 
 export interface SystemPromptOptions {
@@ -355,10 +363,10 @@ export function buildSystemPrompt(options: SystemPromptOptions): string {
       '',
     );
 
-    if (style === 'qwen3') {
-      // Verbatim Qwen3 preamble: the model was fine-tuned on this exact wording,
-      // line layout (`<tools>` holds one JSON object per line, not an array) and
-      // `arguments` key, so it must not be "improved".
+    if (style === 'qwen3' || style === 'plain') {
+      // Verbatim Qwen3 preamble: the model was tuned on this exact wording, line
+      // layout (`<tools>` holds one JSON object per line, not an array) and
+      // `arguments` key — and the ChatML/Hermes family expects the same block.
       parts.push(
         'You are provided with function signatures within <tools></tools> XML tags:',
         '<tools>',
@@ -508,14 +516,27 @@ export function fallbackAnswer(toolName: string, result: unknown): string {
 export function asksAboutToolbox(text: string): boolean {
   const question = text.toLowerCase();
   const noun = '(scripts?|tools?|functions?|callbacks?)';
-  return [
-    new RegExp(`\\b(which|what|how many|list|show|tell me|name)\\b(?:\\s+\\w+){0,2}\\s+${noun}\\b`),
-    new RegExp(`\\bany\\s+${noun}\\b`),
-    new RegExp(`\\b${noun}\\s+(are|is)\\s+(available|installed|there|defined)\\b`),
-    /\bwhat can you do\b/,
-    /\byour\s+(capabilit\w*|tools|scripts)\b/,
-  ].some((pattern) => pattern.test(question));
+  // A question is only about *this* agent's toolbox when it points at the agent
+  // or at availability: "which scripts do you have" yes, "what is a function
+  // call" no. Forcing listScripts for a definition made small models answer
+  // general knowledge with a script listing.
+  const directed = /\b(your|you|me|my|available|installed|defined|can you)\b/.test(question);
+  const asksWhich = new RegExp(
+    `\\b(which|how many|list|show|name|tell me)\\b(?:\\s+\\w+){0,3}\\s+${noun}\\b`,
+  ).test(question);
+  const availability = new RegExp(
+    `\\b${noun}\\s+(are|is)\\s+(available|installed|there|defined)\\b`,
+  ).test(question);
+  // "do you have any scripts installed?"
+  const hasAny = new RegExp(`\\b(any|some)\\s+${noun}\\b`).test(question);
+
+  return (
+    ((asksWhich || availability || hasAny) && directed) ||
+    /\bwhat can you do\b/.test(question) ||
+    /\byour\s+(capabilit\w*|tools|scripts)\b/.test(question)
+  );
 }
+
 
 export function stripJsonBlobs(text: string): string {
   return text

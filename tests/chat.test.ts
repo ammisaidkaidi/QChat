@@ -230,6 +230,18 @@ describe('chat prompt styles', () => {
     expect(parsed.function.description.length).toBeLessThanOrEqual(120);
   });
 
+  it('declares the ChatML convention for a plain model, with no Qwen3 switches', () => {
+    const prompt = buildSystemPrompt({
+      records: registry.list(),
+      tools: true,
+      thinking: false,
+      style: 'plain',
+    });
+    expect(prompt).not.toContain('/no_think');
+    expect(prompt).toContain('<tools>');
+    expect(prompt).toContain('<tool_call>');
+  });
+
   it('declares the JSON-array convention for a Hammer2.1 / xLAM model', () => {
     const prompt = buildSystemPrompt({
       records: registry.list(),
@@ -243,6 +255,32 @@ describe('chat prompt styles', () => {
     expect(prompt).toContain('[BEGIN OF AVAILABLE_TOOLS]');
     expect(prompt).toContain('[END OF AVAILABLE_TOOLS]');
     expect(prompt).toContain('single JSON array');
+  });
+});
+
+describe('asksAboutToolbox', () => {
+  it('recognises questions about the agent’s own toolbox', () => {
+    for (const question of [
+      'Which scripts do you have?',
+      'what tools are available',
+      'List your functions',
+      'show me the callbacks',
+      'what can you do?',
+      'tell me your capabilities',
+    ]) {
+      expect(asksAboutToolbox(question), question).toBe(true);
+    }
+  });
+
+  it('leaves general questions about functions and tools alone', () => {
+    for (const question of [
+      'What is a function call in an AI agent?',
+      'What are tools in this context?',
+      'Explain what a callback is.',
+      'How do I write a Python function?',
+    ]) {
+      expect(asksAboutToolbox(question), question).toBe(false);
+    }
   });
 });
 

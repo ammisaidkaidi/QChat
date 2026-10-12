@@ -1,0 +1,22 @@
+{
+  "version": "infagent-model/v1",
+  "id": "Nexus-TinyFunction-1.2B-Q4_K_M",
+  "name": "Nexus TinyFunction 1.2B (Q4_K_M)",
+  "file": "Nexus-TinyFunction-1.2B-v2.0.Q4_K_M.gguf",
+  "family": "lfm",
+  "quantization": "Q4_K_M",
+  "description": "Nexus TinyFunction 1.2B \u2014 an LFM2.5-1.2B fine-tune for function calling that expects ChatML with <tools> and <tool_call> blocks, exactly the shape InfAgent sends. Apache-2.0 fine-tune over the LFM Open License.",
+  "source": {
+    "repo": "mradermacher/Nexus-TinyFunction-1.2B-v2.0-GGUF",
+    "url": "https://huggingface.co/mradermacher/Nexus-TinyFunction-1.2B-v2.0-GGUF/resolve/main/Nexus-TinyFunction-1.2B-v2.0.Q4_K_M.gguf"
+  },
+  "sizeBytes": 730896032,
+  "contextSize": 4096,
+  "threads": 2,
+  "temperature": 0.2,
+  "maxTokens": 512,
+  "thinking": false,
+  "style": "plain",
+  "chatWrapper": "chatml",
+  "agentPrompt": ""
+}

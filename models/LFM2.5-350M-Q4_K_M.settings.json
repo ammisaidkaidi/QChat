@@ -1,0 +1,22 @@
+{
+  "version": "infagent-model/v1",
+  "id": "LFM2.5-350M-Q4_K_M",
+  "name": "LFM2.5 350M (Q4_K_M)",
+  "file": "LFM2.5-350M-Q4_K_M.gguf",
+  "family": "lfm",
+  "quantization": "Q4_K_M",
+  "description": "Liquid AI LFM2.5 350M — an on-device model with a large context for its size. Liquid LFM Open License.",
+  "source": {
+    "repo": "LiquidAI/LFM2.5-350M-GGUF",
+    "url": "https://huggingface.co/LiquidAI/LFM2.5-350M-GGUF/resolve/main/LFM2.5-350M-Q4_K_M.gguf"
+  },
+  "sizeBytes": 229312224,
+  "contextSize": 4096,
+  "threads": 2,
+  "temperature": 0.3,
+  "maxTokens": 512,
+  "thinking": false,
+  "style": "plain",
+  "chatWrapper": "auto",
+  "agentPrompt": ""
+}

@@ -15,8 +15,11 @@ export declare const DEFAULT_MODELS_DIR: string;
  *     calls inside `<tool_call>{…}</tool_call>`.
  *   `xlam` — the Hammer2.1 / xLAM convention: no thinking switch, and the reply
  *     is a bare JSON array of calls, `[{"name": …, "arguments": {…}}]`.
+ *   `plain` — everything else (Gemma, Llama, SmolLM2, LFM2.5, MiniCPM, …): no
+ *     thinking switch either, and the common ChatML/Hermes convention — a
+ *     `<tools>` listing plus `<tool_call>{"name": …}</tool_call>`.
  */
-export type ModelStyle = 'qwen3' | 'xlam';
+export type ModelStyle = 'qwen3' | 'xlam' | 'plain';
 export interface ModelSettings {
     version: string;
     /** Stable identifier; also the settings file name. */

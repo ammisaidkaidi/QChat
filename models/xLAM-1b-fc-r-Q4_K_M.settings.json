@@ -1,0 +1,22 @@
+{
+  "version": "infagent-model/v1",
+  "id": "xLAM-1b-fc-r-Q4_K_M",
+  "name": "xLAM 1b fc-r (Q4_K_M)",
+  "file": "xLAM-1b-fc-r.Q4_K_M.gguf",
+  "family": "qwen2",
+  "quantization": "Q4_K_M",
+  "description": "Salesforce xLAM-1b-fc-r \u2014 the 1B function-calling model (research release, CC-BY-NC-4.0, non-commercial). Like xLAM-2 it answers with a JSON array of calls.",
+  "source": {
+    "repo": "Salesforce/xLAM-1b-fc-r-gguf",
+    "url": "https://huggingface.co/Salesforce/xLAM-1b-fc-r-gguf/resolve/main/xLAM-1b-fc-r.Q4_K_M.gguf"
+  },
+  "sizeBytes": 873453952,
+  "contextSize": 4096,
+  "threads": 2,
+  "temperature": 0.2,
+  "maxTokens": 512,
+  "thinking": false,
+  "style": "xlam",
+  "chatWrapper": "chatml",
+  "agentPrompt": ""
+}

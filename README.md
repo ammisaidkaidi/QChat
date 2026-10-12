@@ -35,16 +35,25 @@ npx tsx src/cli.ts scripts run hello '{"name":"world"}'
 
 ## Chat tab — local models on CPU
 
-The model runs in-process through llama.cpp; nothing leaves the machine. Four
-models ship in the catalogue and the picker in the Chat tab switches between
-them; the weights of the extra ones are downloaded on demand.
+The model runs in-process through llama.cpp; nothing leaves the machine.
+Fourteen models ship in the catalogue and the picker in the Chat tab switches
+between them; the weights are downloaded on demand.
 
 | Model | Weights | Style |
 | --- | --- | --- |
 | `Qwen3-0.6B-Q4_K_M` **default** | 0.4 GB | Qwen3 tools (`<tool_call>`) |
+| `Qwen3-4B-Thinking-2507-Q4_K_M` | 2.5 GB | Qwen3 tools, reasoning block before the answer |
 | `Hammer2.1-3b-Q4_K_M` | 1.9 GB | function-calling fine-tune, JSON array of calls |
 | `xLAM-2-3B-fc-r-Q4_K_M` | 1.9 GB | function-calling fine-tune, JSON array of calls |
-| `Qwen3-4B-Thinking-2507-Q4_K_M` | 2.5 GB | Qwen3 tools, reasoning block before the answer |
+| `xLAM-1b-fc-r-Q4_K_M` | 0.9 GB | the 1B member of the same family |
+| `Nexus-TinyFunction-1.2B-Q4_K_M` | 0.7 GB | LFM2.5 fine-tune, ChatML + `<tool_call>` |
+| `Yantra-1B-Agent-Q4_K_M` | 0.7 GB | MiniCPM5-based tool-calling agent |
+| `FunctionGemma-270M-Q4_K_M` | 0.3 GB | Google function calling (own call syntax) |
+| `MiniCPM5-1B-Q4_K_M`, `Gemma-3-1B-IT-Q4_K_M`, `Llama-3.2-1B-Instruct-Q4_K_M` | 0.7-0.8 GB | 1B instruct models, ChatML prompts |
+| `Qwen2.5-0.5B-Instruct-Q4_K_M`, `LFM2.5-350M-Q4_K_M`, `SmolLM2-360M-Instruct-Q4_K_M` | 0.2-0.5 GB | small/fast chat models |
+
+Fourteen in total — the full table, per-model licences and the styles that decide
+how each one is prompted live in [models/README.md](models/README.md).
 
 | | |
 | --- | --- |
@@ -58,8 +67,8 @@ How it works:
 
 1. The system prompt declares every script in the Scripts tab, the agent
    callbacks and each connected MCP tool, in the shape the active model was
-   trained on — Qwen3's `<tools>` block, or `[BEGIN OF AVAILABLE_TOOLS]` for the
-   Hammer2.1 / xLAM models. Declarations are trimmed and budgeted to the model's
+   trained on — Qwen3's `<tools>` block for `qwen3` and `plain` models, or
+   `[BEGIN OF AVAILABLE_TOOLS]` for the Hammer2.1 / xLAM ones. Declarations are trimmed and budgeted to the model's
    context, so a wall of MCP tools cannot crowd out the conversation.
 2. The model replies with `<tool_call>{"name": "hello", "args": {…}}</tool_call>`,
    or with a JSON array of calls on the models that answer that way.

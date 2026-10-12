@@ -1,0 +1,22 @@
+{
+  "version": "infagent-model/v1",
+  "id": "MiniCPM5-1B-Q4_K_M",
+  "name": "MiniCPM5 1B (Q4_K_M)",
+  "file": "MiniCPM5-1B-Q4_K_M.gguf",
+  "family": "minicpm",
+  "quantization": "Q4_K_M",
+  "description": "OpenBMB MiniCPM5 1B \u2014 a strong small instruct model whose agents emit XML-style tool calls (the reference backend for those is SGLang, so in InfAgent tool calls are best-effort). Apache-2.0.",
+  "source": {
+    "repo": "openbmb/MiniCPM5-1B-GGUF",
+    "url": "https://huggingface.co/openbmb/MiniCPM5-1B-GGUF/resolve/main/MiniCPM5-1B-Q4_K_M.gguf"
+  },
+  "sizeBytes": 688065920,
+  "contextSize": 4096,
+  "threads": 2,
+  "temperature": 0.4,
+  "maxTokens": 512,
+  "thinking": false,
+  "style": "plain",
+  "chatWrapper": "auto",
+  "agentPrompt": ""
+}

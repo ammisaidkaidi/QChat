@@ -1,0 +1,22 @@
+{
+  "version": "infagent-model/v1",
+  "id": "Llama-3.2-1B-Instruct-Q4_K_M",
+  "name": "Llama 3.2 1B Instruct (Q4_K_M)",
+  "file": "Llama-3.2-1B-Instruct-Q4_K_M.gguf",
+  "family": "llama3",
+  "quantization": "Q4_K_M",
+  "description": "Meta Llama 3.2 1B instruct \u2014 the 4-bit build of the smallest Llama 3.2. Solid chat, light on tool calling. Llama 3.2 Community Licence.",
+  "source": {
+    "repo": "bartowski/Llama-3.2-1B-Instruct-GGUF",
+    "url": "https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_K_M.gguf"
+  },
+  "sizeBytes": 807694464,
+  "contextSize": 4096,
+  "threads": 2,
+  "temperature": 0.6,
+  "maxTokens": 512,
+  "thinking": false,
+  "style": "plain",
+  "chatWrapper": "auto",
+  "agentPrompt": ""
+}

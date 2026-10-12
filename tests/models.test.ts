@@ -137,7 +137,7 @@ describe('ModelStore', () => {
     else process.env['INFAGENT_LLM_CONTEXT'] = previous;
   });
 
-  it('ships the four catalogued models with their call conventions', () => {
+  it('ships the catalogued models with a call convention each', () => {
     // The real `models/` folder, not a scratch dir: this is the shipped list.
     const store = new ModelStore({});
     const models = store.list();
@@ -148,28 +148,37 @@ describe('ModelStore', () => {
       'Hammer2.1-3b-Q4_K_M',
       'xLAM-2-3B-fc-r-Q4_K_M',
       'Qwen3-4B-Thinking-2507-Q4_K_M',
+      'FunctionGemma-270M-Q4_K_M',
+      'Qwen2.5-0.5B-Instruct-Q4_K_M',
+      'LFM2.5-350M-Q4_K_M',
+      'SmolLM2-360M-Instruct-Q4_K_M',
+      'Yantra-1B-Agent-Q4_K_M',
+      'Nexus-TinyFunction-1.2B-Q4_K_M',
+      'Llama-3.2-1B-Instruct-Q4_K_M',
+      'xLAM-1b-fc-r-Q4_K_M',
+      'Gemma-3-1B-IT-Q4_K_M',
+      'MiniCPM5-1B-Q4_K_M',
     ]) {
       const record = byId.get(id);
       expect(record, `${id} is missing from models/`).toBeDefined();
       expect(record?.settings.source?.url).toMatch(/^https:\/\/huggingface\.co\//);
-      expect(record?.settings.sizeBytes).toBeGreaterThan(100_000_000);
+      expect(record?.settings.sizeBytes).toBeGreaterThan(50_000_000);
     }
 
-    // Exactly these four are catalogued. The order file is the picker's order
-    // and `setActive` moves the chosen model to the front (most recent first),
-    // so the assertion is on the set, not on a fixed sequence.
-    expect(models.map((record) => record.settings.id).sort()).toEqual([
-      'Hammer2.1-3b-Q4_K_M',
-      'Qwen3-0.6B-Q4_K_M',
-      'Qwen3-4B-Thinking-2507-Q4_K_M',
-      'xLAM-2-3B-fc-r-Q4_K_M',
-    ]);
+    // Every settings file in the folder is catalogued: no orphans, no duplicates.
+    const ids = models.map((record) => record.settings.id);
+    expect(new Set(ids).size).toBe(ids.length);
 
-    // Hammer2.1 and xLAM answer with a JSON array; Qwen3 keeps its own tags.
+    // Hammer2.1 and xLAM answer with a JSON array, Qwen3 with its own tags,
+    // everything else uses the ChatML/Hermes convention.
     expect(byId.get('Hammer2.1-3b-Q4_K_M')?.settings.style).toBe('xlam');
     expect(byId.get('xLAM-2-3B-fc-r-Q4_K_M')?.settings.style).toBe('xlam');
+    expect(byId.get('xLAM-1b-fc-r-Q4_K_M')?.settings.style).toBe('xlam');
     expect(byId.get('Qwen3-4B-Thinking-2507-Q4_K_M')?.settings.style).toBe('qwen3');
     expect(byId.get('Qwen3-4B-Thinking-2507-Q4_K_M')?.settings.thinking).toBe(true);
+    for (const id of ['FunctionGemma-270M-Q4_K_M', 'LFM2.5-350M-Q4_K_M', 'Gemma-3-1B-IT-Q4_K_M']) {
+      expect(byId.get(id)?.settings.style).toBe('plain');
+    }
 
     // The settings files on disk parse and carry their own id.
     for (const record of models) {

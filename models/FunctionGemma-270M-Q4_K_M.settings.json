@@ -1,0 +1,22 @@
+{
+  "version": "infagent-model/v1",
+  "id": "FunctionGemma-270M-Q4_K_M",
+  "name": "FunctionGemma 270M (Q4_K_M)",
+  "file": "functiongemma-270m-it-Q4_K_M.gguf",
+  "family": "gemma",
+  "quantization": "Q4_K_M",
+  "description": "Google FunctionGemma 270M \u2014 a Gemma 3 270M tuned for function calling. Tiny (253 MB) and fast; it answers in Google's own <start_function_call> syntax, which InfAgent does not parse yet, so treat tool calls as best-effort and chat as its main use. Gemma licence.",
+  "source": {
+    "repo": "unsloth/functiongemma-270m-it-GGUF",
+    "url": "https://huggingface.co/unsloth/functiongemma-270m-it-GGUF/resolve/main/functiongemma-270m-it-Q4_K_M.gguf"
+  },
+  "sizeBytes": 253127904,
+  "contextSize": 4096,
+  "threads": 2,
+  "temperature": 0.3,
+  "maxTokens": 512,
+  "thinking": false,
+  "style": "plain",
+  "chatWrapper": "auto",
+  "agentPrompt": ""
+}
