@@ -40,6 +40,12 @@ export declare class HttpMcpClient {
     readonly url: string;
     state: 'stopped' | 'starting' | 'ready' | 'error';
     tools: McpTool[];
+    /**
+     * When the server last announced a change to its tool list. Always null for
+     * this transport: the hosted endpoints do not push notifications, so their
+     * list is re-read on every start.
+     */
+    readonly toolsChangedAt: string | null;
     serverInfo: {
         name?: string;
         version?: string;

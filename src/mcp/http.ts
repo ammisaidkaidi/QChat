@@ -78,6 +78,12 @@ export class HttpMcpClient {
   public readonly url: string;
   public state: 'stopped' | 'starting' | 'ready' | 'error' = 'stopped';
   public tools: McpTool[] = [];
+  /**
+   * When the server last announced a change to its tool list. Always null for
+   * this transport: the hosted endpoints do not push notifications, so their
+   * list is re-read on every start.
+   */
+  public readonly toolsChangedAt: string | null = null;
   public serverInfo: { name?: string; version?: string } = {};
   public lastError: string | null = null;
   public readonly stderr: string[] = [];

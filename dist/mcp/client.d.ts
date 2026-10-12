@@ -52,6 +52,8 @@ export declare class McpClient {
         version?: string;
     };
     tools: McpTool[];
+    /** When the server last announced a change to its tool list. */
+    toolsChangedAt: string | null;
     state: 'stopped' | 'starting' | 'ready' | 'error';
     lastError: string | null;
     stderr: string[];
@@ -60,6 +62,14 @@ export declare class McpClient {
     start(): Promise<void>;
     stop(): Promise<void>;
     restart(): Promise<void>;
+    /**
+     * Re-read the tool list after the server says it changed.
+     *
+     * The toolbox loads tools from files, so its list moves while it runs. The
+     * chat rebuilds its system prompt from `tools()` every turn, which means a
+     * refreshed list is in the model's context from the next message on.
+     */
+    refreshTools(): Promise<McpTool[]>;
     listTools(): Promise<McpTool[]>;
     /** Call a tool by its server-local name. */
     callTool(toolName: string, args: Record<string, unknown>): Promise<McpToolResult>;

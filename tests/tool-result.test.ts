@@ -458,6 +458,40 @@ describe('numbers the tool never produced', () => {
     expect(guard.kind === 'append' && guard.text).toContain('disk_report');
   });
 
+  it('reads a total or a count a tool of your own returned', () => {
+    // A toolbox tool answers with plain JSON: {rolls: [...], total: 7}.
+    const rolled = { server: 'toolbox', tool: 'roll', dice: 2, sides: 6, rolls: [1, 6], total: 7 };
+    expect(producedNumbers(rolled)).toEqual([7]);
+    // A listing's own numbers are not produced values — only the ones a tool
+    // reports as its answer.
+    expect(producedNumbers({ volumes: [{ mount: '/', total_gb: 24.39 }] })).toEqual([]);
+
+    const guard = guardToolAnswer('The dice add up to 12.', {
+      name: 'toolbox__roll',
+      ok: true,
+      result: rolled,
+    });
+    expect(guard.kind).toBe('replace');
+    expect(guard.kind === 'replace' && guard.text).toContain('7');
+  });
+
+  it('says a run that printed nothing printed nothing', () => {
+    const quiet = {
+      server: 'code',
+      tool: 'run_javascript',
+      ok: true,
+      language: 'javascript',
+      exit_code: 0,
+      stdout: '',
+      stderr: '',
+    };
+    expect(fallbackAnswer('code__run_javascript', quiet)).toBe(
+      'code__run_javascript → ran, but printed nothing (exit 0)',
+    );
+    // It is not the same as a failure, and not the same as a listing.
+    expect(outcomeError({ name: 'code__run_javascript', ok: true, result: quiet })).toBeNull();
+  });
+
   it('reports a run that exited non-zero as a failure, with its message', () => {
     // The MCP call itself succeeded, so `ok` on the outcome is true; the
     // payload is what says the program crashed. That is never a normal result

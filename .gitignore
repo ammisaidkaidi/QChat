@@ -31,3 +31,6 @@ env.txt
 # Windows editors
 Thumbs.db
 Desktop.ini
+
+# The toolbox writes what it loaded here; it is a cache, not source.
+mcp/tools/.cache.json

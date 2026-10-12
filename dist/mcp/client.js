@@ -34,6 +34,8 @@ export class McpClient {
     timeoutMs;
     serverInfo = {};
     tools = [];
+    /** When the server last announced a change to its tool list. */
+    toolsChangedAt = null;
     state = 'stopped';
     lastError = null;
     stderr = [];
@@ -102,6 +104,25 @@ export class McpClient {
     async restart() {
         await this.stop();
         await this.start();
+    }
+    /**
+     * Re-read the tool list after the server says it changed.
+     *
+     * The toolbox loads tools from files, so its list moves while it runs. The
+     * chat rebuilds its system prompt from `tools()` every turn, which means a
+     * refreshed list is in the model's context from the next message on.
+     */
+    async refreshTools() {
+        if (!this.child)
+            return this.tools;
+        try {
+            this.tools = await this.listTools();
+            this.toolsChangedAt = new Date().toISOString();
+        }
+        catch (error) {
+            this.stderr.push(`[tools/list] ${error.message}`);
+        }
+        return this.tools;
     }
     async listTools() {
         const result = (await this.request('tools/list', {}));
@@ -189,8 +210,13 @@ export class McpClient {
             return;
         }
         const id = typeof message['id'] === 'number' ? message['id'] : null;
-        if (id === null)
+        if (id === null) {
+            // A notification: no reply, but some of them matter. A server that
+            // changes its tool list mid-session says so here.
+            if (message['method'] === 'notifications/tools/list_changed')
+                void this.refreshTools();
             return;
+        }
         const pending = this.pending.get(id);
         if (!pending)
             return;

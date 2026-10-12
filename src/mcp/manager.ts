@@ -42,6 +42,8 @@ export interface McpServerStatus {
   serverInfo: { name?: string; version?: string };
   lastError: string | null;
   stderr: string[];
+  /** When the server last announced a change to its tool list (null: never). */
+  toolsChangedAt: string | null;
 }
 
 export interface McpCatalogue {
@@ -242,6 +244,7 @@ export class McpManager {
       serverInfo: client?.serverInfo ?? {},
       lastError: client?.lastError ?? this.failures.get(name) ?? null,
       stderr: client?.stderr.slice(-10) ?? [],
+      toolsChangedAt: client?.toolsChangedAt ?? null,
     };
   }
 
@@ -301,7 +304,10 @@ export class McpManager {
 
 /** Replace ${NAME} with the matching environment variable (empty when unset). */
 function expand(value: string): string {
-  return value.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_match, name: string) => process.env[name] ?? '');
+  return value.replace(
+    /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g,
+    (_match, name: string) => process.env[name] ?? '',
+  );
 }
 
 /** Same, over the strings of a whole server entry. */
@@ -366,7 +372,10 @@ function assertRemoteAllowed(name: string, config: McpServerConfig): void {
     );
   }
 
-  if (parsed.searchParams.get('read_only') !== 'true' && process.env['INFAGENT_ALLOW_SUPABASE_WRITES'] !== '1') {
+  if (
+    parsed.searchParams.get('read_only') !== 'true' &&
+    process.env['INFAGENT_ALLOW_SUPABASE_WRITES'] !== '1'
+  ) {
     throw new McpError(
       'spawn',
       `"${name}": refused to connect without read_only=true. Set INFAGENT_ALLOW_SUPABASE_WRITES=1 ` +

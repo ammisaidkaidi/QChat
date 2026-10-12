@@ -366,7 +366,7 @@ connect, disconnect, add servers and call any tool by hand. A dependency-free
 demo server ships in `mcp/example-server.mjs` (`echo`, `add`, `now`) so the loop
 can be verified before a real server is wired in.
 
-Five hardened servers ship in `mcp/servers/`. Nothing is vendored from a package
+Six hardened servers ship in `mcp/servers/`, plus the toolbox (`toolbox.mjs`), which serves your own JavaScript. Nothing is vendored from a package
 registry: each guarantee below is enforced inside the server process, not by
 asking the model to behave.
 
@@ -376,6 +376,7 @@ asking the model to behave.
 | `fetch.mjs` | `fetch_url`, `fetch_policy` | https only (`allow_http` opts in). Every DNS answer and every redirect hop is checked against loopback, private, link-local (cloud metadata), CGNAT, multicast and reserved ranges, and the validated address is pinned into the connection so DNS cannot be re-pointed between the check and the request. 1 MB, 3 redirects and a 20 s budget are the defaults; only text-ish content types are returned, the result is flagged `untrusted`, and nothing is executed. |
 | `sqlite.py` (stdlib only) | `list_databases`, `list_tables`, `describe_table`, `read_query`, plus `write_query` only with `allow_write` | Read-only is a real SQLite setting — `file:…?mode=ro` plus `PRAGMA query_only=ON` — not just hidden tools. Foreign keys stay on, one statement per call, `ATTACH`/`DETACH`/`VACUUM`/`REINDEX`/`ANALYZE` and any `PRAGMA … =` are refused, and rows, bytes and time are capped. |
 | `code.mjs` | `run_javascript`, `run_python`, `code_policy` | Runs a snippet in a fresh temp directory with an empty environment (no tokens, no `HOME`, no `PYTHONPATH`) and a hard time limit (5 s default, 15 s ceiling), deletes the directory afterwards and caps each stream's output. JavaScript goes through `node --experimental-permission`: reading or writing outside the sandbox, `child_process`, workers and native addons are refused by Node. Python goes through `python3 -I -B` with `mcp/lib/pyguard.py`, an audit hook that refuses reads outside the sandbox and the interpreter library, writes outside the sandbox, `os.system`/`exec`/`fork` and `subprocess`, plus sockets — with `ctypes`, `socket`, `subprocess`, `urllib` … un-importable. On Linux each run is wrapped in `unshare -n --map-current-user`, so it has no network interface at all; `code_policy` reports whether that holds here and says plainly that the Python guard is an in-process guard rail, not a kernel boundary. |
+| `toolbox.mjs` | every tool a file under `mcp/tools/` exports, plus `tool_files` and `reload_tools` | Your tool files, and nothing else: the root is resolved through symlinks (a symlink is never followed and is reported), files are `*.js`/`*.mjs`, ≤ 32 files, ≤ 64 kB each, ≤ 24 tools. A tool needs a valid lower-case name (`lower_case`, 2–41 chars), a description and a `callback` function; a bad entry is refused by name instead of taking the file down. Calls are capped at `timeout_ms` (5 s) and their JSON at `max_result_bytes` (64 kB), and a result JSON cannot carry (cycles, functions, BigInt) is converted rather than thrown. **A tool file is trusted code and runs with the server's privileges — this is not a sandbox; for model-written code use `code`.** |
 | Supabase (official remote endpoint) | whatever the project's tool groups expose | `transport: "http"` to `https://mcp.supabase.com/mcp?project_ref=…&read_only=true`; off by default. The manager refuses a Supabase URL without a bearer token or without `read_only=true` unless `INFAGENT_ALLOW_SUPABASE_WRITES=1`, refuses plain http unless it is loopback *and* `INFAGENT_MCP_ALLOW_INSECURE=1`, and never prints the token — errors are redacted. |
 
 ```bash
@@ -385,6 +386,8 @@ infagent mcp call filesystem__read_file '{"path":"scripts/hello.js"}'
 infagent mcp call sqlite__read_query '{"database":"demo","sql":"select * from notes limit 5"}'
 infagent mcp call code__run_python '{"code":"import statistics; print(statistics.mean([3,4,5]))"}'
 infagent mcp call code__run_javascript '{"code":"console.log([1,2,3].reduce((a,b)=>a+b,0))"}'
+infagent mcp call toolbox__greet '{"who":"Amine"}'
+infagent mcp call toolbox__reload_tools '{}'
 ```
 
 **Running code from the chat.** With the `code` server enabled the model can
@@ -405,6 +408,31 @@ same policy applies to both languages, and `code__code_policy` prints it:
 - The defaults live in `mcp.json`; raise `timeout_ms` there if a snippet needs
   longer. Set `allow_network: true` to give runs the network back — off by
   default, and on Linux off means "no interface", not "asked nicely".
+
+**Your own tools, in JavaScript.** Put a file in `mcp/tools/` and the chat can
+call what it exports — the model sees the tool exactly like the built-in ones,
+with its name and arguments, and a call returns the callback's own value:
+
+```js
+// mcp/tools/hello.js
+export default [
+  {
+    name: 'greet',
+    description: 'Greet someone by name.',
+    inputSchema: { type: 'object', properties: { who: { type: 'string' } }, required: ['who'] },
+    callback: ({ who }) => ({ greeting: `Hello ${who}!` }),
+  },
+];
+```
+
+- `callback` may be `async`; it gets the call's arguments and `{ file, tool, log }`.
+- Edit or add a file, then call `toolbox__reload_tools` — or send `force: true` — and the
+  new tools are in the model's context from the next message on. `toolbox__tool_files`
+  reports what is loaded (file, mtime, sha256, tools) and what was refused, and the server
+  announces `tools/list_changed`, so the console updates the list without a restart.
+- `mcp/tools/README.md` holds the two-line contract and the limits; the trust model is the
+  one place this differs from the `code` server: **a tool file is code you installed and it
+  runs unsandboxed** — it is not a place for code the model wrote.
 
 **Supabase, connected.** The official remote endpoint is the entry in `mcp.json`;
 it needs two values in `.env` (never in the config file) and a project reference:

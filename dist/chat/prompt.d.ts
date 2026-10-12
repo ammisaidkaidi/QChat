@@ -232,15 +232,6 @@ export declare function salientValues(result: unknown, limit?: number): string[]
  * that is the one thing this project never publishes.
  */
 export declare function numbersInPayload(result: unknown, limit?: number): number[];
-/**
- * The numbers a tool *produced*: a program's stdout, a value the call answered
- * with — as opposed to the numbers scattered across a listing it returned.
- *
- * `run_python` printing `4.5` is a produced value and a reply of "3.5" is then
- * a wrong answer. A disk report full of free-space figures has produced
- * nothing: a model that answered a question from its own knowledge after
- * calling the wrong tool has not contradicted the tool.
- */
 export declare function producedNumbers(result: unknown, limit?: number): number[];
 /**
  * Is the reply nothing but the protocol talking — an echoed envelope, a stray

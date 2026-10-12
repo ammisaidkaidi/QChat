@@ -85,6 +85,8 @@ export class McpClient {
 
   public serverInfo: { name?: string; version?: string } = {};
   public tools: McpTool[] = [];
+  /** When the server last announced a change to its tool list. */
+  public toolsChangedAt: string | null = null;
   public state: 'stopped' | 'starting' | 'ready' | 'error' = 'stopped';
   public lastError: string | null = null;
   public stderr: string[] = [];
@@ -130,7 +132,9 @@ export class McpClient {
     child.on('close', (code) => {
       this.child = null;
       this.state = 'stopped';
-      this.failAll(new McpError('closed', `MCP server "${this.name}" exited (code ${code ?? '?'}).`));
+      this.failAll(
+        new McpError('closed', `MCP server "${this.name}" exited (code ${code ?? '?'}).`),
+      );
     });
 
     const result = (await this.request('initialize', {
@@ -165,6 +169,24 @@ export class McpClient {
     await this.start();
   }
 
+  /**
+   * Re-read the tool list after the server says it changed.
+   *
+   * The toolbox loads tools from files, so its list moves while it runs. The
+   * chat rebuilds its system prompt from `tools()` every turn, which means a
+   * refreshed list is in the model's context from the next message on.
+   */
+  public async refreshTools(): Promise<McpTool[]> {
+    if (!this.child) return this.tools;
+    try {
+      this.tools = await this.listTools();
+      this.toolsChangedAt = new Date().toISOString();
+    } catch (error) {
+      this.stderr.push(`[tools/list] ${(error as Error).message}`);
+    }
+    return this.tools;
+  }
+
   public async listTools(): Promise<McpTool[]> {
     const result = (await this.request('tools/list', {})) as {
       tools?: { name?: string; description?: string; inputSchema?: unknown }[];
@@ -183,10 +205,7 @@ export class McpClient {
   }
 
   /** Call a tool by its server-local name. */
-  public async callTool(
-    toolName: string,
-    args: Record<string, unknown>,
-  ): Promise<McpToolResult> {
+  public async callTool(toolName: string, args: Record<string, unknown>): Promise<McpToolResult> {
     const startedAt = Date.now();
     const result = (await this.request('tools/call', {
       name: toolName,
@@ -223,7 +242,8 @@ export class McpClient {
 
   private request(method: string, params: unknown): Promise<unknown> {
     const child = this.child;
-    if (!child) return Promise.reject(new McpError('closed', `MCP server "${this.name}" is not running.`));
+    if (!child)
+      return Promise.reject(new McpError('closed', `MCP server "${this.name}" is not running.`));
 
     const id = this.nextId;
     this.nextId += 1;
@@ -265,7 +285,12 @@ export class McpClient {
     }
 
     const id = typeof message['id'] === 'number' ? message['id'] : null;
-    if (id === null) return;
+    if (id === null) {
+      // A notification: no reply, but some of them matter. A server that
+      // changes its tool list mid-session says so here.
+      if (message['method'] === 'notifications/tools/list_changed') void this.refreshTools();
+      return;
+    }
 
     const pending = this.pending.get(id);
     if (!pending) return;

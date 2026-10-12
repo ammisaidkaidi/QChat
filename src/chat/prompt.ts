@@ -607,9 +607,32 @@ export function fallbackAnswer(toolName: string, result: unknown): string {
       const stderr = typeof record['stderr'] === 'string' ? record['stderr'].trim() : '';
       return `${toolName} → ${body}${stderr ? ` · stderr: ${trimText(stderr, 200)}` : ''}`;
     }
+    // A run that succeeded and printed nothing is a result like any other: it
+    // must not be dressed up as metadata, and a reply that states a value next
+    // to it must be seen for what it is.
+    const outputKeys = ['stdout', 'output', 'text', 'content'];
+    const present = outputKeys.filter((key) => key in record);
+    if (
+      !failed &&
+      present.length > 0 &&
+      present.every((key) => typeof record[key] === 'string' && !String(record[key]).trim())
+    ) {
+      const code = typeof record['exit_code'] === 'number' ? ` (exit ${record['exit_code']})` : '';
+      return `${toolName} → ran, but printed nothing${code}`;
+    }
   }
+  // A payload that reports its own numbers (`total`, `count`, `filtered_out`)
+  // reads best as those numbers: the first fields of an object are its
+  // addressing — server, tool, exit code — and never its answer.
+  const pairs =
+    typeof value === 'object' && value !== null && !Array.isArray(value)
+      ? producedPairs(value as Record<string, unknown>)
+      : [];
+
   // The authoritative empty: say so in the tool's own vocabulary.
-  if (resultIsEmpty(value)) return `${toolName} → no ${listNoun(toolName)} found.`;
+  if (pairs.length === 0 && resultIsEmpty(value)) {
+    return `${toolName} → no ${listNoun(toolName)} found.`;
+  }
   // A list of named records reads best as "name — description" pairs.
   if (
     Array.isArray(value) &&
@@ -638,7 +661,10 @@ export function fallbackAnswer(toolName: string, result: unknown): string {
     }
   }
 
-  const flat = flatten(value).split('\n').filter(Boolean).slice(0, 4).join(' · ');
+  const flat =
+    pairs.length > 0
+      ? pairs.join(' · ')
+      : flatten(value).split('\n').filter(Boolean).slice(0, 4).join(' · ');
   const filtered = filteredCount(value);
   const note =
     filtered > 0
@@ -1311,20 +1337,76 @@ export function numbersInPayload(result: unknown, limit = 32): number[] {
  * nothing: a model that answered a question from its own knowledge after
  * calling the wrong tool has not contradicted the tool.
  */
+const PRODUCED_KEYS = new Set([
+  'answer',
+  'average',
+  'bytes',
+  'count',
+  'content',
+  'entries',
+  'files',
+  'filtered_out',
+  'length',
+  'matches',
+  'items',
+  'mean',
+  'message',
+  'output',
+  'result',
+  'results',
+  'rows',
+  'scanned',
+  'size',
+  'stdout',
+  'sum',
+  'text',
+  'total',
+  'value',
+]);
+
+/** The `key: value` pairs a payload reports as its answer, in field order. */
+function producedPairs(record: Record<string, unknown>, depth = 0): string[] {
+  const pairs: string[] = [];
+  for (const [key, field] of Object.entries(record)) {
+    if (!PRODUCED_KEYS.has(key.toLowerCase())) {
+      if (depth < 2 && field && typeof field === 'object' && !Array.isArray(field)) {
+        pairs.push(...producedPairs(field as Record<string, unknown>, depth + 1));
+      }
+      continue;
+    }
+    if (typeof field === 'number' && Number.isFinite(field)) pairs.push(`${key}: ${field}`);
+    else if (typeof field === 'string' && field.trim() && field.length <= 120) {
+      pairs.push(`${key}: ${field.trim()}`);
+    }
+    if (pairs.length >= 4) break;
+  }
+  return pairs;
+}
+
 export function producedNumbers(result: unknown, limit = 16): number[] {
   const value = unwrapEnvelope(result);
   if (typeof value === 'number' && Number.isFinite(value)) return [value];
   if (typeof value === 'string') return numbersIn(value).slice(0, limit);
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return [];
-  const record = value as Record<string, unknown>;
+
   const found: number[] = [];
-  for (const key of ['stdout', 'output', 'text', 'content', 'message', 'answer', 'value']) {
-    const field = record[key];
-    if (typeof field === 'number' && Number.isFinite(field)) found.push(field);
-    else if (typeof field === 'string' && field.trim().length > 0 && field.length <= 200) {
-      found.push(...numbersIn(field));
+  const visit = (record: Record<string, unknown>, depth: number): void => {
+    for (const [key, field] of Object.entries(record)) {
+      if (!PRODUCED_KEYS.has(key.toLowerCase())) {
+        // A nested object may hold the value under a name that counts:
+        // `{result: {total: 7}}` from a tool of your own.
+        if (depth < 2 && field && typeof field === 'object' && !Array.isArray(field)) {
+          visit(field as Record<string, unknown>, depth + 1);
+        }
+        continue;
+      }
+      if (typeof field === 'number' && Number.isFinite(field)) found.push(field);
+      else if (typeof field === 'string' && field.trim().length > 0 && field.length <= 200) {
+        found.push(...numbersIn(field));
+      }
     }
-  }
+  };
+  visit(value as Record<string, unknown>, 0);
   return [...new Set(found)].slice(0, limit);
 }
 

@@ -197,6 +197,7 @@ export class McpManager {
             serverInfo: client?.serverInfo ?? {},
             lastError: client?.lastError ?? this.failures.get(name) ?? null,
             stderr: client?.stderr.slice(-10) ?? [],
+            toolsChangedAt: client?.toolsChangedAt ?? null,
         };
     }
     list() {
@@ -293,7 +294,8 @@ function assertRemoteAllowed(name, config) {
         throw new McpError('spawn', `"${name}": no Supabase access token. Put SUPABASE_ACCESS_TOKEN in .env and reference it as ` +
             '"Authorization": "Bearer ${SUPABASE_ACCESS_TOKEN}" in mcp.json — never paste a token there.');
     }
-    if (parsed.searchParams.get('read_only') !== 'true' && process.env['INFAGENT_ALLOW_SUPABASE_WRITES'] !== '1') {
+    if (parsed.searchParams.get('read_only') !== 'true' &&
+        process.env['INFAGENT_ALLOW_SUPABASE_WRITES'] !== '1') {
         throw new McpError('spawn', `"${name}": refused to connect without read_only=true. Set INFAGENT_ALLOW_SUPABASE_WRITES=1 ` +
             'to enable writes or migrations explicitly, and check the project ref first.');
     }

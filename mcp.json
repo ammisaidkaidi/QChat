@@ -45,6 +45,15 @@
       "enabled": true,
       "description": "Bundled demo server (echo, add, now) — replace or remove it."
     },
+    "toolbox": {
+      "command": "node",
+      "args": [
+        "mcp/servers/toolbox.mjs",
+        "{\"root\":\"mcp/tools\",\"max_tools\":24,\"max_result_bytes\":65536,\"timeout_ms\":5000}"
+      ],
+      "enabled": true,
+      "description": "Toolbox — every JS file under mcp/tools/ exports [{name, description, callback}] and becomes a callable tool in the chat. A tool file is trusted code (not sandboxed); use the code server for model-written code."
+    },
     "code": {
       "command": "node",
       "args": [

@@ -19,6 +19,8 @@ export interface McpServerStatus {
     };
     lastError: string | null;
     stderr: string[];
+    /** When the server last announced a change to its tool list (null: never). */
+    toolsChangedAt: string | null;
 }
 export interface McpCatalogue {
     configPath: string;
