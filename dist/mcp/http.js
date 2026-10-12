@@ -19,7 +19,7 @@
  * default agent with "403 Error 1010: browser_signature_banned", which looks
  * exactly like an auth failure and is not one.
  */
-import { MCP_PROTOCOL_VERSION, McpError } from './client.js';
+import { MCP_PROTOCOL_VERSION, McpError, } from './client.js';
 /** One header every remote request carries, so an edge cannot mistake us for a scraper. */
 export const HTTP_MCP_USER_AGENT = 'InfAgent/1.0 (+https://github.com/ammisaidkaidi/InfAgent; MCP client)';
 /** Replace any credential-looking value with `***`, wherever it appears. */
@@ -113,6 +113,17 @@ export class HttpMcpClient {
                 throw new McpError('protocol', redact(`${this.name}: the endpoint's edge refused this client — HTTP ${response.status}` +
                     `${/1010/.test(body) ? ' (Cloudflare 1010, browser signature banned)' : ''}. ` +
                     'This is not a token problem: retry, or check whether the host blocks automated clients.', this.secrets));
+            }
+            // A credential-kind mismatch: the header is there, but it is not the
+            // shape that endpoint accepts, so it answers 401 with a complaint about
+            // decoding rather than about the token. Calling that "check the token"
+            // sends people to rotate a credential that may be perfectly good (the
+            // same class of lie as the edge case above).
+            if (/jwt could not be decoded|expected (a )?jwt|invalid token type/i.test(body)) {
+                throw new McpError('protocol', redact(`${this.name}: the endpoint rejected this credential as the wrong kind (${response.status}) — ` +
+                    `it is asking for an OAuth/JWT token rather than the access token configured here.` +
+                    `${body.trim() ? ` Server said: ${body.slice(0, 160)}` : ''} ` +
+                    'Check which credential the endpoint expects before rotating anything.', this.secrets));
             }
             throw new McpError('protocol', `${this.name}: authentication failed (${response.status}). Check the token in this server's headers — it is read from the environment, never from mcp.json.`);
         }
@@ -240,7 +251,7 @@ export function describeRemote(config) {
 }
 function maskQuery(params) {
     return [...params.entries()]
-        .map(([key, value]) => (/token|key|secret|password/i.test(key) ? `${key}=***` : `${key}=${value}`))
+        .map(([key, value]) => /token|key|secret|password/i.test(key) ? `${key}=***` : `${key}=${value}`)
         .join('&');
 }
 //# sourceMappingURL=http.js.map

@@ -19,7 +19,13 @@
  * default agent with "403 Error 1010: browser_signature_banned", which looks
  * exactly like an auth failure and is not one.
  */
-import { MCP_PROTOCOL_VERSION, McpError, type McpServerConfig, type McpTool, type McpToolResult } from './client.js';
+import {
+  MCP_PROTOCOL_VERSION,
+  McpError,
+  type McpServerConfig,
+  type McpTool,
+  type McpToolResult,
+} from './client.js';
 
 export interface HttpMcpConfig extends McpServerConfig {
   /** Endpoint of the remote server. */
@@ -51,7 +57,10 @@ export function redact(text: string, secrets: readonly string[] = []): string {
 }
 
 /** Values in a config that must never be echoed, e.g. authorization headers. */
-export function secretsOf(config: { headers?: Record<string, string>; env?: Record<string, string> }): string[] {
+export function secretsOf(config: {
+  headers?: Record<string, string>;
+  env?: Record<string, string>;
+}): string[] {
   const values: string[] = [];
   for (const [key, value] of Object.entries(config.headers ?? {})) {
     if (/auth|token|key|secret|password/i.test(key)) {
@@ -120,7 +129,10 @@ export class HttpMcpClient {
       const message_ = error instanceof Error ? error.message : String(error);
       throw new McpError(
         'timeout',
-        redact(`${this.name}: ${error instanceof Error && error.name === 'TimeoutError' ? 'the request timed out' : `could not reach ${this.displayUrl} (${message_})`}`, this.secrets),
+        redact(
+          `${this.name}: ${error instanceof Error && error.name === 'TimeoutError' ? 'the request timed out' : `could not reach ${this.displayUrl} (${message_})`}`,
+          this.secrets,
+        ),
       );
     }
 
@@ -145,6 +157,24 @@ export class HttpMcpClient {
         );
       }
 
+      // A credential-kind mismatch: the header is there, but it is not the
+      // shape that endpoint accepts, so it answers 401 with a complaint about
+      // decoding rather than about the token. Calling that "check the token"
+      // sends people to rotate a credential that may be perfectly good (the
+      // same class of lie as the edge case above).
+      if (/jwt could not be decoded|expected (a )?jwt|invalid token type/i.test(body)) {
+        throw new McpError(
+          'protocol',
+          redact(
+            `${this.name}: the endpoint rejected this credential as the wrong kind (${response.status}) — ` +
+              `it is asking for an OAuth/JWT token rather than the access token configured here.` +
+              `${body.trim() ? ` Server said: ${body.slice(0, 160)}` : ''} ` +
+              'Check which credential the endpoint expects before rotating anything.',
+            this.secrets,
+          ),
+        );
+      }
+
       throw new McpError(
         'protocol',
         `${this.name}: authentication failed (${response.status}). Check the token in this server's headers — it is read from the environment, never from mcp.json.`,
@@ -154,7 +184,10 @@ export class HttpMcpClient {
       const body = await response.text().catch(() => '');
       throw new McpError(
         'protocol',
-        redact(`${this.name}: ${response.status} ${response.statusText} — ${body.slice(0, 300)}`, this.secrets),
+        redact(
+          `${this.name}: ${response.status} ${response.statusText} — ${body.slice(0, 300)}`,
+          this.secrets,
+        ),
       );
     }
 
@@ -186,7 +219,10 @@ export class HttpMcpClient {
     try {
       return JSON.parse(body) as JsonRpcResponse;
     } catch {
-      throw new McpError('protocol', redact(`${this.name}: reply was not JSON: ${body.slice(0, 200)}`, this.secrets));
+      throw new McpError(
+        'protocol',
+        redact(`${this.name}: reply was not JSON: ${body.slice(0, 200)}`, this.secrets),
+      );
     }
   }
 
@@ -194,7 +230,8 @@ export class HttpMcpClient {
     const id = this.nextId++;
     const reply = await this.post({ jsonrpc: '2.0', id, method, params });
     if (!reply) throw new McpError('protocol', `${this.name}: no reply to ${method}.`);
-    if (reply.error) throw new McpError('protocol', redact(`${this.name}: ${reply.error.message}`, this.secrets));
+    if (reply.error)
+      throw new McpError('protocol', redact(`${this.name}: ${reply.error.message}`, this.secrets));
     return reply.result;
   }
 
@@ -248,7 +285,10 @@ export class HttpMcpClient {
 
     if (!reply) throw new McpError('protocol', `${this.name}: no reply to tools/call ${name}.`);
     if (reply.error) {
-      throw new McpError('tool', redact(`${this.name}__${name}: ${reply.error.message}`, this.secrets));
+      throw new McpError(
+        'tool',
+        redact(`${this.name}__${name}: ${reply.error.message}`, this.secrets),
+      );
     }
 
     const result = (reply.result ?? {}) as { content?: unknown[]; isError?: boolean };
@@ -283,6 +323,8 @@ export function describeRemote(config: HttpMcpConfig): string {
 
 function maskQuery(params: URLSearchParams): string {
   return [...params.entries()]
-    .map(([key, value]) => (/token|key|secret|password/i.test(key) ? `${key}=***` : `${key}=${value}`))
+    .map(([key, value]) =>
+      /token|key|secret|password/i.test(key) ? `${key}=***` : `${key}=${value}`,
+    )
     .join('&');
 }

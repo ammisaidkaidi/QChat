@@ -283,6 +283,27 @@ describe('MCP over HTTP', () => {
     }
   }, 20_000);
 
+  it('calls a credential-kind mismatch a mismatch, not a bad token', async () => {
+    // Supabase's hosted MCP answers a personal access token this way, while the
+    // same token authenticates its REST API: the advice has to differ.
+    const remote = await mockRemote({
+      failWith: 401,
+      failBody: { message: 'JWT could not be decoded' },
+    });
+    const manager = managerFor(remote.url);
+    try {
+      const status = await manager.start('remote');
+      expect(status.state).toBe('error');
+      expect(status.lastError).toMatch(/wrong kind/);
+      expect(status.lastError).toMatch(/OAuth\/JWT/);
+      expect(status.lastError).not.toMatch(/Check the token/);
+      expect(status.lastError).not.toContain(TOKEN);
+    } finally {
+      await manager.stopAll();
+      await remote.close();
+    }
+  }, 20_000);
+
   it('times out instead of hanging on a stalled server', async () => {
     const remote = await mockRemote({ delayMs: 1500 });
     const manager = managerFor(remote.url, { timeoutMs: 300 });
