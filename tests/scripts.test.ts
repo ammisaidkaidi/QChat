@@ -4,7 +4,11 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { spawnSync } from 'node:child_process';
+import { writeFileSync } from 'node:fs';
+
 import { buildHeader, composeScript, parseHeader } from '../src/scripts/header.js';
+import { interpreterFor, pythonInterpreter, runScriptFile } from '../src/scripts/runner.js';
 import { ScriptError, ScriptRegistry } from '../src/scripts/registry.js';
 import type { ScriptMeta } from '../src/scripts/types.js';
 
@@ -208,4 +212,47 @@ describe('ScriptRegistry', () => {
     locked.create({ name: 'locked', language: 'js', description: 'x' });
     await expect(locked.run('locked')).rejects.toThrow(ScriptError);
   });
+});
+
+/* ── interpreters ───────────────────────────────────────────────────────── */
+
+describe('script interpreters', () => {
+  it('runs javascript with the current node binary', () => {
+    expect(interpreterFor('js')).toBe(process.execPath);
+  });
+
+  it('lets INFAGENT_PYTHON win, and otherwise finds a python that answers', () => {
+    const previous = process.env['INFAGENT_PYTHON'];
+    try {
+      process.env['INFAGENT_PYTHON'] = 'C:/tools/python.exe';
+      expect(pythonInterpreter()).toBe('C:/tools/python.exe');
+    } finally {
+      if (previous === undefined) delete process.env['INFAGENT_PYTHON'];
+      else process.env['INFAGENT_PYTHON'] = previous;
+    }
+
+    // Without the override the resolver probes python3 → python → py, so it
+    // works on Windows (which has no `python3`) as well as on Linux.
+    const found = pythonInterpreter();
+    expect(['python3', 'python', 'py']).toContain(found);
+  });
+
+  it('runs a python script when this machine has an interpreter', async () => {
+    const python = pythonInterpreter();
+    const available = spawnSync(python, ['--version'], { stdio: 'ignore' }).status === 0;
+    if (!available) {
+      // Nothing to test on a machine without Python — the ENOENT path is
+      // reported as a normal script error instead.
+      expect(available).toBe(false);
+      return;
+    }
+
+    const dir = mkdtempSync(join(tmpdir(), 'infagent-py-'));
+    const file = join(dir, 'echo.py');
+    writeFileSync(file, 'import json, sys\nprint(json.dumps({"ok": True, "result": json.loads(sys.argv[1])}))\n');
+
+    const result = await runScriptFile(file, 'py', 'echo', { hello: 'world' }, { timeoutMs: 20_000 });
+    expect(result.ok, result.stderr).toBe(true);
+    expect(result.envelope).toEqual({ ok: true, result: { hello: 'world' } });
+  }, 30_000);
 });

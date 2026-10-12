@@ -19,7 +19,11 @@ plus a **Vue interface** with two tabs: a chat agent running **Qwen3-0.6B locall
 ```bash
 npm install
 
-# 1. run the console (API + interface on one port)
+# 1. install everything: the root package installs ui/ as well
+npm install
+# (on a machine where that step was skipped: npm run ui:install)
+
+# 2. run the console (API + interface on one port)
 npm run ui:build        # build the Vue app into ui/dist
 npm run build           # compile the TypeScript to dist/
 npm run serve           # → http://localhost:8787
@@ -411,7 +415,7 @@ Relevant InfAgent variables:
 | `INFAGENT_SCRIPTS_DIR` | `./scripts` | managed script folder |
 | `INFAGENT_SCRIPT_TIMEOUT_MS` | `30000` | per-run timeout |
 | `INFAGENT_ALLOW_RUN` | `1` | set to `0` to disable script execution |
-| `INFAGENT_PYTHON` | `python3` | interpreter for `.py` scripts |
+| `INFAGENT_PYTHON` | auto | interpreter for `.py` scripts; without it `python3`, `python` and `py` are probed in that order, so Windows works too |
 | `INFAGENT_NAME` | `InfAgent` | agent display name |
 | `INFAGENT_MODELS_DIR` | `<project>/models` | models folder |
 | `INFAGENT_MODEL_PATH` | `<modelsDir>/Qwen3-0.6B-Q4_K_M.gguf` | explicit model file |
@@ -424,14 +428,45 @@ Relevant InfAgent variables:
 | `SUPABASE_ACCESS_TOKEN` | — | Supabase personal access token, read from `.env` and referenced as `${SUPABASE_ACCESS_TOKEN}` in `mcp.json` |
 | `SUPABASE_PROJECT_REF` | — | Supabase project exposed through the remote MCP endpoint |
 
+## When something goes wrong
+
+**`vue-tsc` crashes with `Search string not found: "/supportedTSExtensions = .*(?=;)/"`.**
+`ui/` is its own npm package, so the root install has to have pulled its
+dependencies; npm otherwise falls back to a *globally* installed `vue-tsc`, which
+is often an old 1.x that patches the TypeScript compiler by regex and breaks on
+newer TypeScript. Run `npm run ui:install` (or plain `npm install` — the root
+`postinstall` does it) and build again; `ui`'s own `prebuild` step now checks the
+toolchain first and prints that sentence instead of a stack trace.
+
+**`Missing script: "ui:install"`.** Scripts resolve against the `package.json` of
+the current folder — `ui:install`, `ui:build` and the rest live in the *root*
+one, so run them from the repository root, not from `ui/`.
+
+**A `.py` script fails with `ENOENT`.** No Python on `PATH` under any of the
+usual names; set `INFAGENT_PYTHON` to the interpreter, e.g.
+`INFAGENT_PYTHON=py` on Windows.
+
+**A model answers slowly, or llama.cpp reports "too long prompt".** The context
+window is per model (`models/<id>.settings.json`), and the system prompt carries
+every script, callback and MCP tool. Raise `contextSize` for the model, or
+disconnect MCP servers you are not using in the **MCP** tab.
+
+**The weights are missing after a checkout.** They live outside the repository
+(`~/.cache/infagent/models` on Linux/macOS, `%USERPROFILE%\.cache\infagent\models`
+on Windows) — press **Download** in the Chat tab, or
+`infagent chat download <model-id>`.
+
 ## Scripts (npm)
 
 | Script | What it does |
 | --- | --- |
 | `npm run serve` | API + interface from `dist/` |
 | `npm run serve:dev` | same, with hot reload (`tsx watch`) |
+| `npm run ui:install` | install the interface's own dependencies (the root `postinstall` also does it) |
 | `npm run ui:build` / `ui:dev` | build / develop the Vue interface |
 | `npm run build` | compile `src/` → `dist/` |
+| `npm run build:all` | the library/CLI *and* the interface |
+| `npm run verify` | lint, type-check, tests and both builds in one go |
 | `npm run dev` | CLI from source with `tsx watch` |
 | `npm run typecheck` / `test` / `lint` / `format` | quality gates |
 | `npm run env:from-txt` | regenerate `.env` + `.env.example` |
@@ -452,12 +487,12 @@ InfAgent/
 │   ├── mcp/                   # JSON-RPC clients (stdio + Streamable HTTP) + manager + guards
 │   ├── skills/                # markdown skill registry
 │   └── server/                # HTTP API (scripts + chat SSE) + static UI
-├── ui/                        # Vue 3 + Tailwind + daisyUI interface
+├── ui/                        # Vue 3 + Tailwind + daisyUI interface (own package.json)
 ├── scripts/                   # agent-authored .js / .py callbacks
 ├── mcp/                       # bundled MCP servers (filesystem, fetch, sqlite) + lib/ + data/
 ├── skills/                    # markdown skill files (see skills/README.md)
 ├── tests/                     # vitest: env, agent, scripts, search, skills, mcp, http
-└── tools/                     # env generator, GitHub publish helper
+└── tools/                     # env generator, GitHub publish helper, UI deps bootstrap
 ```
 
 ## License

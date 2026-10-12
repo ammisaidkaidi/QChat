@@ -3,10 +3,12 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "InfAgent interface — Vue 3 + Tailwind + daisyUI console for the agent script toolbox.",
+  "description": "InfAgent interface \u2014 Vue 3 + Tailwind + daisyUI console for the agent script toolbox.",
   "scripts": {
     "dev": "vite",
+    "prebuild": "node scripts/preflight.mjs",
     "build": "vue-tsc --noEmit && vite build",
+    "typecheck": "vue-tsc --noEmit",
     "preview": "vite preview --host"
   },
   "dependencies": {

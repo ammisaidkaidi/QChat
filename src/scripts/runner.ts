@@ -6,7 +6,7 @@
  * No shell is involved, the file must live inside the registry root, and a
  * hard timeout kills runaway scripts.
  */
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import process from 'node:process';
 
 import type { ScriptLanguage, ScriptRunResult } from './types.js';
@@ -19,13 +19,44 @@ export interface RunScriptOptions {
   binary?: string;
 }
 
-const INTERPRETERS: Record<ScriptLanguage, string> = {
-  js: process.execPath,
-  py: process.env['INFAGENT_PYTHON'] ?? 'python3',
-};
+/**
+ * Candidate Python interpreters, in order of preference.
+ *
+ * `python3` is the conventional name on Linux and macOS; Windows ships `python`
+ * and often `py` instead, which is why a hard-coded `python3` fails there with
+ * ENOENT. `INFAGENT_PYTHON` always wins when it is set.
+ */
+const PYTHON_CANDIDATES = ['python3', 'python', 'py'];
+
+let resolvedPython: string | null = null;
+
+/** True when `binary --version` runs — cheap, and cached by Node's PATH lookup. */
+function usable(binary: string): boolean {
+  try {
+    const probe = spawnSync(binary, ['--version'], { stdio: 'ignore', timeout: 5_000 });
+    return probe.status === 0;
+  } catch {
+    return false;
+  }
+}
+
+/** The Python to use: the override, else the first interpreter that answers. */
+export function pythonInterpreter(): string {
+  // The override is read on every call so a long-lived process (or a test) can
+  // change it without clearing the cache.
+  const override = process.env['INFAGENT_PYTHON'];
+  if (override) return override;
+  if (resolvedPython) return resolvedPython;
+  for (const candidate of PYTHON_CANDIDATES) {
+    if (usable(candidate)) return (resolvedPython = candidate);
+  }
+  // Nothing found: keep the conventional name so the error message is familiar
+  // and the run fails with ENOENT rather than silently doing nothing.
+  return (resolvedPython = PYTHON_CANDIDATES[0] as string);
+}
 
 export function interpreterFor(language: ScriptLanguage): string {
-  return INTERPRETERS[language];
+  return language === 'js' ? process.execPath : pythonInterpreter();
 }
 
 export function commandLabel(

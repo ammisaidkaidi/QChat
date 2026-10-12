@@ -1,7 +1,7 @@
 {
   "name": "infagent",
   "version": "0.1.0",
-  "description": "InfAgent — TypeScript agent infrastructure toolkit (library + CLI).",
+  "description": "InfAgent \u2014 TypeScript agent infrastructure toolkit (library + CLI).",
   "license": "MIT",
   "type": "module",
   "engines": {
@@ -27,6 +27,7 @@
   "scripts": {
     "dev": "tsx watch src/cli.ts",
     "build": "tsc -p tsconfig.build.json",
+    "build:all": "npm run build && npm run ui:build",
     "start": "node dist/cli.js",
     "serve": "node dist/server/main.js",
     "serve:dev": "tsx watch src/server/main.ts",
@@ -42,9 +43,11 @@
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "verify": "npm run lint && npm run typecheck && npm test && npm run build && npm run ui:build",
     "env:from-txt": "node tools/env-from-txt.mjs",
     "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
     "prepublishOnly": "npm run clean && npm run build",
+    "postinstall": "node tools/ui-deps.mjs",
     "chat:ask": "node dist/cli.js chat ask",
     "chat:model": "node dist/cli.js chat download"
   },

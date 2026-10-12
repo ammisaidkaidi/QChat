@@ -27,3 +27,7 @@ env.txt
 *.env.bak
 .netrc
 .git-credentials
+
+# Windows editors
+Thumbs.db
+Desktop.ini

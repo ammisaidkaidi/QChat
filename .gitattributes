@@ -1,0 +1,10 @@
+# One checkout on every OS: text files are stored with LF in the repository and
+# checked out with LF as well, so a Windows clone does not introduce CRLF churn
+# (the console rewrites settings files, and .bat files are the only exception).
+* text=auto eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.png binary
+*.jpg binary
+*.gguf binary
+*.ico binary
