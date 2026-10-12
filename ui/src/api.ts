@@ -5,6 +5,9 @@
 import type {
   AlertRecord,
   ChatConfig,
+  EnvSaveResult,
+  EnvSnapshot,
+  PromptCatalogue,
   McpCatalogue,
   SearchReport,
   SkillDetailFull,
@@ -94,6 +97,38 @@ export const api = {
     request(`/api/scripts/${encodeURIComponent(name)}/run`, { method: 'POST', body: { args } }),
 
   tools: (): Promise<{ tools: ToolDefinition[]; systemPrompt: string }> => request('/api/tools'),
+};
+
+/** The `.env` file behind the Config tab. */
+export const envApi = {
+  read: (): Promise<EnvSnapshot> => request<EnvSnapshot>('/api/env'),
+
+  /**
+   * Write values. Secret values are never sent back by the server, so an
+   * unchanged secret is left alone by simply omitting its key here.
+   */
+  save: (input: {
+    updates?: Record<string, string>;
+    remove?: string[];
+  }): Promise<EnvSaveResult> => request<EnvSaveResult>('/api/env', { method: 'PUT', body: input }),
+};
+
+/** System-prompt templates: the "way of thinking" picker. */
+export const promptsApi = {
+  list: (): Promise<PromptCatalogue> => request<PromptCatalogue>('/api/prompts'),
+
+  save: (input: {
+    name: string;
+    description?: string;
+    prompt: string;
+    tags?: string[];
+  }): Promise<PromptCatalogue> => request<PromptCatalogue>('/api/prompts', { method: 'POST', body: input }),
+
+  remove: (name: string): Promise<PromptCatalogue> =>
+    request<PromptCatalogue>(`/api/prompts/${encodeURIComponent(name)}`, { method: 'DELETE' }),
+
+  select: (name: string): Promise<{ active: string }> =>
+    request<{ active: string }>('/api/prompts/active', { method: 'PUT', body: { name } }),
 };
 
 /* ── chat: server-sent events ─────────────────────────────────────────────── */

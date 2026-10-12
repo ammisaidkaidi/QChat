@@ -32,6 +32,7 @@ import { ScriptRegistry } from '../scripts/registry.js';
 import { SkillRegistry } from '../skills/registry.js';
 import { DEFAULT_MODELS_DIR, ModelStore } from './modelStore.js';
 import type { ModelRecord, ModelSettings } from './modelStore.js';
+import { SystemPromptStore } from './prompts.js';
 import {
   answerUsesResult,
   asksAboutToolbox,
@@ -103,6 +104,8 @@ export interface QwenEngineOptions {
   weightsDir?: string;
   /** Explicit weights that bypass the catalogue entirely. */
   modelPath?: string;
+  /** System-prompt templates the user can pick from. Defaults to the models folder. */
+  prompts?: SystemPromptStore;
   modelUrl?: string;
   contextSize?: number;
   threads?: number;
@@ -173,6 +176,8 @@ export class QwenEngine {
   public readonly alerts: AlertBus;
   /** Catalogue over `models/`: which model is used, and how. */
   public readonly store: ModelStore;
+  /** Selectable system-prompt templates ("way of thinking"). */
+  public readonly prompts: SystemPromptStore;
   private readonly idleUnloadMs: number;
   private readonly allowRun: boolean;
   /** Explicit overrides; unset values follow the active model's settings. */
@@ -212,6 +217,7 @@ export class QwenEngine {
     // Ship the bundled model's settings file on first run, so the folder is
     // self-describing even before the weights are fetched.
     if (this.store.list().length === 0) this.store.register(DEFAULT_MODEL);
+    this.prompts = options.prompts ?? new SystemPromptStore({ catalogue: this.store });
 
     const env = (key: string): number | null => {
       const raw = process.env[key];
@@ -555,6 +561,12 @@ export class QwenEngine {
             inputSchema: tool.inputSchema,
           }))
         : [];
+      // The style guide is the user's choice: an explicit `promptTemplate` on the
+      // request wins, otherwise the template selected in the console applies.
+      const styleGuide =
+        request.promptTemplate !== undefined
+          ? request.promptTemplate.trim()
+          : (this.prompts?.activePrompt() ?? '');
       const systemPrompt =
         request.systemPrompt?.trim() ||
         [
@@ -564,6 +576,7 @@ export class QwenEngine {
             tools: useTools,
             thinking,
             style: model.style,
+            styleGuide,
             // Tool declarations are a per-turn cost. At ~3.2 characters per
             // token this leaves most of a small window to the conversation.
             toolBudget: Math.max(1800, Math.min(7000, Math.round(model.contextSize * 1.35))),
@@ -577,9 +590,7 @@ export class QwenEngine {
       // `/no_think` is a Qwen3-only soft switch: sending it to Hammer2.1 or
       // xLAM would just be stray text at the end of the user turn.
       const prompt =
-        thinking || model.style !== 'qwen3'
-          ? lastUser.content
-          : `${lastUser.content}\n/no_think`;
+        thinking || model.style !== 'qwen3' ? lastUser.content : `${lastUser.content}\n/no_think`;
 
       const session = await this.sessionFor(loaded, systemPrompt, history.slice(0, lastUserIndex));
       if (process.env['INFAGENT_CHAT_DEBUG'] === '1') {
@@ -619,7 +630,9 @@ export class QwenEngine {
        */
       const tokenBudget = (prompt: string): number => {
         const chars =
-          session.getChatHistory().reduce((sum: number, item: unknown) => sum + historyChars(item), 0) +
+          session
+            .getChatHistory()
+            .reduce((sum: number, item: unknown) => sum + historyChars(item), 0) +
           prompt.length +
           256;
         const room = model.contextSize - Math.ceil(chars / 3.2) - 96;

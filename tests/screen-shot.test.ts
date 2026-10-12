@@ -3,10 +3,10 @@
  *
  * The desktop backend needs a real display (or xvfb), so the tests drive the
  * `url` path instead against a tiny local page, and are skipped when Playwright
- * is not installed.
+ * or its chromium build is not installed (`npx playwright install chromium`).
  */
 import { createServer, type Server } from 'node:http';
-import { mkdtempSync, readdirSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -17,11 +17,15 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { run } from '../scripts/screen_shot.js';
 
 // The specifier is built at runtime so the file type-checks (and the suite is
-// skipped) on a checkout where the optional browser dependency is absent.
+// skipped) on a checkout where the optional browser dependency is absent. The
+// module alone is not enough: `npm ci` installs it on Windows too, but the
+// chromium build only exists after `npx playwright install chromium`, and the
+// suite would then fail on a machine that never asked for a browser.
 const playwrightSpecifier = 'playwright';
-const hasPlaywright = await import(playwrightSpecifier)
-  .then(() => true)
-  .catch(() => false);
+const chromium = await import(playwrightSpecifier)
+  .then((module) => module.chromium)
+  .catch(() => null);
+const hasPlaywright = Boolean(chromium && existsSync(chromium.executablePath()));
 
 let server: Server;
 let page = '';

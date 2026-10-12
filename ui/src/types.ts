@@ -281,3 +281,50 @@ export type ChatEvent =
   | { type: 'stats'; totalTokens: number; tokensPerSecond: number; durationMs: number }
   | { type: 'done' }
   | { type: 'error'; message: string };
+
+/** One variable in the Config tab (`GET /api/env`). */
+export interface EnvEntry {
+  key: string;
+  /** Real value, unless the key holds a credential — then `null`. */
+  value: string | null;
+  /** What the value column shows (a mask for credentials). */
+  masked: string;
+  secret: boolean;
+  /** False when the key is declared but has no value. */
+  set: boolean;
+  group: string;
+  note: string;
+}
+
+export interface EnvSnapshot {
+  path: string;
+  reference: string;
+  mask: string;
+  exists: boolean;
+  entries: EnvEntry[];
+}
+
+export interface EnvSaveResult {
+  path: string;
+  changed: string[];
+  removed: string[];
+  backup: string | null;
+  note: string;
+  snapshot: Omit<EnvSnapshot, 'reference' | 'mask'>;
+}
+
+/** One "way of thinking" the user can select (`models/systemPrompts.json`). */
+export interface SystemPromptTemplate {
+  name: string;
+  description: string;
+  prompt: string;
+  tags?: string[];
+  builtin?: boolean;
+  updatedAt?: string;
+}
+
+export interface PromptCatalogue {
+  file: string;
+  active: string;
+  prompts: SystemPromptTemplate[];
+}

@@ -16,6 +16,8 @@ import { QwenEngine, ChatError } from '../chat/qwen.js';
 import { McpManager } from '../mcp/manager.js';
 import { asSkillInput, SkillError, SkillRegistry } from '../skills/registry.js';
 import { AlertError, asAlertInput } from '../capabilities/alerts.js';
+import { EnvFileError, MASK, readEnvFile, writeEnvFile } from '../config/envFile.js';
+import { PromptError } from '../chat/prompts.js';
 import { openSse } from './sse.js';
 import { VERSION } from '../version.js';
 const MAX_BODY_BYTES = 1_000_000;
@@ -138,6 +140,9 @@ export function createServer(options = {}) {
         });
     const alerts = options.alerts ?? engine.alerts;
     const uiDir = options.uiDir ?? defaultUiDir();
+    const prompts = options.prompts ?? engine.prompts;
+    const envFile = resolve(options.envFile ?? join(process.cwd(), '.env'));
+    const envReference = resolve(options.envReference ?? join(process.cwd(), '.env.example'));
     registry.ensureRoot();
     skills.ensureRoot();
     // Connect the configured servers in the background: the console reports state,
@@ -264,6 +269,101 @@ export function createServer(options = {}) {
                         return;
                     }
                     sendJson(res, 404, { error: `Unknown chat route: ${pathname}` });
+                    return;
+                }
+                /* ── the .env the console edits (Config tab) ─────────────────────── */
+                if (segments[1] === 'env') {
+                    const reference = existsSync(envReference) ? readFileSync(envReference, 'utf8') : '';
+                    if (method === 'GET') {
+                        const snapshot = readEnvFile(envFile, reference);
+                        sendJson(res, 200, {
+                            ...snapshot,
+                            reference: envReference,
+                            // Values of secrets are never serialised — the interface shows
+                            // "set" plus a mask and can only replace them, never read them.
+                            mask: MASK,
+                        });
+                        return;
+                    }
+                    if (method === 'PUT' || method === 'POST') {
+                        const body = await readBody(req);
+                        const updates = {};
+                        if (typeof body['updates'] === 'object' && body['updates'] !== null) {
+                            for (const [key, value] of Object.entries(body['updates'])) {
+                                if (typeof value !== 'string') {
+                                    sendJson(res, 400, { error: `The value for ${key} must be a string.` });
+                                    return;
+                                }
+                                updates[key] = value;
+                            }
+                        }
+                        const remove = Array.isArray(body['remove'])
+                            ? body['remove'].filter((key) => typeof key === 'string')
+                            : [];
+                        if (Object.keys(updates).length === 0 && remove.length === 0) {
+                            sendJson(res, 400, { error: 'Send an `updates` object and/or a `remove` array.' });
+                            return;
+                        }
+                        try {
+                            const result = writeEnvFile(envFile, { updates, remove });
+                            sendJson(res, 200, {
+                                ...result,
+                                // The running process already sees the new values; servers that
+                                // were started earlier keep theirs until they are restarted.
+                                note: 'Saved. Values apply to this process immediately; restart an MCP server to give it the new environment.',
+                                snapshot: readEnvFile(envFile, reference),
+                            });
+                        }
+                        catch (error) {
+                            if (error instanceof EnvFileError) {
+                                sendJson(res, error.code === 'bad_request' ? 400 : 500, { error: error.message });
+                                return;
+                            }
+                            throw error;
+                        }
+                        return;
+                    }
+                    sendJson(res, 405, { error: 'Use GET or PUT /api/env.' });
+                    return;
+                }
+                /* ── system-prompt templates ("way of thinking") ─────────────────── */
+                if (segments[1] === 'prompts') {
+                    const name = segments[2] ? decodeURIComponent(segments[2]) : '';
+                    try {
+                        if (method === 'GET') {
+                            sendJson(res, 200, {
+                                file: prompts.file,
+                                active: prompts.activeName(),
+                                prompts: prompts.list(),
+                            });
+                            return;
+                        }
+                        if (method === 'PUT' && name === 'active') {
+                            const body = await readBody(req);
+                            const wanted = typeof body['name'] === 'string' ? body['name'] : '';
+                            sendJson(res, 200, { active: prompts.setActive(wanted) });
+                            return;
+                        }
+                        if (method === 'POST') {
+                            const body = await readBody(req);
+                            const saved = prompts.save(body);
+                            sendJson(res, 200, { saved, active: prompts.activeName(), prompts: prompts.list() });
+                            return;
+                        }
+                        if (method === 'DELETE' && name) {
+                            const result = prompts.remove(name);
+                            sendJson(res, 200, { ...result, prompts: prompts.list() });
+                            return;
+                        }
+                    }
+                    catch (error) {
+                        if (error instanceof PromptError) {
+                            sendJson(res, error.code === 'not_found' ? 404 : 400, { error: error.message });
+                            return;
+                        }
+                        throw error;
+                    }
+                    sendJson(res, 405, { error: 'Use GET, POST or DELETE /api/prompts.' });
                     return;
                 }
                 if (segments[1] === 'search') {

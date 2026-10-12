@@ -44,6 +44,11 @@ export interface SystemPromptOptions {
      * model's context size; tools that do not fit are listed by name only.
      */
     toolBudget?: number;
+    /**
+     * The "way of thinking" the user picked (`models/systemPrompts.json`). It is
+     * placed high on purpose: the small models otherwise drown it in tool listings.
+     */
+    styleGuide?: string;
     /** Tools exposed by connected MCP servers, with the schema each one declares. */
     mcp?: readonly {
         server: string;

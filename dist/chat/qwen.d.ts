@@ -4,6 +4,7 @@ import { ScriptRegistry } from '../scripts/registry.js';
 import { SkillRegistry } from '../skills/registry.js';
 import { DEFAULT_MODELS_DIR, ModelStore } from './modelStore.js';
 import type { ModelRecord, ModelSettings } from './modelStore.js';
+import { SystemPromptStore } from './prompts.js';
 import type { ChatEvent, ChatRequest, EngineStatus } from './types.js';
 /**
  * The model InfAgent ships with: its settings file is committed under `models/`
@@ -30,6 +31,8 @@ export interface QwenEngineOptions {
     weightsDir?: string;
     /** Explicit weights that bypass the catalogue entirely. */
     modelPath?: string;
+    /** System-prompt templates the user can pick from. Defaults to the models folder. */
+    prompts?: SystemPromptStore;
     modelUrl?: string;
     contextSize?: number;
     threads?: number;
@@ -57,6 +60,8 @@ export declare class QwenEngine {
     readonly alerts: AlertBus;
     /** Catalogue over `models/`: which model is used, and how. */
     readonly store: ModelStore;
+    /** Selectable system-prompt templates ("way of thinking"). */
+    readonly prompts: SystemPromptStore;
     private readonly idleUnloadMs;
     private readonly allowRun;
     /** Explicit overrides; unset values follow the active model's settings. */

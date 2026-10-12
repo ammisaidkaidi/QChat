@@ -8,6 +8,8 @@ import ChatPanel from './components/ChatPanel.vue';
 import McpPanel from './components/McpPanel.vue';
 import SkillsPanel from './components/SkillsPanel.vue';
 import CreateScriptModal from './components/CreateScriptModal.vue';
+import EnvPanel from './components/EnvPanel.vue';
+import PromptsPanel from './components/PromptsPanel.vue';
 import ScriptDetail from './components/ScriptDetail.vue';
 import ScriptsPanel from './components/ScriptsPanel.vue';
 import ToolConsole from './components/ToolConsole.vue';
@@ -19,20 +21,23 @@ import type {
   ToolDefinition,
 } from './types';
 
-type Tab = 'chat' | 'scripts' | 'skills' | 'mcp';
+type Tab = 'chat' | 'scripts' | 'skills' | 'mcp' | 'prompts' | 'config';
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'chat', label: '💬 Chat' },
   { id: 'scripts', label: '🧩 Scripts' },
   { id: 'skills', label: '📚 Skills' },
   { id: 'mcp', label: '🔌 MCP' },
+  { id: 'prompts', label: '🧠 Prompts' },
+  { id: 'config', label: '⚙️ Config' },
 ];
 
 const TAB_KEY = 'infagent.tab';
 const storedTab = ((): Tab => {
   try {
     const value = localStorage.getItem(TAB_KEY);
-    return value === 'scripts' || value === 'skills' || value === 'mcp' ? value : 'chat';
+    const known: Tab[] = ['scripts', 'skills', 'mcp', 'prompts', 'config'];
+    return known.includes(value as Tab) ? (value as Tab) : 'chat';
   } catch {
     return 'chat';
   }
@@ -230,15 +235,20 @@ onMounted(async () => {
       </div>
     </main>
 
-    <main
-      v-else-if="tab === 'skills'"
-      class="mx-auto max-w-7xl p-3 sm:p-4"
-    >
+    <main v-else-if="tab === 'skills'" class="mx-auto max-w-7xl p-3 sm:p-4">
       <SkillsPanel @notify="notify" />
     </main>
 
     <main v-else-if="tab === 'mcp'" class="mx-auto max-w-7xl p-3 sm:p-4">
       <McpPanel @notify="notify" />
+    </main>
+
+    <main v-else-if="tab === 'prompts'" class="mx-auto max-w-7xl p-3 sm:p-4">
+      <PromptsPanel @notify="notify" />
+    </main>
+
+    <main v-else-if="tab === 'config'" class="mx-auto max-w-7xl p-3 sm:p-4">
+      <EnvPanel @notify="notify" />
     </main>
 
     <main v-else class="mx-auto max-w-7xl p-3 sm:p-4">

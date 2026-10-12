@@ -231,8 +231,13 @@ function mcpFunctionSchema(server, tool) {
     };
 }
 export function buildSystemPrompt(options) {
-    const { records, tools, thinking, style = 'qwen3', identity = IDENTITY, net = false, skills, mcp = [], } = options;
+    const { records, tools, thinking, style = 'qwen3', identity = IDENTITY, net = false, skills, mcp = [], styleGuide, } = options;
     const parts = [identity];
+    if (styleGuide?.trim()) {
+        // One template, one heading, no preamble: a 0.6B model copies the last
+        // instruction it read, so the selected style stays short and imperative.
+        parts.push('', '# Working style', styleGuide.trim());
+    }
     if (style === 'qwen3' && !thinking) {
         // Qwen3 honours two soft switches: the token itself and an explicit
         // directive. Both are placed high so a long tool listing cannot bury them.

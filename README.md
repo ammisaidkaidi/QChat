@@ -130,6 +130,38 @@ the next scan writes a settings file for it; `GET /api/models` and
 
 CLI equivalents: `npm run chat:model`, `npm run chat:ask -- "…"`.
 
+### Thinking styles — `models/systemPrompts.json`
+
+The **🧠 Prompts** tab holds the *way of thinking* the agent should use. Each
+template is one entry in a plain JSON array:
+
+```json
+[
+  {
+    "name": "Step by step",
+    "description": "Show the reasoning as numbered steps.",
+    "prompt": "Work through the request in numbered steps: …",
+    "tags": ["reasoning"],
+    "builtin": true
+  }
+]
+```
+
+- Six templates ship with the project (Precise, Step by step, Tool first,
+  Explain simply, Skeptical, Options); edit, duplicate, delete or add your own.
+- The picker in the **Chat** tab (🧠 next to the model selector) chooses the
+  active one; “default style” answers with no style guide at all.
+- The chosen `prompt` is injected into every system prompt as a short
+  **`# Working style`** section, right after the identity — high enough that a
+  small model does not lose it under the tool declarations.
+- The selection is remembered in `models/models-settings.json` (`activePrompt`),
+  so the JSON file stays a clean array as above.
+- Per turn, `POST /api/chat/completions` accepts `promptTemplate` to override the
+  selection (`""` = no style guide), which the CLI and tests use.
+
+API: `GET /api/prompts`, `POST /api/prompts` (create/update), `DELETE
+/api/prompts/<name>`, `PUT /api/prompts/active` with `{ "name": "…" }`.
+
 Interface development with hot reload (`vite` on 5173, proxying `/api` to 8787):
 
 ```bash
@@ -200,6 +232,14 @@ console.log(result.envelope);
 // Hand this to an LLM as its system prompt / tool descriptions:
 const tools = scriptSystemPrompt();
 ```
+
+### Screenshots — `relativePath`
+
+`screen_shot` reports the file it wrote twice: `file` is always the absolute
+path, `relativePath` is the path relative to the repository root when the image
+is inside it, and the absolute path again when it is not (a `../../tmp/...`
+label tells nobody anything). Both are plain strings; pass whichever suits the
+message you are building.
 
 ## Internet, MCP servers and skills
 
@@ -367,6 +407,8 @@ infagent config | run <task> | --version
 | `GET /api/skills/:name` | one skill (front matter + body) |
 | `PUT /api/skills/:name` | update a skill |
 | `DELETE /api/skills/:name` | remove a skill |
+| `GET/PUT /api/env` | read the `.env` (secrets masked) / write keys |
+| `GET/POST /api/prompts`, `PUT /api/prompts/active`, `DELETE /api/prompts/<name>` | thinking-style templates and the selection |
 | `GET /api/mcp` | `{ configPath, servers[], tools[] }` |
 | `POST /api/mcp/servers` | add a server to `mcp.json` |
 | `DELETE /api/mcp/servers/:name` | remove a server |
@@ -408,6 +450,28 @@ env.txt ──(npm run env:from-txt)──▶ .env          ← gitignored, read
 
 Keys matching `SECRET|TOKEN|PASSWORD|PASS|…|DATABASE_URL` are written to `.env`
 but blanked in `.env.example`. The previous `.env` is backed up to `.env.bak`.
+
+### Config tab — editing `.env` from the console
+
+The **⚙️ Config** tab lists every key with its section, the comment from
+`.env.example` and a value field. Rules it follows:
+
+- **A secret is never sent to the browser.** Keys that look like credentials are
+  reported as `set` plus a mask (`••••••`); you can replace a value, never read it
+  back. `GET /api/env` returns no secret value, so a screenshot or a log cannot
+  leak one.
+- **Untouched stays untouched.** Only the fields you edit are sent, so saving
+  never rewrites a credential you did not touch.
+- **A write is atomic and reversible.** Keys are validated (`[A-Za-z_][A-Za-z0-9_]*`),
+  the file is written through a temporary file, previous contents are kept as
+  `.env.bak`, and the file stays `0600`.
+- **The live process is updated** (`process.env`), so the next chat turn sees the
+  new values. MCP servers started earlier keep theirs until restarted from the
+  MCP tab.
+
+`env.txt` remains the master reference for a *fresh* `.env`: regenerate with
+`npm run env:from-txt`. Edits made in the Config tab change `.env` only — copy
+them back into `env.txt` if you want them to survive a regeneration.
 
 Relevant InfAgent variables:
 
@@ -471,6 +535,12 @@ usual names; set `INFAGENT_PYTHON` to the interpreter, e.g.
 window is per model (`models/<id>.settings.json`), and the system prompt carries
 every script, callback and MCP tool. Raise `contextSize` for the model, or
 disconnect MCP servers you are not using in the **MCP** tab.
+
+**`tests/screen-shot.test.ts` is skipped.** It drives `scripts/screen_shot.js`
+through a real browser, so it runs only when Playwright *and* its chromium build
+are present: `npm i -D playwright` then `npx playwright install chromium`. Without
+the browser the five cases are reported as skipped rather than failed, and the
+`screen_shot` callback itself keeps working on any machine that has a display.
 
 **The weights are missing after a checkout.** They live outside the repository
 (`~/.cache/infagent/models` on Linux/macOS, `%USERPROFILE%\.cache\infagent\models`

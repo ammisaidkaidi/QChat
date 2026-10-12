@@ -99,6 +99,8 @@ export interface ModelCatalogue {
   active: string;
   /** Offering order; unknown ids are appended at the end. */
   order: string[];
+  /** Name of the selected system-prompt template (`models/systemPrompts.json`). */
+  activePrompt?: string;
 }
 
 export interface ModelStoreOptions {
@@ -185,6 +187,9 @@ export class ModelStore {
       version: stored.version ?? CATALOGUE_VERSION,
       active: stored.active ?? '',
       order: Array.isArray(stored.order) ? stored.order : [],
+      ...(typeof stored.activePrompt === 'string' && stored.activePrompt
+        ? { activePrompt: stored.activePrompt }
+        : {}),
     };
   }
 
@@ -375,6 +380,22 @@ export class ModelStore {
     const order = [id, ...catalogue.order.filter((entry) => entry !== id)];
     this.saveCatalogue({ ...catalogue, version: CATALOGUE_VERSION, active: id, order });
     return { ...record, active: true };
+  }
+
+  /** Name of the selected system-prompt template, or '' when none is selected. */
+  public activePrompt(): string {
+    return this.catalogue().activePrompt ?? '';
+  }
+
+  /** Remember which system-prompt template the user picked. */
+  public setActivePrompt(name: string): string {
+    const catalogue = this.catalogue();
+    const wanted = name.trim();
+    const next: ModelCatalogue = { ...catalogue, version: CATALOGUE_VERSION };
+    if (wanted) next.activePrompt = wanted;
+    else delete next.activePrompt;
+    this.saveCatalogue(next);
+    return wanted;
   }
 
   /** Sensible settings for a GGUF we know nothing about yet. */

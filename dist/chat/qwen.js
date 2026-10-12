@@ -19,6 +19,7 @@ import { AlertBus } from '../capabilities/alerts.js';
 import { ScriptRegistry } from '../scripts/registry.js';
 import { SkillRegistry } from '../skills/registry.js';
 import { DEFAULT_MODELS_DIR, ModelStore } from './modelStore.js';
+import { SystemPromptStore } from './prompts.js';
 import { answerUsesResult, asksAboutToolbox, buildSystemPrompt, fallbackAnswer, formatToolResult, stripJsonBlobs, toolResultPrompt, } from './prompt.js';
 import { OutputSplitter } from './splitter.js';
 import { dispatchTool, extractToolCalls } from './tools.js';
@@ -106,6 +107,8 @@ export class QwenEngine {
     alerts;
     /** Catalogue over `models/`: which model is used, and how. */
     store;
+    /** Selectable system-prompt templates ("way of thinking"). */
+    prompts;
     idleUnloadMs;
     allowRun;
     /** Explicit overrides; unset values follow the active model's settings. */
@@ -143,6 +146,7 @@ export class QwenEngine {
         // self-describing even before the weights are fetched.
         if (this.store.list().length === 0)
             this.store.register(DEFAULT_MODEL);
+        this.prompts = options.prompts ?? new SystemPromptStore({ catalogue: this.store });
         const env = (key) => {
             const raw = process.env[key];
             if (raw === undefined)
@@ -449,6 +453,11 @@ export class QwenEngine {
                     inputSchema: tool.inputSchema,
                 }))
                 : [];
+            // The style guide is the user's choice: an explicit `promptTemplate` on the
+            // request wins, otherwise the template selected in the console applies.
+            const styleGuide = request.promptTemplate !== undefined
+                ? request.promptTemplate.trim()
+                : (this.prompts?.activePrompt() ?? '');
             const systemPrompt = request.systemPrompt?.trim() ||
                 [
                     model.agentPrompt,
@@ -457,6 +466,7 @@ export class QwenEngine {
                         tools: useTools,
                         thinking,
                         style: model.style,
+                        styleGuide,
                         // Tool declarations are a per-turn cost. At ~3.2 characters per
                         // token this leaves most of a small window to the conversation.
                         toolBudget: Math.max(1800, Math.min(7000, Math.round(model.contextSize * 1.35))),
@@ -469,9 +479,7 @@ export class QwenEngine {
                     .join('\n\n');
             // `/no_think` is a Qwen3-only soft switch: sending it to Hammer2.1 or
             // xLAM would just be stray text at the end of the user turn.
-            const prompt = thinking || model.style !== 'qwen3'
-                ? lastUser.content
-                : `${lastUser.content}\n/no_think`;
+            const prompt = thinking || model.style !== 'qwen3' ? lastUser.content : `${lastUser.content}\n/no_think`;
             const session = await this.sessionFor(loaded, systemPrompt, history.slice(0, lastUserIndex));
             if (process.env['INFAGENT_CHAT_DEBUG'] === '1') {
                 const rendered = session
@@ -507,7 +515,9 @@ export class QwenEngine {
              * estimate errs on the safe side.
              */
             const tokenBudget = (prompt) => {
-                const chars = session.getChatHistory().reduce((sum, item) => sum + historyChars(item), 0) +
+                const chars = session
+                    .getChatHistory()
+                    .reduce((sum, item) => sum + historyChars(item), 0) +
                     prompt.length +
                     256;
                 const room = model.contextSize - Math.ceil(chars / 3.2) - 96;

@@ -69,6 +69,8 @@ export interface ModelCatalogue {
     active: string;
     /** Offering order; unknown ids are appended at the end. */
     order: string[];
+    /** Name of the selected system-prompt template (`models/systemPrompts.json`). */
+    activePrompt?: string;
 }
 export interface ModelStoreOptions {
     /** Where the settings files live. Defaults to `<root>/models`. */
@@ -123,6 +125,10 @@ export declare class ModelStore {
     private number;
     /** Point the catalogue at another model. Returns the new effective model. */
     setActive(id: string): ModelRecord;
+    /** Name of the selected system-prompt template, or '' when none is selected. */
+    activePrompt(): string;
+    /** Remember which system-prompt template the user picked. */
+    setActivePrompt(name: string): string;
     /** Sensible settings for a GGUF we know nothing about yet. */
     defaultSettings(id: string, file: string, extra?: Partial<ModelSettings>): ModelSettings;
     /** Write (or refresh) a model's settings file. */

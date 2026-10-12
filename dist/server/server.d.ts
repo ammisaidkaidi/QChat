@@ -4,6 +4,7 @@ import type { ScriptLanguage } from '../scripts/types.js';
 import { QwenEngine } from '../chat/qwen.js';
 import { McpManager } from '../mcp/manager.js';
 import { SkillRegistry } from '../skills/registry.js';
+import type { SystemPromptStore } from '../chat/prompts.js';
 import type { AlertBus } from '../capabilities/alerts.js';
 export interface ServerOptions {
     /** Registry backing `/api/scripts`. Defaults to `<cwd>/scripts`. */
@@ -18,6 +19,12 @@ export interface ServerOptions {
     engine?: QwenEngine;
     /** Folder with the built Vue app. Defaults to `<repo>/ui/dist`. */
     uiDir?: string;
+    /** The `.env` the Config tab edits. Defaults to `<cwd>/.env`. */
+    envFile?: string;
+    /** Reference file whose comments explain each key. Defaults to `<cwd>/.env.example`. */
+    envReference?: string;
+    /** System-prompt templates. Defaults to the engine's store. */
+    prompts?: SystemPromptStore;
     port?: number;
     host?: string;
 }

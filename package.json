@@ -1,7 +1,7 @@
 {
   "name": "infagent",
   "version": "0.1.0",
-  "description": "InfAgent \u2014 TypeScript agent infrastructure toolkit (library + CLI).",
+  "description": "InfAgent — TypeScript agent infrastructure toolkit (library + CLI).",
   "license": "MIT",
   "type": "module",
   "engines": {
@@ -67,6 +67,7 @@
     "@vitest/coverage-v8": "^4.1.11",
     "eslint": "^10.12.0",
     "eslint-config-prettier": "^10.1.8",
+    "playwright": "^1.64.0",
     "prettier": "^3.9.10",
     "tsx": "^4.23.15",
     "typescript": "^6.0.3",

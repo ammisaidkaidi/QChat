@@ -2,7 +2,7 @@
 import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue';
 
 import { pushAlert, raiseAlert } from '../alerts';
-import { chatApi, streamChat } from '../api';
+import { chatApi, promptsApi, streamChat } from '../api';
 import type { ChatStreamHandle } from '../api';
 import type {
   ChatConfig,
@@ -31,6 +31,9 @@ const draft = ref('');
 const busy = ref(false);
 const downloading = ref(false);
 const showSettings = ref(false);
+/** Thinking styles offered by the Prompts tab; the selected one shapes every turn. */
+const styles = ref<{ name: string; description: string }[]>([]);
+const activeStyle = ref('');
 const showPrompt = ref(false);
 const startedAt = ref<number | null>(null);
 const elapsed = ref(0);
@@ -137,12 +140,41 @@ function formatSize(bytes: number): string {
 async function loadModels(): Promise<void> {
   try {
     catalog.value = await chatApi.models();
+    await loadStyles();
   } catch (error) {
     emit('notify', (error as Error).message, 'error');
   }
 }
 
 /** Switch the model backing the chat; the weights load lazily. */
+async function loadStyles(): Promise<void> {
+  try {
+    const catalogue = await promptsApi.list();
+    styles.value = catalogue.prompts.map((entry) => ({
+      name: entry.name,
+      description: entry.description,
+    }));
+    activeStyle.value = catalogue.active;
+  } catch {
+    // The picker stays empty; chat is unaffected and falls back to the plain prompt.
+  }
+}
+
+async function selectStyle(event: Event): Promise<void> {
+  const value = (event.target as HTMLSelectElement).value;
+  try {
+    const result = await promptsApi.select(value);
+    activeStyle.value = result.active;
+    emit(
+      'notify',
+      result.active ? `Thinking style: ${result.active}` : 'Thinking style: default',
+      'success',
+    );
+  } catch (error) {
+    emit('notify', (error as Error).message, 'error');
+  }
+}
+
 async function selectModel(event: Event): Promise<void> {
   const id = (event.target as HTMLSelectElement).value;
   if (!id || id === catalog.value?.active) return;
@@ -521,6 +553,24 @@ onMounted(async () => {
               </option>
             </select>
 
+            <select
+              v-if="styles.length > 0"
+              class="select select-bordered select-xs max-w-[12rem]"
+              :value="activeStyle"
+              :disabled="busy"
+              :title="
+                styles.find((style) => style.name === activeStyle)?.description ??
+                'How the model should think and answer'
+              "
+              aria-label="Thinking style"
+              @change="selectStyle"
+            >
+              <option value="">default style</option>
+              <option v-for="style in styles" :key="style.name" :value="style.name">
+                🧠 {{ style.name }}
+              </option>
+            </select>
+
             <span
               class="badge badge-sm gap-1"
               :class="{
@@ -666,7 +716,9 @@ onMounted(async () => {
             ></textarea>
           </label>
 
-          <div class="flex flex-wrap items-center gap-2 border-t border-base-300 pt-3 sm:col-span-2">
+          <div
+            class="flex flex-wrap items-center gap-2 border-t border-base-300 pt-3 sm:col-span-2"
+          >
             <button
               class="btn btn-primary btn-sm"
               :class="{ 'btn-success': justSaved }"

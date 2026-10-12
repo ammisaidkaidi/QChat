@@ -53,6 +53,11 @@ export interface ChatRequest {
   systemPrompt?: string;
   /** Extra turns of tool calls allowed before the model must answer. */
   maxToolIterations?: number;
+  /**
+   * System-prompt template for this turn. Omit to use the one selected in the
+   * console; send "" to answer with no style guide at all.
+   */
+  promptTemplate?: string;
 }
 
 export type EngineState =

@@ -202,8 +202,12 @@ export async function run(args = {}) {
 
   return {
     file,
-    // `path.relative`, because a string replace never matched on Windows.
-    relativePath: relative(PROJECT_ROOT, file),
+    // Relative when it is inside the project, absolute when it is not (a
+    // `../../../tmp/…` path helps nobody). `path.relative` handles the Windows
+    // separator, which a string replace did not.
+    relativePath: relative(PROJECT_ROOT, file).startsWith('..')
+      ? file
+      : relative(PROJECT_ROOT, file),
     backend,
     source: url ?? (backend === 'xvfb' ? 'virtual display (no real screen attached)' : 'screen'),
     ...pngSize(file),
