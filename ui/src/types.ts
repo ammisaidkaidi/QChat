@@ -358,3 +358,39 @@ export interface PromptCatalogue {
   active: string;
   prompts: SystemPromptTemplate[];
 }
+
+/** One tool file under the toolbox root, as the Toolbox tab sees it. */
+export interface ToolboxFileEntry {
+  name: string;
+  bytes: number;
+  mtime: string;
+  /** Tool names this file exports (empty when the server is not running). */
+  tools: string[];
+  /** True when the running server loaded it, false when it refused it, null when unknown. */
+  loaded: boolean | null;
+}
+
+export interface ToolboxSnapshot {
+  root: string;
+  files: ToolboxFileEntry[];
+  /** Refusals the server reported, one line each. */
+  refused: string[];
+  /** Every tool the model can call, without the `toolbox__` prefix. */
+  tools: string[];
+  server: { name: string; state: string; configured: boolean; enabled: boolean };
+  limits: { maxBytes: number; maxFiles: number };
+}
+
+/** What a reload reported: what the tool list gained and lost. */
+export interface ToolboxReload {
+  ok: boolean;
+  text: string;
+  added: string[];
+  removed: string[];
+  refused: string[];
+}
+
+export interface ToolboxSaveResult {
+  file: { name: string; bytes: number; mtime: string };
+  reload: ToolboxReload;
+}

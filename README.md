@@ -550,6 +550,11 @@ infagent config | run <task> | --version
 | `DELETE /api/mcp/servers/:name` | remove a server |
 | `POST /api/mcp/servers/:name/start` \| `/stop` | connect or disconnect it |
 | `POST /api/mcp/tools` | `{ "tool": "server__tool", "args": {…} }` → call result |
+| `GET /api/toolbox` | the tool files: `{ root, files[], refused[], tools[], server, limits }` |
+| `GET /api/toolbox/file?name=…` | one tool file's source → `{ name, content, bytes, mtime }` |
+| `PUT /api/toolbox/file` | `{ "name": "my-tools.js", "content": "…" }` → `{ file, reload }` |
+| `DELETE /api/toolbox/file?name=…` | remove a tool file → `{ file, reload }` |
+| `POST /api/toolbox/reload` | re-import the folder → `{ reload: { ok, added[], removed[], refused[] } }` |
 | `GET /api/models` | the `models/` catalogue (ids, sizes, active flag) |
 | `PUT /api/models/active` | switch the active model |
 | `POST /api/models/refresh` | adopt GGUFs dropped into the folder |
@@ -558,7 +563,8 @@ infagent config | run <task> | --version
 
 `ui/` is a small console that follows the same design language as the API:
 
-Four tabs in the header: **Chat**, **Scripts**, **Skills** and **MCP**.
+Seven tabs in the header: **Chat**, **Scripts**, **Skills**, **Toolbox**, **MCP**,
+**Prompts** and **Config**.
 
 - **Chat** — local Qwen3-0.6B conversation: model picker over the `models/`
   folder, download button with progress, streaming bubbles, collapsible
@@ -576,6 +582,16 @@ Four tabs in the header: **Chat**, **Scripts**, **Skills** and **MCP**.
 - **MCP** — a card per server with a live state badge (`ready`, `starting`,
   `error`), connect / disconnect / remove, an add-server form and a *Try a tool*
   console that calls `server__tool` through the same dispatcher the model uses
+- **Toolbox** — `mcp/tools/` itself: every tool file with the tools it exports
+  and whether it loaded, the file open in an editor (**Save & reload** writes it
+  and re-imports, so the next message can already call the new tool), **+ New
+  file** from a template, **Upload** (button or drag a `.js`/`.mjs` file onto
+  the list), **Delete** behind a confirmation, and **↻ Reload server** for a
+  file changed outside the console. A save answers with the server's own report
+  — `+roll` / `−roll` / *no change* — and refusals are shown with their reason;
+  the same folder's rules apply as in the MCP server: ≤ 32 files, ≤ 64 kB each.
+  Creating, uploading or editing a file means running code you installed — the
+  tab says so once, and the server stays the only thing that decides what loads.
 
 ## Environment: `env.txt` is the source of truth
 
@@ -722,11 +738,13 @@ InfAgent/
 │   ├── scripts/               # script toolbox (header, registry, runner)
 │   ├── capabilities/          # web search, page fetching, alerts
 │   ├── mcp/                   # JSON-RPC clients (stdio + Streamable HTTP) + manager + guards
+│   │                          #   + the toolbox file store behind the Toolbox tab
 │   ├── skills/                # markdown skill registry
 │   └── server/                # HTTP API (scripts + chat SSE) + static UI
 ├── ui/                        # Vue 3 + Tailwind + daisyUI interface (own package.json)
 ├── scripts/                   # agent-authored .js / .py callbacks
-├── mcp/                       # bundled MCP servers (filesystem, fetch, sqlite) + lib/ + data/
+├── mcp/                       # bundled MCP servers (filesystem, fetch, sqlite, toolbox, code) + lib/ + data/
+│   └── tools/                 # your tool files — the toolbox server loads every *.js / *.mjs here
 ├── skills/                    # markdown skill files (see skills/README.md)
 ├── tests/                     # vitest: env, agent, scripts, search, skills, mcp, http
 └── tools/                     # env generator, GitHub publish helper, UI deps bootstrap

@@ -14,6 +14,7 @@ import { ScriptError, ScriptRegistry } from '../scripts/registry.js';
 import { webFetch, webSearch, WebError } from '../capabilities/search.js';
 import { QwenEngine, ChatError } from '../chat/qwen.js';
 import { McpManager } from '../mcp/manager.js';
+import { TOOLBOX_MAX_BYTES, TOOLBOX_MAX_FILES, ToolboxError, ToolboxFiles, toolboxRoot, } from '../mcp/toolboxFiles.js';
 import { asSkillInput, SkillError, SkillRegistry } from '../skills/registry.js';
 import { AlertError, asAlertInput } from '../capabilities/alerts.js';
 import { EnvFileError, MASK, isEnvKey, isSecretKey, readEnvFile, readEnvSecrets, readEnvValue, writeEnvFile, } from '../config/envFile.js';
@@ -124,6 +125,59 @@ function serveStatic(res, uiDir, pathname) {
     const type = MIME[extname(file)] ?? 'application/octet-stream';
     res.writeHead(200, { 'content-type': type });
     res.end(readFileSync(file));
+}
+/**
+ * What the running toolbox server says about its own folder: which file loaded,
+ * which tool it exports, and what was refused. Null when it is not running —
+ * the interface then shows the files without their load state, which is the
+ * honest answer rather than an empty list.
+ */
+async function toolboxStatus(mcp) {
+    try {
+        const called = await mcp.call('toolbox__tool_files', {});
+        if (!called.result.ok)
+            return null;
+        const payload = JSON.parse(called.result.text);
+        const files = {};
+        for (const entry of payload.files ?? []) {
+            if (typeof entry.file !== 'string')
+                continue;
+            files[entry.file.split('/').pop() ?? entry.file] = { tools: entry.tools ?? [] };
+        }
+        return { files, refused: payload.refused ?? [], tools: payload.tools ?? [] };
+    }
+    catch {
+        return null;
+    }
+}
+/**
+ * Tell the toolbox server to re-read its files, and hand the report back.
+ *
+ * The file on disk is already written when this runs: a reload that fails
+ * (server stopped, file refused) still leaves the file saved, so the caller can
+ * say what happened instead of pretending the save failed.
+ */
+async function reloadToolbox(mcp) {
+    try {
+        const called = await mcp.call('toolbox__reload_tools', { force: true });
+        const payload = JSON.parse(called.result.text);
+        return {
+            ok: called.result.ok,
+            text: called.result.text,
+            added: payload.added ?? [],
+            removed: payload.removed ?? [],
+            refused: payload.refused ?? [],
+        };
+    }
+    catch (error) {
+        return {
+            ok: false,
+            text: `The toolbox server did not reload: ${error instanceof Error ? error.message : 'unknown error'}`,
+            added: [],
+            removed: [],
+            refused: [],
+        };
+    }
 }
 export function createServer(options = {}) {
     const registry = options.registry ?? new ScriptRegistry();
@@ -477,6 +531,65 @@ export function createServer(options = {}) {
                         return;
                     }
                     sendJson(res, 404, { error: `Unknown skills route: ${pathname}` });
+                    return;
+                }
+                if (segments[1] === 'toolbox') {
+                    const files = new ToolboxFiles(toolboxRoot(mcp));
+                    const sub = segments[2];
+                    try {
+                        if (sub === undefined && method === 'GET') {
+                            const status = await toolboxStatus(mcp);
+                            const server = mcp.list().find((entry) => entry.name === 'toolbox');
+                            sendJson(res, 200, {
+                                root: files.root,
+                                files: files.list().map((file) => ({
+                                    ...file,
+                                    tools: status?.files[file.name]?.tools ?? [],
+                                    loaded: status ? status.files[file.name] !== undefined : null,
+                                })),
+                                refused: status?.refused ?? [],
+                                tools: status?.tools ?? [],
+                                server: {
+                                    name: 'toolbox',
+                                    state: server?.state ?? 'missing',
+                                    configured: server !== undefined,
+                                    enabled: server?.enabled ?? false,
+                                },
+                                limits: { maxBytes: TOOLBOX_MAX_BYTES, maxFiles: TOOLBOX_MAX_FILES },
+                            });
+                            return;
+                        }
+                        if (sub === 'file' && method === 'GET') {
+                            sendJson(res, 200, files.read(url.searchParams.get('name')));
+                            return;
+                        }
+                        if (sub === 'file' && method === 'PUT') {
+                            const body = await readBody(req);
+                            const saved = files.write(body['name'], body['content']);
+                            const reload = await reloadToolbox(mcp);
+                            sendJson(res, 200, { file: saved, reload });
+                            return;
+                        }
+                        if (sub === 'file' && method === 'DELETE') {
+                            const removed = files.remove(url.searchParams.get('name'));
+                            const reload = await reloadToolbox(mcp);
+                            sendJson(res, 200, { file: removed, reload });
+                            return;
+                        }
+                        if (sub === 'reload' && method === 'POST') {
+                            sendJson(res, 200, { reload: await reloadToolbox(mcp) });
+                            return;
+                        }
+                    }
+                    catch (error) {
+                        const code = error instanceof ToolboxError ? error.code : 'io';
+                        const status = code === 'not_found' ? 404 : code === 'conflict' ? 409 : 400;
+                        sendJson(res, status, {
+                            error: error instanceof Error ? error.message : 'Toolbox error.',
+                        });
+                        return;
+                    }
+                    sendJson(res, 404, { error: `Unknown toolbox route: ${pathname}` });
                     return;
                 }
                 if (segments[1] === 'mcp') {

@@ -26,6 +26,9 @@ import type {
   ScriptRunResult,
   ScriptStats,
   ToolDefinition,
+  ToolboxReload,
+  ToolboxSaveResult,
+  ToolboxSnapshot,
 } from './types';
 
 interface RequestOptions {
@@ -279,6 +282,30 @@ export const webApi = {
 };
 
 /** MCP server pool. */
+/**
+ * Tool files behind the toolbox MCP server: the Toolbox tab's whole API.
+ *
+ * Saving and removing both answer with the server's reload report, so the tab
+ * can say what the tool list just gained or lost instead of guessing.
+ */
+export const toolboxApi = {
+  list: (): Promise<ToolboxSnapshot> => request<ToolboxSnapshot>('/api/toolbox'),
+
+  read: (name: string): Promise<{ name: string; content: string; bytes: number; mtime: string }> =>
+    request(`/api/toolbox/file?name=${encodeURIComponent(name)}`),
+
+  save: (name: string, content: string): Promise<ToolboxSaveResult> =>
+    request<ToolboxSaveResult>('/api/toolbox/file', { method: 'PUT', body: { name, content } }),
+
+  remove: (name: string): Promise<ToolboxSaveResult> =>
+    request<ToolboxSaveResult>(`/api/toolbox/file?name=${encodeURIComponent(name)}`, {
+      method: 'DELETE',
+    }),
+
+  reload: (): Promise<{ reload: ToolboxReload }> =>
+    request('/api/toolbox/reload', { method: 'POST', body: {} }),
+};
+
 export const mcpApi = {
   list: (): Promise<McpCatalogue> => request('/api/mcp'),
   add: (input: {

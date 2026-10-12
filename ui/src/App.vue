@@ -6,6 +6,7 @@ import { alertState, dismissAll, startAlertStream } from './alerts';
 import AlertToasts from './components/AlertToasts.vue';
 import ChatPanel from './components/ChatPanel.vue';
 import McpPanel from './components/McpPanel.vue';
+import ToolboxPanel from './components/ToolboxPanel.vue';
 import SkillsPanel from './components/SkillsPanel.vue';
 import CreateScriptModal from './components/CreateScriptModal.vue';
 import EnvPanel from './components/EnvPanel.vue';
@@ -21,12 +22,13 @@ import type {
   ToolDefinition,
 } from './types';
 
-type Tab = 'chat' | 'scripts' | 'skills' | 'mcp' | 'prompts' | 'config';
+type Tab = 'chat' | 'scripts' | 'skills' | 'toolbox' | 'mcp' | 'prompts' | 'config';
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'chat', label: '💬 Chat' },
   { id: 'scripts', label: '🧩 Scripts' },
   { id: 'skills', label: '📚 Skills' },
+  { id: 'toolbox', label: '🧰 Toolbox' },
   { id: 'mcp', label: '🔌 MCP' },
   { id: 'prompts', label: '🧠 Prompts' },
   { id: 'config', label: '⚙️ Config' },
@@ -36,7 +38,7 @@ const TAB_KEY = 'infagent.tab';
 const storedTab = ((): Tab => {
   try {
     const value = localStorage.getItem(TAB_KEY);
-    const known: Tab[] = ['scripts', 'skills', 'mcp', 'prompts', 'config'];
+    const known: Tab[] = ['scripts', 'skills', 'toolbox', 'mcp', 'prompts', 'config'];
     return known.includes(value as Tab) ? (value as Tab) : 'chat';
   } catch {
     return 'chat';
@@ -159,7 +161,8 @@ onMounted(async () => {
           </div>
         </div>
 
-        <div class="tabs tabs-boxed tabs-sm">
+        <!-- Seven tabs do not fit a phone: the row wraps instead of hiding. -->
+        <div class="tabs tabs-boxed tabs-sm max-w-full flex-wrap justify-center">
           <button
             v-for="entry in TABS"
             :key="entry.id"
@@ -237,6 +240,10 @@ onMounted(async () => {
 
     <main v-else-if="tab === 'skills'" class="mx-auto max-w-7xl p-3 sm:p-4">
       <SkillsPanel @notify="notify" />
+    </main>
+
+    <main v-else-if="tab === 'toolbox'" class="mx-auto max-w-7xl p-3 sm:p-4">
+      <ToolboxPanel @notify="notify" />
     </main>
 
     <main v-else-if="tab === 'mcp'" class="mx-auto max-w-7xl p-3 sm:p-4">
