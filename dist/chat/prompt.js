@@ -659,7 +659,10 @@ export function answerStatesWrongCount(answer, count) {
  * scripts is as wrong as saying there are none.
  */
 export function answerEnumerates(answer) {
-    return /\b(scripts?|tools?|files?|items?|results?|skills?|functions?)\b\s*(:|\bare\b|\bis\b)|\byou have\b/i.test(answer);
+    // "the scripts are …", "the tools available are …", "you have 6 scripts: …".
+    // "include" is deliberately absent: that sentence does not claim to be the
+    // whole list.
+    return /\b(scripts?|tools?|files?|items?|results?|skills?|functions?)\b(?:\s+\w+){0,2}\s*(:|\bare\b|\bis\b)|\byou have\b/i.test(answer);
 }
 /** Does the reply mention the failure at all? */
 export function answerMentionsError(answer, error) {

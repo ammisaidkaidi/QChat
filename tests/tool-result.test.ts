@@ -162,7 +162,21 @@ describe('Test A — a non-empty list survives a contradictory reply', () => {
       ).kind,
     ).toBe('none');
     expect(answerEnumerates('The available scripts are hello.')).toBe(true);
+    expect(answerEnumerates('The tools available are hello and disk_report.')).toBe(true);
     expect(answerEnumerates('disk_report reports disk space.')).toBe(false);
+    // "include" does not claim completeness, so such a reply is left alone.
+    expect(answerEnumerates('The scripts I found include hello.')).toBe(false);
+
+    expect(
+      guardToolAnswer(
+        'The tools available are disk_report, hello, list_files, net_interfaces, and system_info.',
+        {
+          name: 'listScripts',
+          ok: true,
+          result: SIX_SCRIPTS,
+        },
+      ).kind,
+    ).toBe('replace');
   });
 
   it('adds the facts under a reply that ignored them', () => {
