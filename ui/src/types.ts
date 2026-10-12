@@ -304,6 +304,21 @@ export interface EnvSnapshot {
   entries: EnvEntry[];
 }
 
+/**
+ * Answer to an explicit reveal: the plaintext of one key, or of every
+ * credential at once (`{ all: true }`). Only ever requested by a click in the
+ * Config tab — a normal snapshot never carries these values.
+ */
+export interface EnvRevealResult {
+  key: string;
+  value: string;
+  secret: boolean;
+}
+
+export interface EnvRevealAllResult {
+  values: Record<string, string>;
+}
+
 export interface EnvSaveResult {
   path: string;
   changed: string[];

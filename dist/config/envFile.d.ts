@@ -49,6 +49,22 @@ export interface EnvReference {
 /** Key → section/comment, read from the committed reference file. */
 export declare function parseReference(text: string): Map<string, EnvReference>;
 export declare function readEnvFile(path: string, referenceText?: string): EnvFileSnapshot;
+/**
+ * The plaintext of one key, or `null` when the file does not set it.
+ *
+ * This is the only way a secret value can leave this module, and it exists for
+ * the console's explicit *reveal* action: one key at a time, on the user's
+ * click, never logged and never part of a snapshot.
+ */
+export declare function readEnvValue(path: string, key: string): string | null;
+/**
+ * Every credential the file sets, for the console's "reveal all" switch.
+ *
+ * Same rule as `readEnvValue`: only on an explicit request, never in a
+ * snapshot, never logged. Keys that are declared but empty are skipped, so the
+ * result is exactly what "reveal" would show one key at a time.
+ */
+export declare function readEnvSecrets(path: string): Record<string, string>;
 export interface EnvWriteResult {
     path: string;
     changed: string[];

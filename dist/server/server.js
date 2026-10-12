@@ -16,7 +16,7 @@ import { QwenEngine, ChatError } from '../chat/qwen.js';
 import { McpManager } from '../mcp/manager.js';
 import { asSkillInput, SkillError, SkillRegistry } from '../skills/registry.js';
 import { AlertError, asAlertInput } from '../capabilities/alerts.js';
-import { EnvFileError, MASK, readEnvFile, writeEnvFile } from '../config/envFile.js';
+import { EnvFileError, MASK, isEnvKey, isSecretKey, readEnvFile, readEnvSecrets, readEnvValue, writeEnvFile, } from '../config/envFile.js';
 import { PromptError } from '../chat/prompts.js';
 import { openSse } from './sse.js';
 import { VERSION } from '../version.js';
@@ -274,13 +274,38 @@ export function createServer(options = {}) {
                 /* ── the .env the console edits (Config tab) ─────────────────────── */
                 if (segments[1] === 'env') {
                     const reference = existsSync(envReference) ? readFileSync(envReference, 'utf8') : '';
+                    // The Config tab's explicit reveal. One key (or every credential at
+                    // once, when the user asks for that) is read from the file and sent
+                    // back as plain text; nothing is written to any log on the way.
+                    if (segments[2] === 'reveal' && (method === 'POST' || method === 'PUT')) {
+                        const body = await readBody(req);
+                        const all = body['all'] === true;
+                        const key = typeof body['key'] === 'string' ? body['key'] : '';
+                        if (!all && !isEnvKey(key)) {
+                            sendJson(res, 400, { error: 'Send `{ key }` or `{ all: true }`.' });
+                            return;
+                        }
+                        if (all) {
+                            // sendJson already answers with `cache-control: no-store`.
+                            sendJson(res, 200, { values: readEnvSecrets(envFile) });
+                            return;
+                        }
+                        const value = readEnvValue(envFile, key);
+                        if (value === null) {
+                            sendJson(res, 404, { error: `${key} is not set in ${envFile}.` });
+                            return;
+                        }
+                        sendJson(res, 200, { key, value, secret: isSecretKey(key) });
+                        return;
+                    }
                     if (method === 'GET') {
                         const snapshot = readEnvFile(envFile, reference);
                         sendJson(res, 200, {
                             ...snapshot,
                             reference: envReference,
-                            // Values of secrets are never serialised — the interface shows
-                            // "set" plus a mask and can only replace them, never read them.
+                            // A snapshot never carries a secret: the interface shows "set"
+                            // plus a mask, and asks for one value at a time when the user
+                            // clicks reveal.
                             mask: MASK,
                         });
                         return;

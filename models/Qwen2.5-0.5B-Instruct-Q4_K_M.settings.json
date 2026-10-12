@@ -5,7 +5,7 @@
   "file": "qwen2.5-0.5b-instruct-q4_k_m.gguf",
   "family": "qwen2",
   "quantization": "Q4_K_M",
-  "description": "Alibaba's Qwen2.5 0.5B instruct \u2014 the small general-purpose baseline: good prose, weak tool calling. Apache-2.0.",
+  "description": "Alibaba's Qwen2.5 0.5B instruct — the small general-purpose baseline: good prose, weak tool calling. Apache-2.0.",
   "source": {
     "repo": "Qwen/Qwen2.5-0.5B-Instruct-GGUF",
     "url": "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf"

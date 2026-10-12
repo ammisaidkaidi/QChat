@@ -407,7 +407,8 @@ infagent config | run <task> | --version
 | `GET /api/skills/:name` | one skill (front matter + body) |
 | `PUT /api/skills/:name` | update a skill |
 | `DELETE /api/skills/:name` | remove a skill |
-| `GET/PUT /api/env` | read the `.env` (secrets masked) / write keys |
+| `GET/PUT /api/env` | read the `.env` (secrets masked) / write or remove keys |
+| `POST /api/env/reveal` | one secret (`{"key":"…"}`) or every secret (`{"all":true}`) in plain text, on an explicit click |
 | `GET/POST /api/prompts`, `PUT /api/prompts/active`, `DELETE /api/prompts/<name>` | thinking-style templates and the selection |
 | `GET /api/mcp` | `{ configPath, servers[], tools[] }` |
 | `POST /api/mcp/servers` | add a server to `mcp.json` |
@@ -456,10 +457,20 @@ but blanked in `.env.example`. The previous `.env` is backed up to `.env.bak`.
 The **⚙️ Config** tab lists every key with its section, the comment from
 `.env.example` and a value field. Rules it follows:
 
-- **A secret is never sent to the browser.** Keys that look like credentials are
-  reported as `set` plus a mask (`••••••`); you can replace a value, never read it
-  back. `GET /api/env` returns no secret value, so a screenshot or a log cannot
-  leak one.
+- **Add a variable with the button.** `＋ Add variable` opens a name/value row;
+  the new keys are listed under *new variables (not saved yet)*, are validated
+  as you type (`[A-Za-z_][A-Za-z0-9_]*`) and are written on Save under a
+  `# ---- added from the console ----` banner. Typing a name that already exists
+  edits that key instead of creating a second line.
+- **No secret is in the payload unasked.** Keys that look like credentials are
+  reported as `set` plus a mask (`••••••`); `GET /api/env` returns no secret
+  value, so a snapshot, a log or a screenshot cannot leak one.
+- **Reveal is an explicit click.** The 👁 next to a key asks the server for that
+  single value (`POST /api/env/reveal` with `{ "key": "SMTP_PASS" }`), and
+  **Reveal secrets** asks for all of them at once (`{ "all": true }`); **Hide
+  secrets** puts the masks back. A revealed value is plain text on screen for as
+  long as you leave it open — the server echoes it, never logs it, and answers
+  with `cache-control: no-store`.
 - **Untouched stays untouched.** Only the fields you edit are sent, so saving
   never rewrites a credential you did not touch.
 - **A write is atomic and reversible.** Keys are validated (`[A-Za-z_][A-Za-z0-9_]*`),

@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
+  ADDED_BANNER,
   EnvFileError,
   MASK,
   formatEnvValue,
@@ -12,6 +13,8 @@ import {
   parseEnv,
   parseReference,
   readEnvFile,
+  readEnvSecrets,
+  readEnvValue,
   renderEnv,
   writeEnvFile,
 } from '../src/config/envFile.js';
@@ -159,5 +162,40 @@ describe('writing the file', () => {
     const rendered = renderEnv(parseEnv(source), new Map(), new Set());
     expect(rendered).toBe(source);
     expect(existsSync(tempEnv(source))).toBe(true);
+  });
+
+  it('adds a variable the file never had, under the console banner', () => {
+    const file = tempEnv('A=1\n');
+    const result = writeEnvFile(file, { updates: { MY_VARIABLE: 'hello world' } });
+    expect(result.changed).toEqual(['MY_VARIABLE']);
+    const text = readFileSync(file, 'utf8');
+    expect(text).toContain(ADDED_BANNER);
+    expect(text).toContain('MY_VARIABLE="hello world"');
+    expect(readEnvFile(file).entries.find((entry) => entry.key === 'MY_VARIABLE')).toMatchObject({
+      value: 'hello world',
+      set: true,
+      group: 'from your .env',
+    });
+  });
+
+  it('keeps a new secret out of the snapshot and reveals it only on request', () => {
+    const file = tempEnv('A=1\n');
+    writeEnvFile(file, { updates: { SMTP_PASSWORD: 'two words "quoted" # not a comment' } });
+
+    const snapshot = readEnvFile(file);
+    const entry = snapshot.entries.find((item) => item.key === 'SMTP_PASSWORD');
+    expect(entry).toMatchObject({ secret: true, set: true, value: null, masked: MASK });
+    expect(JSON.stringify(snapshot)).not.toContain('two words');
+
+    expect(readEnvValue(file, 'SMTP_PASSWORD')).toBe('two words "quoted" # not a comment');
+    expect(readEnvSecrets(file)).toEqual({ SMTP_PASSWORD: 'two words "quoted" # not a comment' });
+  });
+
+  it('reveals nothing for an absent key and skips empty secrets', () => {
+    const file = tempEnv('SMTP_PASSWORD=\nA=1\n');
+    expect(readEnvValue(file, 'MISSING')).toBeNull();
+    expect(readEnvValue(file, 'SMTP_PASSWORD')).toBe('');
+    expect(readEnvSecrets(file)).toEqual({});
+    expect(readEnvSecrets(join(tmpdir(), 'infagent-not-here.env'))).toEqual({});
   });
 });

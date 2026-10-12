@@ -5,6 +5,8 @@
 import type {
   AlertRecord,
   ChatConfig,
+  EnvRevealAllResult,
+  EnvRevealResult,
   EnvSaveResult,
   EnvSnapshot,
   PromptCatalogue,
@@ -64,7 +66,11 @@ export const alertsApi = {
     request<{ count: number; alerts: AlertRecord[] }>(`/api/alerts?limit=${limit}`),
 
   /** Raise an alert in the console from the interface itself. */
-  raise: (input: { message: string; title?: string; level?: AlertRecord['level'] }): Promise<{
+  raise: (input: {
+    message: string;
+    title?: string;
+    level?: AlertRecord['level'];
+  }): Promise<{
     alert: AlertRecord;
   }> => request<{ alert: AlertRecord }>('/api/alerts', { method: 'POST', body: input }),
 
@@ -107,10 +113,19 @@ export const envApi = {
    * Write values. Secret values are never sent back by the server, so an
    * unchanged secret is left alone by simply omitting its key here.
    */
-  save: (input: {
-    updates?: Record<string, string>;
-    remove?: string[];
-  }): Promise<EnvSaveResult> => request<EnvSaveResult>('/api/env', { method: 'PUT', body: input }),
+  save: (input: { updates?: Record<string, string>; remove?: string[] }): Promise<EnvSaveResult> =>
+    request<EnvSaveResult>('/api/env', { method: 'PUT', body: input }),
+
+  /**
+   * The plaintext of one key. The server only sends a value here, so this is
+   * called on an explicit click — a snapshot never carries secrets.
+   */
+  reveal: (key: string): Promise<EnvRevealResult> =>
+    request<EnvRevealResult>('/api/env/reveal', { method: 'POST', body: { key } }),
+
+  /** Every credential at once, for the "reveal all" switch. */
+  revealAll: (): Promise<EnvRevealAllResult> =>
+    request<EnvRevealAllResult>('/api/env/reveal', { method: 'POST', body: { all: true } }),
 };
 
 /** System-prompt templates: the "way of thinking" picker. */
@@ -122,7 +137,8 @@ export const promptsApi = {
     description?: string;
     prompt: string;
     tags?: string[];
-  }): Promise<PromptCatalogue> => request<PromptCatalogue>('/api/prompts', { method: 'POST', body: input }),
+  }): Promise<PromptCatalogue> =>
+    request<PromptCatalogue>('/api/prompts', { method: 'POST', body: input }),
 
   remove: (name: string): Promise<PromptCatalogue> =>
     request<PromptCatalogue>(`/api/prompts/${encodeURIComponent(name)}`, { method: 'DELETE' }),
@@ -238,7 +254,8 @@ export const skillsApi = {
     description: string;
     when?: string;
     body?: string;
-  }): Promise<{ skill: SkillDetailFull }> => request('/api/skills', { method: 'POST', body: input }),
+  }): Promise<{ skill: SkillDetailFull }> =>
+    request('/api/skills', { method: 'POST', body: input }),
   update: (
     name: string,
     patch: { description?: string; when?: string; body?: string },

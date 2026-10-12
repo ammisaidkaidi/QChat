@@ -4,9 +4,11 @@
  * The console's Config tab edits `.env` through this module, and three rules
  * shape it:
  *
- *   - **A secret never leaves the server.** Values whose key looks like a
- *     credential are reported as `set` plus a mask; the value itself is not in
- *     the JSON, so it cannot end up in a browser, a log or a screenshot.
+ *   - **A secret is never in the payload unasked.** Values whose key looks like
+ *     a credential are reported as `set` plus a mask, so an ordinary snapshot
+ *     cannot leak them into a browser, a log or a screenshot. Reading one back
+ *     is a separate, explicit action (`readEnvValue`) that the console only
+ *     performs when the user clicks reveal on that single key.
  *   - **A malformed line never reaches the file.** Keys are validated, values
  *     are quoted when they need it, and the file is written atomically.
  *   - **A write never destroys the previous contents.** The old file is kept
@@ -208,6 +210,37 @@ export function readEnvFile(path, referenceText = '') {
         };
     });
     return { path, exists, entries };
+}
+/**
+ * The plaintext of one key, or `null` when the file does not set it.
+ *
+ * This is the only way a secret value can leave this module, and it exists for
+ * the console's explicit *reveal* action: one key at a time, on the user's
+ * click, never logged and never part of a snapshot.
+ */
+export function readEnvValue(path, key) {
+    if (!existsSync(path))
+        return null;
+    const values = entriesFrom(parseEnv(readFileSync(path, 'utf8')));
+    return values.get(key) ?? null;
+}
+/**
+ * Every credential the file sets, for the console's "reveal all" switch.
+ *
+ * Same rule as `readEnvValue`: only on an explicit request, never in a
+ * snapshot, never logged. Keys that are declared but empty are skipped, so the
+ * result is exactly what "reveal" would show one key at a time.
+ */
+export function readEnvSecrets(path) {
+    if (!existsSync(path))
+        return {};
+    const values = entriesFrom(parseEnv(readFileSync(path, 'utf8')));
+    const secrets = {};
+    for (const [key, value] of values) {
+        if (isSecretKey(key) && value !== '')
+            secrets[key] = value;
+    }
+    return secrets;
 }
 /**
  * Merge `updates` (and optional `remove` keys) into the file, keeping a backup.
