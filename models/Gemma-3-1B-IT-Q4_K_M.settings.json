@@ -5,7 +5,7 @@
   "file": "gemma-3-1b-it-Q4_K_M.gguf",
   "family": "gemma",
   "quantization": "Q4_K_M",
-  "description": "Google Gemma 3 1B instruction-tuned \u2014 the reference 1B chat model from the llama.cpp project's own GGUF. No tool-calling training. Gemma Terms of Use.",
+  "description": "Google Gemma 3 1B instruction-tuned — the reference 1B chat model from the llama.cpp project's own GGUF. No tool-calling training. Gemma Terms of Use.",
   "source": {
     "repo": "ggml-org/gemma-3-1b-it-GGUF",
     "url": "https://huggingface.co/ggml-org/gemma-3-1b-it-GGUF/resolve/main/gemma-3-1b-it-Q4_K_M.gguf"
