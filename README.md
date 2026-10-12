@@ -115,7 +115,7 @@ infagent chat unload              # free ~1 GB of RAM now
 
 ## Cloud-hosted models
 
-Open **Config → Cloud AI providers** to configure a provider name, API root,
+Open **Models → Cloud AI providers** to configure a provider name, API root,
 model IDs and API key, then test the connection. Presets include NVIDIA NIM,
 OpenAI, OpenRouter, Anthropic and Google Gemini; custom OpenAI-compatible APIs
 are supported too. OpenAI-compatible Chat Completions, Anthropic Messages and
@@ -676,8 +676,8 @@ infagent config | run <task> | --version
 
 `ui/` is a small console that follows the same design language as the API:
 
-Seven tabs in the header: **Chat**, **Scripts**, **Skills**, **Toolbox**, **MCP**,
-**Prompts** and **Config**.
+Eight tabs in the header: **Chat**, **Models**, **Scripts**, **Skills**, **Toolbox**,
+**MCP**, **Prompts** and **Config**.
 
 - **Chat** — per-chat local or cloud conversation: composer model picker over
   downloaded local models and configured cloud providers, local download button
@@ -691,8 +691,10 @@ Seven tabs in the header: **Chat**, **Scripts**, **Skills**, **Toolbox**, **MCP*
   **SQLite history menu** on the right (search, switch, create or delete chats;
   full tool cards survive reloads), and per-chat settings including the model,
   prompt style and 🔧 MCP choices, saved automatically
-- **Config** — masked `.env` settings plus secure cloud provider setup, API-key
-  management, model discovery and connection testing
+- **Models** — local model catalogue, weight downloads, engine status and explicit
+  new-chat default management alongside cloud providers, API-key management,
+  model discovery and connection testing
+- **Config** — masked `.env` settings and environment-variable management
 - **Alerts** — toasts for anything raised by `showAlert`, the CLI or the API,
   with a bell counter in the header and *Dismiss* / *Dismiss all*
 - **Scripts** — searchable script list, detail tabs (overview, *Agent prompt*

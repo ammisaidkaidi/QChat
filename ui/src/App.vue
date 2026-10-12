@@ -11,6 +11,7 @@ import SkillsPanel from './components/SkillsPanel.vue';
 import CreateScriptModal from './components/CreateScriptModal.vue';
 import EnvPanel from './components/EnvPanel.vue';
 import CloudProvidersPanel from './components/CloudProvidersPanel.vue';
+import LocalModelsPanel from './components/LocalModelsPanel.vue';
 import PromptsPanel from './components/PromptsPanel.vue';
 import ScriptDetail from './components/ScriptDetail.vue';
 import ScriptsPanel from './components/ScriptsPanel.vue';
@@ -23,10 +24,11 @@ import type {
   ToolDefinition,
 } from './types';
 
-type Tab = 'chat' | 'scripts' | 'skills' | 'toolbox' | 'mcp' | 'prompts' | 'config';
+type Tab = 'chat' | 'models' | 'scripts' | 'skills' | 'toolbox' | 'mcp' | 'prompts' | 'config';
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'chat', label: '💬 Chat' },
+  { id: 'models', label: '🧠 Models' },
   { id: 'scripts', label: '🧩 Scripts' },
   { id: 'skills', label: '📚 Skills' },
   { id: 'toolbox', label: '🧰 Toolbox' },
@@ -39,7 +41,7 @@ const TAB_KEY = 'infagent.tab';
 const storedTab = ((): Tab => {
   try {
     const value = localStorage.getItem(TAB_KEY);
-    const known: Tab[] = ['scripts', 'skills', 'toolbox', 'mcp', 'prompts', 'config'];
+    const known: Tab[] = ['models', 'scripts', 'skills', 'toolbox', 'mcp', 'prompts', 'config'];
     return known.includes(value as Tab) ? (value as Tab) : 'chat';
   } catch {
     return 'chat';
@@ -162,7 +164,7 @@ onMounted(async () => {
           </div>
         </div>
 
-        <!-- Seven tabs do not fit a phone: the row wraps instead of hiding. -->
+        <!-- Eight tabs do not fit a phone: the row wraps instead of hiding. -->
         <div class="tabs tabs-boxed tabs-sm max-w-full flex-wrap justify-center">
           <button
             v-for="entry in TABS"
@@ -255,9 +257,13 @@ onMounted(async () => {
       <PromptsPanel @notify="notify" />
     </main>
 
-    <main v-else-if="tab === 'config'" class="mx-auto max-w-7xl space-y-4 p-3 sm:p-4">
-      <EnvPanel @notify="notify" />
+    <main v-else-if="tab === 'models'" class="mx-auto max-w-7xl space-y-4 p-3 sm:p-4">
+      <LocalModelsPanel @notify="notify" />
       <CloudProvidersPanel @notify="notify" />
+    </main>
+
+    <main v-else-if="tab === 'config'" class="mx-auto max-w-7xl p-3 sm:p-4">
+      <EnvPanel @notify="notify" />
     </main>
 
     <main v-else class="mx-auto max-w-7xl p-3 sm:p-4">
