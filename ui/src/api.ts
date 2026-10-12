@@ -5,6 +5,7 @@
 import type {
   AlertRecord,
   ChatConfig,
+  ChatPromptPreviewRequest,
   EnvRevealAllResult,
   EnvRevealResult,
   EnvSaveResult,
@@ -419,6 +420,10 @@ export const mcpApi = {
 
 export const chatApi = {
   status: (): Promise<{ status: EngineStatus; config: ChatConfig }> => request('/api/chat/status'),
+
+  /** Exact system message the selected local or cloud provider will receive. */
+  promptPreview: (input: ChatPromptPreviewRequest): Promise<{ systemPrompt: string }> =>
+    request('/api/chat/prompt-preview', { method: 'POST', body: input }),
 
   unload: (): Promise<{ status: EngineStatus }> => request('/api/chat/model', { method: 'DELETE' }),
 

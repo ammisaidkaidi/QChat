@@ -25,6 +25,7 @@ import type {
   ChatConfig,
   ChatEvent,
   ChatMessage,
+  ChatPromptPreviewRequest,
   ChatSettings,
   CloudProvider,
   ChatSummary,
@@ -35,12 +36,14 @@ import type {
   SkillRecord,
   ModelCatalog,
   ModelRecord,
+  RuntimePromptPreview,
 } from '../types';
 
 const props = defineProps<{ historyVisible: boolean }>();
 
 const emit = defineEmits<{
   (event: 'notify', message: string, tone: 'success' | 'error'): void;
+  (event: 'prompt-preview', preview: RuntimePromptPreview): void;
 }>();
 
 const LEGACY_STORAGE_KEY = 'infagent.chat.v1';
@@ -96,6 +99,8 @@ let handle: ChatStreamHandle | null = null;
 let clock: number | null = null;
 let settingsSaveTimer: number | null = null;
 let turnsSaveTimer: number | null = null;
+let promptPreviewTimer: number | null = null;
+let promptPreviewSequence = 0;
 let periodicRefresh: number | null = null;
 let applyingChat = false;
 
@@ -148,6 +153,9 @@ const selectedCloudProvider = computed(
 );
 const selectedCloudModel = computed(
   () => selectedCloudProvider.value?.models.find((model) => model.id === settings.modelId) ?? null,
+);
+const selectedLocalModel = computed(
+  () => catalog.value?.models.find((model) => model.settings.id === settings.modelId) ?? null,
 );
 const localModels = computed(() => catalog.value?.models.filter((model) => model.present) ?? []);
 const selectedModelLabel = computed(() => {
@@ -778,6 +786,27 @@ async function copyTurn(turn: ChatTurn): Promise<void> {
   }, 1600);
 }
 
+async function copyChatJson(): Promise<void> {
+  const id = activeChatId.value;
+  if (!id || busy.value) return;
+  if (!(await flushPersistence())) {
+    emit('notify', 'The chat could not be saved, so its JSON was not copied.', 'error');
+    return;
+  }
+
+  try {
+    const { chat } = await chatsApi.get(id);
+    const ok = await copyText(JSON.stringify(chat, null, 2));
+    if (!ok) {
+      emit('notify', 'Copy failed — the chat JSON could not reach the clipboard.', 'error');
+      return;
+    }
+    emit('notify', `Copied “${chat.title}” as complete chat JSON.`, 'success');
+  } catch (error) {
+    emit('notify', `Chat JSON could not be copied: ${(error as Error).message}`, 'error');
+  }
+}
+
 async function refresh(): Promise<void> {
   try {
     const response = await chatApi.status();
@@ -1195,6 +1224,102 @@ const mcpRestricted = computed(
   () => enabledMcps.value.length > 0 && selectedMcp.value.length !== enabledMcps.value.length,
 );
 
+function promptPreviewMetadata(): Omit<RuntimePromptPreview, 'status' | 'prompt' | 'error'> {
+  const local = settings.modelSource === 'local';
+  const toolsEnabled = local && settings.tools && (config.value?.tools ?? true);
+  const modelId =
+    settings.modelId || (local ? status.value?.modelId : selectedCloudModel.value?.id) || '';
+  return {
+    modelSource: settings.modelSource,
+    modelId,
+    modelLabel: local
+      ? selectedLocalModel.value?.settings.name || selectedModelLabel.value
+      : `${selectedCloudProvider.value?.name ?? 'Cloud provider'} · ${modelId || 'not selected'}`,
+    modelStyle: local ? (selectedLocalModel.value?.settings.style ?? 'qwen3') : 'provider adapter',
+    styleName: settings.styleName || 'Default',
+    toolsEnabled,
+    webEnabled: toolsEnabled && settings.net,
+    mcpServers: toolsEnabled ? [...selectedMcp.value] : [],
+    skills: [...draftSkills.value],
+    hasCustomPrompt: Boolean(settings.systemPrompt.trim()),
+  };
+}
+
+function promptPreviewRequest(): ChatPromptPreviewRequest {
+  return {
+    modelSource: settings.modelSource,
+    providerId: settings.providerId,
+    modelId: settings.modelId,
+    temperature: settings.temperature,
+    maxTokens: settings.maxTokens,
+    thinking: settings.thinking,
+    tools: settings.modelSource === 'local' && settings.tools,
+    net: settings.modelSource === 'local' && settings.net,
+    systemPrompt: settings.systemPrompt,
+    maxToolIterations: settings.maxSteps,
+    promptTemplate: styles.value.find((style) => style.name === settings.styleName)?.prompt ?? '',
+    skills: [...draftSkills.value],
+    ...(settings.modelSource === 'local' && settings.mcpServers !== null
+      ? { mcpServers: [...selectedMcp.value] }
+      : {}),
+  };
+}
+
+function publishPromptPreview(preview: RuntimePromptPreview): void {
+  emit('prompt-preview', preview);
+}
+
+async function loadPromptPreview(
+  sequence: number,
+  request: ChatPromptPreviewRequest,
+  metadata: Omit<RuntimePromptPreview, 'status' | 'prompt' | 'error'>,
+): Promise<void> {
+  try {
+    const response = await chatApi.promptPreview(request);
+    if (sequence !== promptPreviewSequence) return;
+    publishPromptPreview({
+      ...metadata,
+      status: 'ready',
+      prompt: response.systemPrompt,
+      error: null,
+    });
+  } catch (error) {
+    if (sequence !== promptPreviewSequence) return;
+    publishPromptPreview({
+      ...metadata,
+      status: 'error',
+      prompt: '',
+      error: (error as Error).message,
+    });
+  }
+}
+
+function schedulePromptPreview(): void {
+  if (promptPreviewTimer !== null) window.clearTimeout(promptPreviewTimer);
+  promptPreviewTimer = null;
+  const sequence = ++promptPreviewSequence;
+  const metadata = promptPreviewMetadata();
+  publishPromptPreview({ ...metadata, status: 'loading', prompt: '', error: null });
+  if (!historyReady.value || !activeChatId.value) return;
+
+  const request = promptPreviewRequest();
+  promptPreviewTimer = window.setTimeout(() => {
+    promptPreviewTimer = null;
+    void loadPromptPreview(sequence, request, metadata);
+  }, 120);
+}
+
+watch(
+  () =>
+    JSON.stringify({
+      chatId: activeChatId.value,
+      request: promptPreviewRequest(),
+      metadata: promptPreviewMetadata(),
+    }),
+  schedulePromptPreview,
+  { flush: 'post' },
+);
+
 function toggleMcp(name: string): void {
   const chosen = new Set(selectedMcp.value);
   if (chosen.has(name)) chosen.delete(name);
@@ -1237,6 +1362,8 @@ onBeforeUnmount(() => {
   document.removeEventListener('click', onDocumentClick);
   if (settingsSaveTimer !== null) window.clearTimeout(settingsSaveTimer);
   if (turnsSaveTimer !== null) window.clearTimeout(turnsSaveTimer);
+  if (promptPreviewTimer !== null) window.clearTimeout(promptPreviewTimer);
+  promptPreviewSequence += 1;
   if (periodicRefresh !== null) window.clearInterval(periodicRefresh);
   void flushPersistence();
 });
@@ -1289,6 +1416,17 @@ onMounted(async () => {
             <div class="flex items-center gap-2">
               <button class="btn btn-ghost btn-xs" @click="showPrompt = !showPrompt">
                 {{ showPrompt ? 'Hide info' : 'Info' }}
+              </button>
+              <button
+                class="btn btn-ghost btn-xs"
+                type="button"
+                title="Copy the complete saved chat as JSON"
+                aria-label="Copy chat JSON"
+                :disabled="!activeChatId || busy || !historyReady"
+                data-testid="copy-chat-json"
+                @click="copyChatJson"
+              >
+                ⧉ Copy
               </button>
               <button class="btn btn-ghost btn-xs text-error" @click="clear">Clear</button>
             </div>

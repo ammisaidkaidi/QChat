@@ -19,7 +19,7 @@ import { asSkillInput, SkillError, SkillRegistry } from '../skills/registry.js';
 import { AlertError, asAlertInput } from '../capabilities/alerts.js';
 import { EnvFileError, MASK, isEnvKey, isSecretKey, readEnvFile, readEnvSecrets, readEnvValue, writeEnvFile, } from '../config/envFile.js';
 import { PromptError } from '../chat/prompts.js';
-import { CloudInference, CloudProviderError, CloudProviderStore, CLOUD_PROVIDER_PRESETS, cloudApiKeyEnvName, } from '../cloud/providers.js';
+import { CloudInference, CloudProviderError, CloudProviderStore, CLOUD_PROVIDER_PRESETS, buildCloudSystemMessage, cloudApiKeyEnvName, } from '../cloud/providers.js';
 import { openSse } from './sse.js';
 import { VERSION } from '../version.js';
 import { ChatStore, ChatStoreError, defaultChatDatabasePath } from './chatStore.js';
@@ -46,6 +46,17 @@ function sendJson(res, status, payload) {
         'cache-control': 'no-store',
     });
     res.end(body);
+}
+/** Skill bodies included in cloud requests, in the same format as the prompt preview. */
+function attachedSkillContext(skills, value) {
+    const names = Array.isArray(value)
+        ? value.filter((name) => typeof name === 'string')
+        : [];
+    const lineBreak = String.fromCharCode(10);
+    return skills
+        .load(names)
+        .map((skill) => `## Attached skill: ${skill.name}${lineBreak}${skill.body}`)
+        .join(`${lineBreak}${lineBreak}`);
 }
 async function readBody(req, maxBytes = MAX_BODY_BYTES) {
     const chunks = [];
@@ -405,6 +416,56 @@ export function createServer(options = {}) {
                 }
                 if (segments[1] === 'chat') {
                     const sub = segments[2];
+                    if (sub === 'prompt-preview' && method === 'POST') {
+                        const body = await readBody(req);
+                        const request = body;
+                        const modelSource = body['modelSource'];
+                        if (modelSource !== undefined && modelSource !== 'local' && modelSource !== 'cloud') {
+                            sendJson(res, 400, { error: 'modelSource must be local or cloud.' });
+                            return;
+                        }
+                        for (const key of ['modelId', 'systemPrompt', 'promptTemplate']) {
+                            if (body[key] !== undefined && typeof body[key] !== 'string') {
+                                sendJson(res, 400, { error: `${key} must be a string.` });
+                                return;
+                            }
+                        }
+                        for (const key of ['tools', 'net', 'thinking']) {
+                            if (body[key] !== undefined && typeof body[key] !== 'boolean') {
+                                sendJson(res, 400, { error: `${key} must be a boolean.` });
+                                return;
+                            }
+                        }
+                        for (const key of ['skills', 'mcpServers']) {
+                            if (body[key] !== undefined &&
+                                (!Array.isArray(body[key]) ||
+                                    !body[key].every((entry) => typeof entry === 'string'))) {
+                                sendJson(res, 400, { error: `${key} must be an array of strings.` });
+                                return;
+                            }
+                        }
+                        if (body['maxToolIterations'] !== undefined &&
+                            typeof body['maxToolIterations'] !== 'number') {
+                            sendJson(res, 400, { error: 'maxToolIterations must be a number.' });
+                            return;
+                        }
+                        if (request.modelSource === 'cloud') {
+                            const skillContext = attachedSkillContext(skills, request.skills);
+                            const cloudSystemPrompt = [request.systemPrompt ?? '', skillContext]
+                                .filter(Boolean)
+                                .join(String.fromCharCode(10, 10));
+                            const systemPrompt = buildCloudSystemMessage({
+                                systemPrompt: cloudSystemPrompt,
+                                ...(request.promptTemplate === undefined
+                                    ? {}
+                                    : { promptTemplate: request.promptTemplate }),
+                            }, []);
+                            sendJson(res, 200, { systemPrompt });
+                            return;
+                        }
+                        sendJson(res, 200, { systemPrompt: engine.previewSystemPrompt(request) });
+                        return;
+                    }
                     if (sub === 'status' && method === 'GET') {
                         sendJson(res, 200, {
                             status: engine.status(),
@@ -468,23 +529,14 @@ export function createServer(options = {}) {
                         req.on('close', () => controller.abort());
                         // Cloud requests use the selected provider adapter directly: they
                         // never enter the local agent's script/MCP tool-dispatch loop.
-                        const attachedSkills = Array.isArray(request.skills)
-                            ? request.skills.filter((name) => typeof name === 'string')
-                            : [];
-                        const lineBreak = String.fromCharCode(10);
-                        const skillContext = skills
-                            .load(attachedSkills)
-                            .map((skill) => `## Attached skill: ${skill.name}${lineBreak}${skill.body}`)
-                            .join(`${lineBreak}${lineBreak}`);
+                        const skillContext = attachedSkillContext(skills, request.skills);
                         const cloudRequest = {
                             providerId: request.providerId ?? '',
                             modelId: request.modelId ?? '',
                             messages: request.messages,
                             ...(request.temperature === undefined ? {} : { temperature: request.temperature }),
                             ...(request.maxTokens === undefined ? {} : { maxTokens: request.maxTokens }),
-                            systemPrompt: [request.systemPrompt ?? '', skillContext]
-                                .filter(Boolean)
-                                .join(`${lineBreak}${lineBreak}`),
+                            systemPrompt: [request.systemPrompt ?? '', skillContext].filter(Boolean).join('\n\n'),
                             ...(request.promptTemplate === undefined
                                 ? {}
                                 : { promptTemplate: request.promptTemplate }),

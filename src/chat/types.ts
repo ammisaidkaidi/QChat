@@ -97,6 +97,9 @@ export interface ChatRequest {
   mcpServers?: string[];
 }
 
+/** Per-turn generation options needed to preview the system message, no turns. */
+export type ChatPromptPreviewRequest = Omit<ChatRequest, 'messages'>;
+
 export type EngineState =
   | 'unavailable'
   | 'absent'

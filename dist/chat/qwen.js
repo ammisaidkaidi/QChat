@@ -314,6 +314,101 @@ export class QwenEngine {
         return this.busy;
     }
     /**
+     * Assemble the same per-turn prompt that `stream()` sends to the model.
+     * Kept independent of model loading so the UI can preview a chat before the
+     * selected weights have been downloaded or loaded.
+     */
+    preparePrompt(request, model) {
+        const defaults = {
+            temperature: model.temperature,
+            maxTokens: model.maxTokens,
+            thinking: model.thinking,
+            style: model.style,
+        };
+        const useTools = request.tools !== false && this.allowRun;
+        const protocolMode = useTools
+            ? resolveProtocolMode(model.toolProtocol)
+            : 'legacy';
+        const strict = protocolMode === 'strict-json';
+        const thinking = request.thinking ?? defaults.thinking;
+        const net = request.net ?? netEnabled();
+        const allowedMcp = selectMcpServers(this.mcp ? this.mcp.list() : [], request.mcpServers);
+        const allowedMcpNames = new Set(allowedMcp.map((server) => server.name));
+        const skillBodies = this.skills.load(request.skills ?? []);
+        const mcpTools = this.mcp
+            ? this.mcp
+                .tools()
+                .filter(({ server }) => allowedMcpNames.has(server))
+                .map(({ server, tool }) => ({
+                server,
+                name: tool.name,
+                description: tool.description,
+                inputSchema: tool.inputSchema,
+            }))
+            : [];
+        const mcpServers = allowedMcp.map((server) => ({
+            name: server.name,
+            description: server.description,
+        }));
+        const styleGuide = request.promptTemplate !== undefined
+            ? request.promptTemplate.trim()
+            : (this.prompts?.activePrompt() ?? '');
+        const toolNames = useTools
+            ? toolboxNames({ records: this.registry.list(), net, mcp: mcpTools })
+            : [];
+        const maxSteps = stepBudget(request.maxToolIterations);
+        const systemPrompt = request.systemPrompt?.trim() ||
+            [
+                model.agentPrompt,
+                buildSystemPrompt({
+                    records: this.registry.list(),
+                    tools: useTools,
+                    thinking,
+                    style: model.style,
+                    protocol: protocolMode,
+                    maxSteps,
+                    styleGuide,
+                    toolBudget: Math.max(1800, Math.min(7000, Math.round(model.contextSize * 1.15))),
+                    net: useTools && net,
+                    skills: this.skills.listing(),
+                    skillBodies,
+                    mcp: useTools ? mcpTools : [],
+                    mcpServers: useTools ? mcpServers : [],
+                }),
+            ]
+                .filter(Boolean)
+                .join('\n\n');
+        return {
+            defaults,
+            useTools,
+            strict,
+            thinking,
+            net,
+            wantedMcp: request.mcpServers,
+            allowedMcpNames,
+            toolNames,
+            maxSteps,
+            systemPrompt,
+        };
+    }
+    /** Preview the next local system message without loading or switching models. */
+    previewSystemPrompt(request) {
+        const requestedModelId = request.modelId?.trim();
+        let model;
+        if (requestedModelId) {
+            try {
+                model = this.store.contextFor(requestedModelId);
+            }
+            catch {
+                throw new ChatError('not_ready', `Unknown model "${requestedModelId}" for this chat.`);
+            }
+        }
+        else {
+            model = this.store.activeContext();
+        }
+        return this.preparePrompt(request, model).systemPrompt;
+    }
+    /**
      * Fetch a model's weights into the weights folder.
      *
      * Defaults to the active model; its settings file is kept in sync with what
@@ -501,94 +596,7 @@ export class QwenEngine {
             if (!lastUser)
                 throw new ChatError('not_ready', 'No user message to answer.');
             const model = this.store.activeContext();
-            const defaults = {
-                temperature: model.temperature,
-                maxTokens: model.maxTokens,
-                thinking: model.thinking,
-                style: model.style,
-            };
-            const useTools = request.tools !== false && this.allowRun;
-            /**
-             * Which tool protocol applies. `strict-json` (default) is one JSON
-             * envelope per reply; `native` keeps the model's own trained call shape;
-             * `legacy` restores the pre-protocol wording. See `protocol.ts`.
-             */
-            const protocolMode = useTools
-                ? resolveProtocolMode(model.toolProtocol)
-                : 'legacy';
-            const strict = protocolMode === 'strict-json';
-            const thinking = request.thinking ?? defaults.thinking;
-            // Internet access is a per-request switch so the interface can turn it off.
-            const net = request.net ?? netEnabled();
-            /**
-             * Which MCP servers this turn may use — the Chat tab's 🔧 picker.
-             * `undefined` means every enabled server (the CLI and older clients send
-             * nothing); a list is a real restriction, applied to the tool list the
-             * model is shown and to what the dispatcher will run.
-             */
-            const wantedMcp = request.mcpServers;
-            const allowedMcp = selectMcpServers(this.mcp ? this.mcp.list() : [], wantedMcp);
-            const allowedMcpNames = new Set(allowedMcp.map((server) => server.name));
-            /**
-             * Skills the user pinned with `/name` in the message box. The body is
-             * loaded here, in the engine, so the model follows it without having to
-             * decide to call `readSkill`.
-             */
-            const skillBodies = this.skills.load(request.skills ?? []);
-            const mcpTools = this.mcp
-                ? this.mcp
-                    .tools()
-                    .filter(({ server }) => allowedMcpNames.has(server))
-                    .map(({ server, tool }) => ({
-                    server,
-                    name: tool.name,
-                    description: tool.description,
-                    inputSchema: tool.inputSchema,
-                }))
-                : [];
-            /** The same servers, with the purpose `mcp.json` gives each one. */
-            const mcpServers = allowedMcp.map((server) => ({
-                name: server.name,
-                description: server.description,
-            }));
-            // The style guide is the user's choice: an explicit `promptTemplate` on the
-            // request wins, otherwise the template selected in the console applies.
-            const styleGuide = request.promptTemplate !== undefined
-                ? request.promptTemplate.trim()
-                : (this.prompts?.activePrompt() ?? '');
-            /**
-             * The toolbox as the grammar and the parser see it — built from the same
-             * sources as the prompt listing (`toolboxNames` mirrors it exactly).
-             */
-            const toolNames = useTools
-                ? toolboxNames({ records: this.registry.list(), net, mcp: mcpTools })
-                : [];
-            /** Steps this reply may take: several calls, results, more calls, answer. */
-            const maxSteps = stepBudget(request.maxToolIterations);
-            const systemPrompt = request.systemPrompt?.trim() ||
-                [
-                    model.agentPrompt,
-                    buildSystemPrompt({
-                        records: this.registry.list(),
-                        tools: useTools,
-                        thinking,
-                        style: model.style,
-                        protocol: protocolMode,
-                        maxSteps,
-                        styleGuide,
-                        // Tool declarations are a per-turn cost. At ~3.2 characters per
-                        // token this leaves most of the window to the conversation — the
-                        // reply, the tool results, and the steps after them.
-                        toolBudget: Math.max(1800, Math.min(7000, Math.round(model.contextSize * 1.15))),
-                        net: useTools && net,
-                        skills: this.skills.listing(),
-                        skillBodies,
-                        mcp: useTools ? mcpTools : [],
-                        mcpServers: useTools ? mcpServers : [],
-                    }),
-                ]
-                    .filter(Boolean)
-                    .join('\n\n');
+            const { defaults, useTools, strict, thinking, net, wantedMcp, allowedMcpNames, toolNames, maxSteps, systemPrompt, } = this.preparePrompt(request, model);
             // `/no_think` is a Qwen3-only soft switch: sending it to Hammer2.1 or
             // xLAM would just be stray text at the end of the user turn.
             const prompt = thinking || model.style !== 'qwen3' ? lastUser.content : `${lastUser.content}\n/no_think`;

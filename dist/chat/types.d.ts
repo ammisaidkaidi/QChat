@@ -113,6 +113,8 @@ export interface ChatRequest {
      */
     mcpServers?: string[];
 }
+/** Per-turn generation options needed to preview the system message, no turns. */
+export type ChatPromptPreviewRequest = Omit<ChatRequest, 'messages'>;
 export type EngineState = 'unavailable' | 'absent' | 'downloading'
 /** Model file present but not loaded into memory yet. */
  | 'idle' | 'loading' | 'ready' | 'error';

@@ -102,6 +102,23 @@ export interface ModelRecord {
   active: boolean;
 }
 
+/** Effective model settings used by the local inference engine. */
+export interface ModelContext {
+  id: string;
+  path: string;
+  dir: string;
+  weightsDir: string;
+  contextSize: number;
+  threads: number;
+  temperature: number;
+  maxTokens: number;
+  thinking: boolean;
+  chatWrapper: NonNullable<ModelSettings['chatWrapper']>;
+  style: ModelStyle;
+  toolProtocol: ProtocolMode;
+  agentPrompt: string;
+}
+
 export interface ModelCatalogue {
   version: string;
   /** Identifier of the active model. */
@@ -342,23 +359,19 @@ export class ModelStore {
     return records.find((record) => record.active) ?? null;
   }
 
-  /** Runtime settings the engine should use, with env overrides applied. */
-  public activeContext(): {
-    id: string;
-    path: string;
-    dir: string;
-    weightsDir: string;
-    contextSize: number;
-    threads: number;
-    temperature: number;
-    maxTokens: number;
-    thinking: boolean;
-    chatWrapper: NonNullable<ModelSettings['chatWrapper']>;
-    style: ModelStyle;
-    toolProtocol: ProtocolMode;
-    agentPrompt: string;
-  } {
-    const record = this.active();
+  /** Runtime settings for the active model, with environment overrides applied. */
+  public activeContext(): ModelContext {
+    return this.context(this.active());
+  }
+
+  /** Runtime settings for a chat-selected model without changing the active model. */
+  public contextFor(id: string): ModelContext {
+    const record = this.overridePath ? this.active() : this.get(id);
+    if (!record || record.settings.id !== id) throw new Error(`Unknown model "${id}".`);
+    return this.context(record);
+  }
+
+  private context(record: ModelRecord | null): ModelContext {
     const settings = record?.settings;
     return {
       id: settings?.id ?? '',

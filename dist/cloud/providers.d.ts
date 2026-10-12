@@ -47,6 +47,7 @@ export declare class CloudProviderStore {
     setModels(id: string, models: CloudModel[]): CloudProvider;
     remove(id: string): CloudProvider | null;
 }
+export declare function buildCloudSystemMessage(input: Pick<CloudCompletionRequest, 'systemPrompt' | 'promptTemplate'>, messages?: readonly ChatMessage[]): string;
 /** Unified chat-completions adapter for OpenAI-compatible, Anthropic, and Gemini APIs. */
 export declare class CloudInference {
     private readonly providers;

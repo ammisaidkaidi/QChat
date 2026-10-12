@@ -16,18 +16,30 @@ import PromptsPanel from './components/PromptsPanel.vue';
 import ScriptDetail from './components/ScriptDetail.vue';
 import ScriptsPanel from './components/ScriptsPanel.vue';
 import ToolConsole from './components/ToolConsole.vue';
+import SystemPromptPanel from './components/SystemPromptPanel.vue';
 import type {
   Health,
+  RuntimePromptPreview,
   ScriptDetail as ScriptDetailType,
   ScriptRecord,
   ScriptStats,
   ToolDefinition,
 } from './types';
 
-type Tab = 'chat' | 'models' | 'scripts' | 'skills' | 'toolbox' | 'mcp' | 'prompts' | 'config';
+type Tab =
+  | 'chat'
+  | 'system-prompt'
+  | 'models'
+  | 'scripts'
+  | 'skills'
+  | 'toolbox'
+  | 'mcp'
+  | 'prompts'
+  | 'config';
 
 const TABS: { id: Tab; icon: string; label: string }[] = [
   { id: 'chat', icon: '💬', label: 'Chat' },
+  { id: 'system-prompt', icon: '📝', label: 'System Prompt' },
   { id: 'models', icon: '🧠', label: 'Models' },
   { id: 'scripts', icon: '🧩', label: 'Scripts' },
   { id: 'skills', icon: '📚', label: 'Skills' },
@@ -60,7 +72,16 @@ function readHistoryPanelVisible(): boolean {
 const storedTab = ((): Tab => {
   try {
     const value = localStorage.getItem(TAB_KEY);
-    const known: Tab[] = ['models', 'scripts', 'skills', 'toolbox', 'mcp', 'prompts', 'config'];
+    const known: Tab[] = [
+      'system-prompt',
+      'models',
+      'scripts',
+      'skills',
+      'toolbox',
+      'mcp',
+      'prompts',
+      'config',
+    ];
     return known.includes(value as Tab) ? (value as Tab) : 'chat';
   } catch {
     return 'chat';
@@ -83,11 +104,19 @@ watch(historyPanelVisible, (visible) => {
     /* the panel still works when browser storage is unavailable */
   }
 });
-watch(tab, (value) => {
+watch(tab, (value, previous) => {
   try {
     localStorage.setItem(TAB_KEY, value);
   } catch {
     /* private mode — the tab still works, it just is not remembered */
+  }
+  if (value === 'system-prompt' && previous !== 'chat' && previous !== 'system-prompt') {
+    runtimePromptPreview.value = {
+      ...runtimePromptPreview.value,
+      status: 'loading',
+      prompt: '',
+      error: null,
+    };
   }
 });
 
@@ -108,6 +137,21 @@ function activateChatHistory(): void {
 const scripts = ref<ScriptRecord[]>([]);
 const stats = ref<ScriptStats | null>(null);
 const systemPrompt = ref('');
+const runtimePromptPreview = ref<RuntimePromptPreview>({
+  status: 'loading',
+  prompt: '',
+  error: null,
+  modelSource: 'local',
+  modelId: '',
+  modelLabel: 'Loading chat…',
+  modelStyle: '—',
+  styleName: 'Default',
+  toolsEnabled: false,
+  webEnabled: false,
+  mcpServers: [],
+  skills: [],
+  hasCustomPrompt: false,
+});
 const tools = ref<ToolDefinition[]>([]);
 const health = ref<Health | null>(null);
 
@@ -123,6 +167,10 @@ const alertCount = alertState.count;
 function notify(message: string, tone: 'success' | 'error'): void {
   toast.value = { message, tone };
   window.setTimeout(() => (toast.value = null), 3200);
+}
+
+function updateRuntimePromptPreview(preview: RuntimePromptPreview): void {
+  runtimePromptPreview.value = preview;
 }
 
 onUnmounted(() => {
@@ -247,8 +295,25 @@ onMounted(async () => {
 
     <div class="flex min-h-[calc(100vh-4rem)] items-stretch">
       <div class="min-w-0 flex-1">
+        <template v-if="tab === 'chat' || tab === 'system-prompt'">
+          <main v-show="tab === 'chat'" class="mx-auto max-w-7xl p-3 sm:p-4">
+            <ChatPanel
+              :history-visible="historyPanelVisible"
+              @notify="notify"
+              @prompt-preview="updateRuntimePromptPreview"
+            />
+          </main>
+          <main
+            v-if="tab === 'system-prompt'"
+            class="mx-auto max-w-7xl space-y-4 p-3 sm:p-4"
+            data-testid="system-prompt-view"
+          >
+            <SystemPromptPanel :preview="runtimePromptPreview" />
+          </main>
+        </template>
+
         <main
-          v-if="tab === 'scripts'"
+          v-else-if="tab === 'scripts'"
           class="mx-auto grid max-w-7xl gap-4 p-3 sm:p-4 lg:grid-cols-[22rem_1fr]"
         >
           <ScriptsPanel
@@ -300,10 +365,6 @@ onMounted(async () => {
 
         <main v-else-if="tab === 'config'" class="mx-auto max-w-7xl p-3 sm:p-4">
           <EnvPanel @notify="notify" />
-        </main>
-
-        <main v-else class="mx-auto max-w-7xl p-3 sm:p-4">
-          <ChatPanel :history-visible="historyPanelVisible" @notify="notify" />
         </main>
 
         <footer

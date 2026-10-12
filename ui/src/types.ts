@@ -187,6 +187,40 @@ export interface ChatSettings {
   styleName: string;
 }
 
+/** Settings sent to the server to build the next-turn system prompt preview. */
+export interface ChatPromptPreviewRequest {
+  modelSource: 'local' | 'cloud';
+  providerId: string;
+  modelId: string;
+  temperature: number;
+  maxTokens: number;
+  thinking: boolean;
+  tools: boolean;
+  net: boolean;
+  systemPrompt: string;
+  maxToolIterations: number;
+  promptTemplate: string;
+  skills: string[];
+  mcpServers?: string[];
+}
+
+/** Current generated prompt plus the chat configuration shown beside it. */
+export interface RuntimePromptPreview {
+  status: 'loading' | 'ready' | 'error';
+  prompt: string;
+  error: string | null;
+  modelSource: 'local' | 'cloud';
+  modelId: string;
+  modelLabel: string;
+  modelStyle: string;
+  styleName: string;
+  toolsEnabled: boolean;
+  webEnabled: boolean;
+  mcpServers: string[];
+  skills: string[];
+  hasCustomPrompt: boolean;
+}
+
 export interface ChatSummary {
   id: string;
   title: string;
@@ -222,6 +256,7 @@ export interface ModelRecord {
     maxTokens?: number;
     thinking?: boolean;
     chatWrapper?: 'chatml' | 'qwen' | 'auto';
+    style?: 'qwen3' | 'xlam' | 'plain';
     agentPrompt?: string;
   };
   path: string;

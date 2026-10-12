@@ -490,7 +490,10 @@ function safeMessages(value: unknown): ChatMessage[] {
   });
 }
 
-function systemMessage(input: CloudCompletionRequest, messages: ChatMessage[]): string {
+export function buildCloudSystemMessage(
+  input: Pick<CloudCompletionRequest, 'systemPrompt' | 'promptTemplate'>,
+  messages: readonly ChatMessage[] = [],
+): string {
   const systemPrompt = input.systemPrompt ?? '';
   const promptTemplate = input.promptTemplate ?? '';
   if (typeof systemPrompt !== 'string' || typeof promptTemplate !== 'string') {
@@ -529,7 +532,7 @@ function validateCompletion(value: CloudCompletionRequest): {
   return {
     modelId,
     messages: messages.filter((message) => message.role !== 'system'),
-    system: systemMessage(value, messages),
+    system: buildCloudSystemMessage(value, messages),
     temperature,
     maxTokens,
   };

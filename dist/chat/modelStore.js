@@ -222,9 +222,18 @@ export class ModelStore {
         }
         return records.find((record) => record.active) ?? null;
     }
-    /** Runtime settings the engine should use, with env overrides applied. */
+    /** Runtime settings for the active model, with environment overrides applied. */
     activeContext() {
-        const record = this.active();
+        return this.context(this.active());
+    }
+    /** Runtime settings for a chat-selected model without changing the active model. */
+    contextFor(id) {
+        const record = this.overridePath ? this.active() : this.get(id);
+        if (!record || record.settings.id !== id)
+            throw new Error(`Unknown model "${id}".`);
+        return this.context(record);
+    }
+    context(record) {
         const settings = record?.settings;
         return {
             id: settings?.id ?? '',

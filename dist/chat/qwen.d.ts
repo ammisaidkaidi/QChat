@@ -5,7 +5,7 @@ import { SkillRegistry } from '../skills/registry.js';
 import { DEFAULT_MODELS_DIR, ModelStore } from './modelStore.js';
 import type { ModelRecord, ModelSettings } from './modelStore.js';
 import { SystemPromptStore } from './prompts.js';
-import type { ChatEvent, ChatMessage, ChatRequest, EngineStatus } from './types.js';
+import type { ChatEvent, ChatMessage, ChatPromptPreviewRequest, ChatRequest, EngineStatus } from './types.js';
 /**
  * The model InfAgent ships with: its settings file is committed under `models/`
  * and the 380 MB of weights are fetched on first use into the weights cache.
@@ -146,6 +146,14 @@ export declare class QwenEngine {
     resetSession(): void;
     isLoaded(): boolean;
     isBusy(): boolean;
+    /**
+     * Assemble the same per-turn prompt that `stream()` sends to the model.
+     * Kept independent of model loading so the UI can preview a chat before the
+     * selected weights have been downloaded or loaded.
+     */
+    private preparePrompt;
+    /** Preview the next local system message without loading or switching models. */
+    previewSystemPrompt(request: ChatPromptPreviewRequest): string;
     /**
      * Fetch a model's weights into the weights folder.
      *

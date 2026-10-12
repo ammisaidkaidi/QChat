@@ -71,6 +71,22 @@ export interface ModelRecord {
     bytesOnDisk: number;
     active: boolean;
 }
+/** Effective model settings used by the local inference engine. */
+export interface ModelContext {
+    id: string;
+    path: string;
+    dir: string;
+    weightsDir: string;
+    contextSize: number;
+    threads: number;
+    temperature: number;
+    maxTokens: number;
+    thinking: boolean;
+    chatWrapper: NonNullable<ModelSettings['chatWrapper']>;
+    style: ModelStyle;
+    toolProtocol: ProtocolMode;
+    agentPrompt: string;
+}
 export interface ModelCatalogue {
     version: string;
     /** Identifier of the active model. */
@@ -117,22 +133,11 @@ export declare class ModelStore {
     get(id: string): ModelRecord | null;
     /** The model the engine should load. */
     active(): ModelRecord | null;
-    /** Runtime settings the engine should use, with env overrides applied. */
-    activeContext(): {
-        id: string;
-        path: string;
-        dir: string;
-        weightsDir: string;
-        contextSize: number;
-        threads: number;
-        temperature: number;
-        maxTokens: number;
-        thinking: boolean;
-        chatWrapper: NonNullable<ModelSettings['chatWrapper']>;
-        style: ModelStyle;
-        toolProtocol: ProtocolMode;
-        agentPrompt: string;
-    };
+    /** Runtime settings for the active model, with environment overrides applied. */
+    activeContext(): ModelContext;
+    /** Runtime settings for a chat-selected model without changing the active model. */
+    contextFor(id: string): ModelContext;
+    private context;
     private number;
     /** Point the catalogue at another model. Returns the new effective model. */
     /** The model the committed/global defaults choose, ignoring a chat selection. */

@@ -407,7 +407,7 @@ function safeMessages(value) {
         return { role: message['role'], content: message['content'] };
     });
 }
-function systemMessage(input, messages) {
+export function buildCloudSystemMessage(input, messages = []) {
     const systemPrompt = input.systemPrompt ?? '';
     const promptTemplate = input.promptTemplate ?? '';
     if (typeof systemPrompt !== 'string' || typeof promptTemplate !== 'string') {
@@ -439,7 +439,7 @@ function validateCompletion(value) {
     return {
         modelId,
         messages: messages.filter((message) => message.role !== 'system'),
-        system: systemMessage(value, messages),
+        system: buildCloudSystemMessage(value, messages),
         temperature,
         maxTokens,
     };
