@@ -94,6 +94,8 @@ export declare class ModelStore {
     /** Folder holding the `.gguf` weights (outside the repository). */
     readonly weightsDir: string;
     readonly overridePath: string | null;
+    /** Per-process model selected by a chat; never written into global defaults. */
+    private runtimeActiveId;
     constructor(options?: ModelStoreOptions);
     /** Create both folders if needed; safe to call often. */
     ensureDir(): string;
@@ -133,6 +135,14 @@ export declare class ModelStore {
     };
     private number;
     /** Point the catalogue at another model. Returns the new effective model. */
+    /** The model the committed/global defaults choose, ignoring a chat selection. */
+    defaultActive(): ModelRecord | null;
+    /**
+     * Select a model. `persist: false` is for per-chat selection: the model that
+     * is loaded changes in this process, while `models-settings.json` stays the
+     * user's global default for new chats and the next process start.
+     */
+    selectActive(id: string, persist?: boolean): ModelRecord;
     setActive(id: string): ModelRecord;
     /** Name of the selected system-prompt template, or '' when none is selected. */
     activePrompt(): string;

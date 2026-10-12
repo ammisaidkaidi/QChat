@@ -52,6 +52,7 @@
     "chat:model": "node dist/cli.js chat download"
   },
   "dependencies": {
+    "better-sqlite3": "^12.11.1",
     "dotenv": "^16.6.1",
     "node-llama-cpp": "^3.22.1"
   },
@@ -63,6 +64,7 @@
   ],
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^26.6.5",
     "@vitest/coverage-v8": "^4.1.11",
     "eslint": "^10.12.0",

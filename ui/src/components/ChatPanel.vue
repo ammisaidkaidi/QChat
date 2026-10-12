@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 
 import { pushAlert, raiseAlert } from '../alerts';
+import { chatHistoryFromTurns } from '../chatHistory';
 import {
   applyMention,
   attachedSkills,
@@ -10,13 +11,16 @@ import {
   mentionAt,
   type Mention,
 } from '../mentions';
-import { chatApi, mcpApi, promptsApi, skillsApi, streamChat } from '../api';
+import { chatApi, chatsApi, mcpApi, promptsApi, skillsApi, streamChat } from '../api';
 import type { ChatStreamHandle } from '../api';
 import type {
   ChatConfig,
   ChatEvent,
   ChatMessage,
+  ChatSettings,
+  ChatSummary,
   ChatTurn,
+  StoredChat,
   EngineStatus,
   McpCatalogue,
   SkillRecord,
@@ -28,7 +32,9 @@ const emit = defineEmits<{
   (event: 'notify', message: string, tone: 'success' | 'error'): void;
 }>();
 
-const STORAGE_KEY = 'infagent.chat.v1';
+const LEGACY_STORAGE_KEY = 'infagent.chat.v1';
+const ACTIVE_CHAT_KEY = 'infagent.chat.active.v1';
+const LEGACY_IMPORT_KEY = 'infagent.chat.import-id.v1';
 
 const status = ref<EngineStatus | null>(null);
 const config = ref<ChatConfig | null>(null);
@@ -37,13 +43,22 @@ const switching = ref(false);
 /** Turn id whose text was copied last, for the "copied" tick. */
 const copied = ref<string | null>(null);
 const turns = ref<ChatTurn[]>([]);
+const chats = ref<ChatSummary[]>([]);
+const activeChatId = ref('');
+const historyReady = ref(false);
+const historyLoading = ref(true);
+const savingState = ref<'saved' | 'saving' | 'error'>('saved');
+const historyFilter = ref('');
+const deletingChat = ref(false);
+const confirmDeleteId = ref('');
 const draft = ref('');
 const busy = ref(false);
 const downloading = ref(false);
 const showSettings = ref(false);
 /** Thinking styles offered by the Prompts tab; the selected one shapes every turn. */
-const styles = ref<{ name: string; description: string }[]>([]);
-const activeStyle = ref('');
+const styles = ref<{ name: string; description: string; prompt: string }[]>([]);
+const defaultStyleName = ref('');
+const activeStyle = computed(() => settings.styleName);
 const showPrompt = ref(false);
 const startedAt = ref<number | null>(null);
 const elapsed = ref(0);
@@ -62,6 +77,10 @@ const draftBox = ref<HTMLTextAreaElement | null>(null);
 
 let handle: ChatStreamHandle | null = null;
 let clock: number | null = null;
+let settingsSaveTimer: number | null = null;
+let turnsSaveTimer: number | null = null;
+let periodicRefresh: number | null = null;
+let applyingChat = false;
 
 const settings = reactive({
   temperature: 0.4,
@@ -78,6 +97,10 @@ const settings = reactive({
    * `[]` = none at all, a list = exactly those (the 🔧 button by the box).
    */
   mcpServers: null as string[] | null,
+  /** Per-chat model; loaded when this chat is selected and included per request. */
+  modelId: '',
+  /** Per-chat selected template name (the template itself stays in models/). */
+  styleName: '',
 });
 
 const stateLabel = computed(() => {
@@ -102,63 +125,394 @@ const stateLabel = computed(() => {
 });
 
 const canChat = computed(
-  () => status.value !== null && ['ready', 'idle', 'loading'].includes(status.value.state),
+  () =>
+    historyReady.value &&
+    activeChatId.value.length > 0 &&
+    status.value !== null &&
+    ['ready', 'idle', 'loading'].includes(status.value.state),
 );
 
-/* ── persistence ─────────────────────────────────────────────────────────── */
+/* ── persistence: SQLite on the server, each chat owns its own settings ──── */
 
-/** Snapshot of what is stored; the Save button is what moves settings into it. */
-const saved = ref('{}');
-const justSaved = ref(false);
-let savedTimer: number | null = null;
+const activeChat = computed(
+  () => chats.value.find((chat) => chat.id === activeChatId.value) ?? null,
+);
+const filteredChats = computed(() => {
+  const query = historyFilter.value.trim().toLowerCase();
+  if (!query) return chats.value;
+  return chats.value.filter((chat) =>
+    `${chat.title} ${chat.preview}`.toLowerCase().includes(query),
+  );
+});
+const saveLabel = computed(() =>
+  savingState.value === 'saving'
+    ? 'Saving to SQLite…'
+    : savingState.value === 'error'
+      ? 'Save failed — retry on next change'
+      : 'Saved to this chat',
+);
 
-function write(): void {
+function chatUpdatedLabel(timestamp: string): string {
+  const updated = Date.parse(timestamp);
+  if (!Number.isFinite(updated)) return '';
+  const age = Math.max(0, Date.now() - updated);
+  if (age < 60_000) return 'now';
+  if (age < 3_600_000) return `${Math.floor(age / 60_000)}m ago`;
+  if (age < 86_400_000) return `${Math.floor(age / 3_600_000)}h ago`;
+  return new Date(updated).toLocaleDateString();
+}
+
+function currentSettings(): ChatSettings {
+  return {
+    ...settings,
+    mcpServers: settings.mcpServers === null ? null : [...settings.mcpServers],
+  };
+}
+
+function serialisedTurns(): ChatTurn[] {
+  return JSON.parse(JSON.stringify(turns.value)) as ChatTurn[];
+}
+
+function defaultChatSettings(): ChatSettings {
+  const modelId =
+    catalog.value?.defaultActive || catalog.value?.active || status.value?.modelId || '';
+  const globalModel = catalog.value?.models.find((model) => model.settings.id === modelId);
+  return {
+    temperature: globalModel?.settings.temperature ?? config.value?.defaultTemperature ?? 0.4,
+    maxTokens: globalModel?.settings.maxTokens ?? config.value?.defaultMaxTokens ?? 512,
+    thinking: globalModel?.settings.thinking ?? config.value?.thinking ?? false,
+    tools: config.value?.tools ?? true,
+    net: true,
+    systemPrompt: '',
+    maxSteps: 6,
+    mcpServers: null,
+    modelId,
+    styleName: defaultStyleName.value,
+  };
+}
+
+function readBrowserValue(key: string): string | null {
   try {
-    localStorage.setItem(
-      STORAGE_KEY,
-      JSON.stringify({ turns: turns.value.slice(-40), settings: JSON.parse(saved.value) }),
-    );
+    return localStorage.getItem(key);
   } catch {
-    /* storage may be unavailable */
+    return null;
   }
 }
 
-/** Changes made since the last save, shown next to the button. */
-const dirty = computed(() => JSON.stringify({ ...settings }) !== saved.value);
-
-function saveSettings(): void {
-  saved.value = JSON.stringify({ ...settings });
-  write();
-  justSaved.value = true;
-  if (savedTimer !== null) window.clearTimeout(savedTimer);
-  savedTimer = window.setTimeout(() => (justSaved.value = false), 1600);
-  emit('notify', 'Settings saved', 'success');
+function writeBrowserValue(key: string, value: string): void {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // The SQLite history remains usable when browser storage is unavailable.
+  }
 }
 
-function restore(): void {
+function removeBrowserValue(key: string): void {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) {
-      saved.value = JSON.stringify({ ...settings });
+    localStorage.removeItem(key);
+  } catch {
+    // The migration id remains deterministic for this legacy transcript.
+  }
+}
+
+function rememberSummary(summary: ChatSummary): void {
+  const index = chats.value.findIndex((chat) => chat.id === summary.id);
+  if (index === -1) chats.value.push(summary);
+  else chats.value[index] = summary;
+  chats.value.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+}
+
+function forgetSummary(id: string): void {
+  chats.value = chats.value.filter((chat) => chat.id !== id);
+}
+
+async function persistSettings(id: string, snapshot: ChatSettings): Promise<boolean> {
+  try {
+    savingState.value = 'saving';
+    const response = await chatsApi.updateSettings(id, snapshot);
+    rememberSummary(response.chat);
+    if (activeChatId.value === id) savingState.value = 'saved';
+    return true;
+  } catch (error) {
+    if (activeChatId.value === id) savingState.value = 'error';
+    console.error('[chat] settings could not be saved to SQLite:', error);
+    return false;
+  }
+}
+
+async function persistTurns(id: string, snapshot: ChatTurn[]): Promise<boolean> {
+  try {
+    savingState.value = 'saving';
+    const response = await chatsApi.saveTurns(id, snapshot);
+    rememberSummary(response.chat);
+    if (activeChatId.value === id) savingState.value = 'saved';
+    return true;
+  } catch (error) {
+    if (activeChatId.value === id) savingState.value = 'error';
+    console.error('[chat] transcript could not be saved to SQLite:', error);
+    return false;
+  }
+}
+
+function scheduleSettingsSave(): void {
+  if (!historyReady.value || applyingChat || !activeChatId.value) return;
+  if (settingsSaveTimer !== null) window.clearTimeout(settingsSaveTimer);
+  const id = activeChatId.value;
+  settingsSaveTimer = window.setTimeout(() => {
+    settingsSaveTimer = null;
+    void persistSettings(id, currentSettings());
+  }, 350);
+}
+
+function scheduleTurnsSave(): void {
+  // The new user turn is saved before generation; avoid replacing the entire
+  // transcript on every streamed token. The completed/aborted turn is saved in
+  // one snapshot from onClose/stop.
+  if (!historyReady.value || applyingChat || !activeChatId.value || busy.value) return;
+  if (turnsSaveTimer !== null) window.clearTimeout(turnsSaveTimer);
+  const id = activeChatId.value;
+  turnsSaveTimer = window.setTimeout(() => {
+    turnsSaveTimer = null;
+    void persistTurns(id, serialisedTurns());
+  }, 800);
+}
+
+async function flushPersistence(): Promise<boolean> {
+  const id = activeChatId.value;
+  if (!id || !historyReady.value) return true;
+  if (settingsSaveTimer !== null) window.clearTimeout(settingsSaveTimer);
+  if (turnsSaveTimer !== null) window.clearTimeout(turnsSaveTimer);
+  settingsSaveTimer = null;
+  turnsSaveTimer = null;
+  const [settingsSaved, turnsSaved] = await Promise.all([
+    persistSettings(id, currentSettings()),
+    persistTurns(id, serialisedTurns()),
+  ]);
+  return settingsSaved && turnsSaved;
+}
+
+async function saveCurrentSettings(): Promise<void> {
+  const id = activeChatId.value;
+  if (id) await persistSettings(id, currentSettings());
+}
+
+watch(settings, scheduleSettingsSave, { deep: true, flush: 'sync' });
+watch(turns, scheduleTurnsSave, { deep: true, flush: 'sync' });
+
+function summaryFromRecord(chat: StoredChat): ChatSummary {
+  return {
+    id: chat.id,
+    title: chat.title,
+    createdAt: chat.createdAt,
+    updatedAt: chat.updatedAt,
+    preview: chat.preview,
+    turnCount: chat.turnCount,
+    modelId: chat.modelId,
+  };
+}
+
+function applyStoredChat(chat: StoredChat): void {
+  applyingChat = true;
+  activeChatId.value = chat.id;
+  Object.assign(settings, chat.settings);
+  turns.value = chat.turns;
+  draft.value = '';
+  mention.value = null;
+  savingState.value = 'saved';
+  historyReady.value = true;
+  writeBrowserValue(ACTIVE_CHAT_KEY, chat.id);
+  applyingChat = false;
+}
+
+async function activateChat(chat: StoredChat): Promise<boolean> {
+  let selected = chat;
+  let requestedModel = chat.settings.modelId;
+  if (requestedModel && catalog.value) {
+    const exists = catalog.value.models.some((model) => model.settings.id === requestedModel);
+    if (!exists) {
+      requestedModel = catalog.value.defaultActive || catalog.value.active;
+      selected = { ...chat, settings: { ...chat.settings, modelId: requestedModel } };
+      emit(
+        'notify',
+        `This chat's model is no longer in the catalogue; using ${requestedModel}.`,
+        'error',
+      );
+    }
+  }
+
+  if (requestedModel && catalog.value?.active !== requestedModel) {
+    switching.value = true;
+    try {
+      const response = await chatApi.useModel(requestedModel, false);
+      catalog.value = response;
+      status.value = response.status;
+    } catch (error) {
+      switching.value = false;
+      emit('notify', (error as Error).message, 'error');
+      return false;
+    } finally {
+      switching.value = false;
+    }
+  }
+
+  applyStoredChat(selected);
+  rememberSummary(summaryFromRecord(selected));
+  if (selected.settings.modelId !== chat.settings.modelId) {
+    void persistSettings(selected.id, selected.settings);
+  }
+  await scrollToBottom();
+  return true;
+}
+
+function importToken(legacyRecord: string): string {
+  const existing = readBrowserValue(LEGACY_IMPORT_KEY);
+  if (existing) return existing;
+
+  // Stable fallback also keeps the server import idempotent in sandboxed
+  // browsers where localStorage is unavailable.
+  let first = 0x811c9dc5;
+  let second = 0x9e3779b9;
+  for (let index = 0; index < legacyRecord.length; index += 1) {
+    const code = legacyRecord.charCodeAt(index);
+    first = Math.imul(first ^ code, 0x01000193);
+    second = Math.imul(second ^ (code + index), 0x85ebca6b);
+  }
+  const token = `legacy-${(first >>> 0).toString(16)}-${(second >>> 0).toString(16)}-${legacyRecord.length.toString(36)}`;
+  writeBrowserValue(LEGACY_IMPORT_KEY, token);
+  return token;
+}
+
+async function initialiseChatHistory(): Promise<void> {
+  historyLoading.value = true;
+  try {
+    let list = (await chatsApi.list()).chats;
+    let importedId = '';
+    const legacy = readBrowserValue(LEGACY_STORAGE_KEY);
+    if (legacy) {
+      try {
+        const parsed = JSON.parse(legacy) as { turns?: unknown; settings?: unknown };
+        const oldTurns = Array.isArray(parsed.turns) ? (parsed.turns as ChatTurn[]) : [];
+        const oldSettings =
+          typeof parsed.settings === 'object' && parsed.settings !== null
+            ? (parsed.settings as Partial<ChatSettings>)
+            : {};
+        const hasOldConversation = oldTurns.length > 0 || Object.keys(oldSettings).length > 0;
+        if (hasOldConversation) {
+          const merged: ChatSettings = { ...defaultChatSettings(), ...oldSettings };
+          if (!merged.modelId) merged.modelId = defaultChatSettings().modelId;
+          if (!merged.styleName) merged.styleName = defaultChatSettings().styleName;
+          const imported = await chatsApi.importLegacy({
+            importId: importToken(legacy),
+            title: 'Imported chat',
+            settings: merged,
+            turns: oldTurns,
+          });
+          importedId = imported.chat?.id ?? '';
+        }
+        // The server has acknowledged the idempotent import (or the record was empty).
+        removeBrowserValue(LEGACY_STORAGE_KEY);
+      } catch (error) {
+        emit(
+          'notify',
+          `Could not import the old browser chat: ${(error as Error).message}`,
+          'error',
+        );
+      }
+      list = (await chatsApi.list()).chats;
+    }
+
+    chats.value = list;
+    const preferred = readBrowserValue(ACTIVE_CHAT_KEY) ?? '';
+    const selected =
+      list.find((chat) => chat.id === preferred) ??
+      list.find((chat) => chat.id === importedId) ??
+      list[0];
+    if (selected) {
+      const response = await chatsApi.get(selected.id);
+      if (!(await activateChat(response.chat))) return;
+    } else {
+      const created = await chatsApi.create({ settings: defaultChatSettings() });
+      rememberSummary(summaryFromRecord(created.chat));
+      if (!(await activateChat(created.chat))) return;
+    }
+  } catch (error) {
+    emit(
+      'notify',
+      `Chat history could not be loaded from SQLite: ${(error as Error).message}`,
+      'error',
+    );
+  } finally {
+    historyLoading.value = false;
+  }
+}
+
+async function selectChat(summary: ChatSummary): Promise<void> {
+  confirmDeleteId.value = '';
+  if (busy.value || switching.value || summary.id === activeChatId.value) return;
+  if (!(await flushPersistence())) {
+    emit('notify', 'The current chat could not be saved; it was not switched.', 'error');
+    return;
+  }
+  try {
+    const response = await chatsApi.get(summary.id);
+    await activateChat(response.chat);
+  } catch (error) {
+    emit('notify', (error as Error).message, 'error');
+  }
+}
+
+async function createNewChat(): Promise<void> {
+  confirmDeleteId.value = '';
+  if (busy.value || switching.value) return;
+  if (!(await flushPersistence())) {
+    emit('notify', 'The current chat could not be saved; a new chat was not created.', 'error');
+    return;
+  }
+  try {
+    const response = await chatsApi.create({ settings: defaultChatSettings() });
+    rememberSummary(summaryFromRecord(response.chat));
+    await activateChat(response.chat);
+  } catch (error) {
+    emit('notify', (error as Error).message, 'error');
+  }
+}
+
+async function deleteChat(summary: ChatSummary): Promise<void> {
+  if (busy.value || switching.value || deletingChat.value) return;
+  if (confirmDeleteId.value !== summary.id) {
+    confirmDeleteId.value = summary.id;
+    return;
+  }
+  confirmDeleteId.value = '';
+  deletingChat.value = true;
+  try {
+    if (summary.id === activeChatId.value && !(await flushPersistence())) {
+      emit('notify', 'The chat could not be saved; it was not deleted.', 'error');
       return;
     }
-    const parsed = JSON.parse(raw) as { turns?: ChatTurn[]; settings?: Partial<typeof settings> };
-    if (Array.isArray(parsed.turns)) turns.value = parsed.turns.slice(-40);
-    if (parsed.settings) Object.assign(settings, parsed.settings);
-  } catch {
-    /* ignore corrupt state */
+    await chatsApi.remove(summary.id);
+    forgetSummary(summary.id);
+    if (summary.id === activeChatId.value) {
+      historyReady.value = false;
+      activeChatId.value = '';
+      if (chats.value.length > 0) await selectChat(chats.value[0]!);
+      else await createNewChat();
+    }
+    emit('notify', 'Chat deleted', 'success');
+  } catch (error) {
+    emit('notify', (error as Error).message, 'error');
+  } finally {
+    deletingChat.value = false;
   }
-  saved.value = JSON.stringify({ ...settings });
 }
-
-// Turns keep persisting on their own; settings only move when Save is pressed.
-watch(turns, write, { deep: true });
-watch(saved, write);
 
 /* ── engine status ───────────────────────────────────────────────────────── */
 
 const activeModel = computed<ModelRecord | null>(
-  () => catalog.value?.models.find((model) => model.settings.id === catalog.value?.active) ?? null,
+  () =>
+    catalog.value?.models.find(
+      (model) => model.settings.id === (settings.modelId || catalog.value?.active),
+    ) ?? null,
 );
 
 function formatSize(bytes: number): string {
@@ -181,50 +535,42 @@ async function loadStyles(): Promise<void> {
     styles.value = catalogue.prompts.map((entry) => ({
       name: entry.name,
       description: entry.description,
+      prompt: entry.prompt,
     }));
-    activeStyle.value = catalogue.active;
+    defaultStyleName.value = catalogue.active;
   } catch {
     // The picker stays empty; chat is unaffected and falls back to the plain prompt.
   }
 }
 
-async function selectStyle(event: Event): Promise<void> {
+function selectStyle(event: Event): void {
   const value = (event.target as HTMLSelectElement).value;
-  try {
-    const result = await promptsApi.select(value);
-    activeStyle.value = result.active;
-    emit(
-      'notify',
-      result.active ? `Thinking style: ${result.active}` : 'Thinking style: default',
-      'success',
-    );
-  } catch (error) {
-    emit('notify', (error as Error).message, 'error');
-  }
+  settings.styleName = value;
+  emit(
+    'notify',
+    value ? `Thinking style for this chat: ${value}` : 'Thinking style: default',
+    'success',
+  );
 }
 
 async function selectModel(event: Event): Promise<void> {
   const id = (event.target as HTMLSelectElement).value;
-  if (!id || id === catalog.value?.active) return;
+  if (!id || id === settings.modelId) return;
 
   switching.value = true;
   try {
-    const response = await chatApi.useModel(id);
-    catalog.value = {
-      dir: response.dir,
-      weightsDir: response.weightsDir,
-      active: response.active,
-      models: response.models,
-    };
+    const response = await chatApi.useModel(id, false);
+    catalog.value = response;
     status.value = response.status;
+    settings.modelId = id;
     if (!response.status.modelPresent) {
       emit(
         'notify',
-        `${response.status.modelName} is selected — download its weights to chat`,
+        `${response.status.modelName} is selected for this chat — download its weights to chat`,
         'error',
       );
     } else {
-      emit('notify', `Now using ${response.status.modelName}`, 'success');
+      emit('notify', `This chat now uses ${response.status.modelName}`, 'success');
     }
   } catch (error) {
     emit('notify', (error as Error).message, 'error');
@@ -284,10 +630,6 @@ async function refresh(): Promise<void> {
     const response = await chatApi.status();
     status.value = response.status;
     config.value = response.config;
-    if (!settings.systemPrompt && response.config)
-      settings.maxTokens = settings.maxTokens || response.config.defaultMaxTokens;
-    // That default is not a user edit: keep it out of the "unsaved changes" state.
-    if (!dirty.value) saved.value = JSON.stringify({ ...settings });
   } catch (error) {
     emit('notify', (error as Error).message, 'error');
   }
@@ -343,11 +685,7 @@ function newTurn(role: ChatTurn['role']): ChatTurn {
   return created;
 }
 
-const history = computed<ChatMessage[]>(() =>
-  turns.value
-    .filter((turn) => turn.text.trim().length > 0 && !turn.streaming)
-    .map((turn) => ({ role: turn.role, content: turn.text })),
-);
+const history = computed<ChatMessage[]>(() => chatHistoryFromTurns(turns.value));
 
 function applyEvent(turn: ChatTurn, event: ChatEvent): void {
   switch (event.type) {
@@ -431,8 +769,15 @@ function stopClock(): void {
 
 async function send(): Promise<void> {
   const text = draft.value.trim();
-  if (!text || busy.value) return;
+  if (!text || busy.value || !historyReady.value || !activeChatId.value) return;
 
+  // Snapshot prior turns before the new user turn enters the reactive transcript.
+  // Otherwise the current message would be included twice in the API request.
+  const priorHistory = history.value;
+  const chatId = activeChatId.value;
+  const turnSettings = currentSettings();
+  const promptTemplate =
+    styles.value.find((style) => style.name === settings.styleName)?.prompt ?? '';
   // Read the skills off the message itself, so what is sent matches what is on
   // screen — a mention deleted by hand is not attached.
   const pinned = attachedSkills(text, skillNames.value);
@@ -446,14 +791,37 @@ async function send(): Promise<void> {
   startClock();
   await scrollToBottom();
 
+  // A question reaches the model only after the selected chat's settings and
+  // the question itself have reached SQLite. If storage is unavailable, keep
+  // the text in the composer history instead of running an unrecorded turn.
+  if (settingsSaveTimer !== null) window.clearTimeout(settingsSaveTimer);
+  if (turnsSaveTimer !== null) window.clearTimeout(turnsSaveTimer);
+  settingsSaveTimer = null;
+  turnsSaveTimer = null;
+  const [settingsSaved, turnsSaved] = await Promise.all([
+    persistSettings(chatId, turnSettings),
+    persistTurns(chatId, serialisedTurns()),
+  ]);
+  if (!settingsSaved || !turnsSaved) {
+    turns.value.splice(-2, 2);
+    busy.value = false;
+    stopClock();
+    draft.value = text;
+    savingState.value = 'error';
+    emit('notify', 'This chat could not be saved to SQLite, so the message was not sent.', 'error');
+    return;
+  }
+
   handle = streamChat({
-    messages: [...history.value, { role: 'user', content: text }],
+    messages: [...priorHistory, { role: 'user', content: text }],
+    modelId: settings.modelId,
     temperature: settings.temperature,
     maxTokens: settings.maxTokens,
     thinking: settings.thinking,
     tools: settings.tools,
     net: settings.net,
     systemPrompt: settings.systemPrompt,
+    promptTemplate,
     maxToolIterations: settings.maxSteps,
     ...(pinned.length > 0 ? { skills: pinned } : {}),
     // Omitted when nothing is restricted, so the engine keeps offering every
@@ -477,6 +845,7 @@ async function send(): Promise<void> {
       busy.value = false;
       stopClock();
       handle = null;
+      scheduleTurnsSave();
       void refresh();
       void scrollToBottom();
     },
@@ -488,6 +857,7 @@ function stop(): void {
   handle = null;
   busy.value = false;
   stopClock();
+  scheduleTurnsSave();
   emit('notify', 'Generation stopped', 'success');
 }
 
@@ -696,15 +1066,19 @@ async function toggleMcpPicker(): Promise<void> {
 
 onBeforeUnmount(() => {
   document.removeEventListener('click', onDocumentClick);
+  if (settingsSaveTimer !== null) window.clearTimeout(settingsSaveTimer);
+  if (turnsSaveTimer !== null) window.clearTimeout(turnsSaveTimer);
+  if (periodicRefresh !== null) window.clearInterval(periodicRefresh);
+  void flushPersistence();
 });
 
 onMounted(async () => {
-  restore();
   document.addEventListener('click', onDocumentClick);
   void loadMcp();
   void loadSkills();
   await Promise.all([refresh(), loadModels()]);
-  window.setInterval(() => {
+  await initialiseChatHistory();
+  periodicRefresh = window.setInterval(() => {
     void refresh();
     void loadMcp();
     void loadSkills();
@@ -714,550 +1088,674 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="grid gap-4">
-    <section class="card border border-base-300 bg-base-200/70">
-      <div class="card-body gap-3 p-4">
-        <header class="flex flex-wrap items-center justify-between gap-3">
-          <div class="flex items-center gap-3">
-            <span class="grid h-10 w-10 place-items-center rounded-xl bg-primary/15 text-lg"
-              >🤖</span
-            >
-            <div>
-              <h2 class="card-title text-base">
-                {{ status?.modelName ?? 'Qwen3 0.6B (Q4_K_M)' }}
-                <span v-if="status?.quantization" class="badge badge-sm badge-ghost font-mono">{{
-                  status.quantization
-                }}</span>
-              </h2>
-              <p class="text-[11px] opacity-70">
-                local · CPU {{ status?.threads ?? config?.threads ?? 2 }} threads · ctx
-                {{ status?.contextSize ?? config?.contextSize ?? 0 }} · RAM
-                {{ status?.ramUsedMb ?? 0 }} MB
-              </p>
-            </div>
-          </div>
-
-          <div class="flex flex-wrap items-center gap-2">
-            <select
-              v-if="catalog && catalog.models.length > 0"
-              class="select select-bordered select-xs max-w-[13rem] font-mono"
-              :value="catalog.active"
-              :disabled="switching || busy"
-              :title="activeModel?.settings.description ?? status?.description ?? ''"
-              aria-label="Active model"
-              @change="selectModel"
-            >
-              <option
-                v-for="model in catalog.models"
-                :key="model.settings.id"
-                :value="model.settings.id"
+  <div class="grid gap-4 xl:grid-cols-[minmax(0,1fr)_19rem] xl:items-start">
+    <div class="grid min-w-0 gap-4">
+      <section class="card border border-base-300 bg-base-200/70">
+        <div class="card-body gap-3 p-4">
+          <header class="flex flex-wrap items-center justify-between gap-3">
+            <div class="flex items-center gap-3">
+              <span class="grid h-10 w-10 place-items-center rounded-xl bg-primary/15 text-lg"
+                >🤖</span
               >
-                {{ model.settings.id }}{{ model.present ? '' : ' — needs download' }}
-              </option>
-            </select>
-
-            <select
-              v-if="styles.length > 0"
-              class="select select-bordered select-xs max-w-[12rem]"
-              :value="activeStyle"
-              :disabled="busy"
-              :title="
-                styles.find((style) => style.name === activeStyle)?.description ??
-                'How the model should think and answer'
-              "
-              aria-label="Thinking style"
-              @change="selectStyle"
-            >
-              <option value="">default style</option>
-              <option v-for="style in styles" :key="style.name" :value="style.name">
-                🧠 {{ style.name }}
-              </option>
-            </select>
-
-            <label
-              class="flex items-center gap-1 text-[11px] text-base-content/70"
-              title="Tool steps one reply may take: several calls, their results, then the answer"
-            >
-              steps
-              <input
-                v-model.number="settings.maxSteps"
-                class="input input-bordered input-xs w-14 font-mono"
-                type="number"
-                min="1"
-                max="12"
-                step="1"
-                :disabled="busy"
-                aria-label="Max steps"
-              />
-            </label>
-
-            <span
-              class="badge badge-sm gap-1"
-              :class="{
-                'badge-success': status?.state === 'ready',
-                'badge-warning': status?.state === 'downloading',
-                'badge-info': status?.state === 'loading',
-                'badge-error': status?.state === 'error' || status?.state === 'unavailable',
-                'badge-ghost': status?.state === 'absent',
-              }"
-            >
-              <span
-                v-if="status?.state === 'loading' || status?.state === 'downloading'"
-                class="loading loading-spinner loading-xs"
-              />
-              {{ stateLabel }}
-            </span>
-
-            <button
-              v-if="status?.state === 'absent' || (activeModel && !activeModel.present)"
-              class="btn btn-primary btn-xs"
-              :disabled="downloading"
-              @click="download"
-            >
-              <span v-if="downloading" class="loading loading-spinner loading-xs" />
-              {{
-                downloading ? 'Downloading' : `Download ${formatSize(activeModel?.sizeBytes ?? 0)}`
-              }}
-            </button>
-            <button
-              v-if="status?.modelPresent && status?.state === 'ready'"
-              class="btn btn-ghost btn-xs"
-              @click="unload"
-            >
-              Unload
-            </button>
-            <button class="btn btn-ghost btn-xs" @click="showPrompt = !showPrompt">Info</button>
-            <button
-              class="btn btn-xs"
-              :class="showSettings ? 'btn-primary' : 'btn-ghost border border-base-300'"
-              @click="showSettings = !showSettings"
-            >
-              Settings
-            </button>
-            <button class="btn btn-ghost btn-xs text-error" @click="clear">Clear</button>
-          </div>
-        </header>
-
-        <div v-if="status?.state === 'downloading'" class="space-y-1">
-          <progress
-            class="progress progress-primary w-full"
-            :value="status.downloadProgress * 100"
-            max="100"
-          />
-          <p class="text-[11px] opacity-70">
-            {{ (status.downloadedBytes / 1048576).toFixed(1) }} MB of
-            {{ (status.downloadTotalBytes / 1048576).toFixed(1) }} MB — fetched once, kept in
-            {{ config?.modelsDir }}
-          </p>
-        </div>
-
-        <div v-if="status?.state === 'absent'" class="alert py-2 text-xs">
-          <span>
-            {{ status?.modelName ?? 'This model' }} ({{ formatSize(activeModel?.sizeBytes ?? 0) }},
-            GGUF {{ status?.quantization || 'quantized' }} from Hugging Face) is not on this machine
-            yet. Download it once — chat runs fully offline afterwards.
-          </span>
-        </div>
-
-        <div
-          v-if="status?.state === 'unavailable' || status?.lastError"
-          class="alert alert-warning py-2 text-xs"
-        >
-          <span>{{
-            status?.lastError ?? 'The local engine is unavailable. Run `npm install` to enable it.'
-          }}</span>
-        </div>
-
-        <pre
-          v-if="showPrompt"
-          class="rounded-box bg-base-300/50 p-3 font-mono text-[11px] whitespace-pre-wrap"
-          >{{ promptPreview() }}</pre>
-
-        <div
-          v-if="showSettings"
-          class="grid gap-3 rounded-box border border-base-300 p-3 sm:grid-cols-2"
-        >
-          <label class="form-control">
-            <span class="mb-1 flex items-center justify-between text-xs opacity-70">
-              Temperature <span class="font-mono">{{ settings.temperature.toFixed(1) }}</span>
-            </span>
-            <input
-              v-model.number="settings.temperature"
-              type="range"
-              min="0"
-              max="1.2"
-              step="0.1"
-              class="range range-xs range-primary"
-            />
-          </label>
-          <label class="form-control">
-            <span class="mb-1 text-xs opacity-70">Max new tokens</span>
-            <input
-              v-model.number="settings.maxTokens"
-              type="number"
-              min="64"
-              max="1024"
-              step="32"
-              class="input input-bordered input-xs"
-            />
-          </label>
-          <label class="flex items-center gap-2 text-xs">
-            <input v-model="settings.thinking" type="checkbox" class="toggle toggle-sm" />
-            Thinking mode (slower, shows a reasoning block)
-          </label>
-          <label class="flex items-center gap-2 text-xs">
-            <input v-model="settings.tools" type="checkbox" class="toggle toggle-sm" />
-            Let the model call scripts as tools
-          </label>
-          <label class="flex items-center gap-2 text-xs">
-            <input v-model="settings.net" type="checkbox" class="toggle toggle-sm" />
-            Internet access (webSearch, webFetch)
-          </label>
-          <div class="flex items-center gap-2 sm:col-span-2">
-            <button
-              class="btn btn-ghost btn-xs"
-              title="Raise an alert the same way showAlert does"
-              @click="sendTestAlert"
-            >
-              🔔 Send a test alert
-            </button>
-            <span class="text-[11px] opacity-60">
-              the model calls showAlert on its own when you ask for an alert
-            </span>
-          </div>
-          <label class="form-control sm:col-span-2">
-            <span class="mb-1 text-xs opacity-70"
-              >Custom system prompt (empty = generated with the script toolbox)</span
-            >
-            <textarea
-              v-model="settings.systemPrompt"
-              rows="2"
-              class="textarea textarea-bordered textarea-xs font-mono"
-            ></textarea>
-          </label>
-
-          <div
-            class="flex flex-wrap items-center gap-2 border-t border-base-300 pt-3 sm:col-span-2"
-          >
-            <button
-              class="btn btn-primary btn-sm"
-              :class="{ 'btn-success': justSaved }"
-              :disabled="!dirty && !justSaved"
-              title="Store these settings in this browser"
-              data-testid="save-settings"
-              @click="saveSettings"
-            >
-              {{ justSaved ? '✓ Saved' : 'Save settings' }}
-            </button>
-            <span v-if="dirty" class="badge badge-warning badge-sm">unsaved changes</span>
-            <span v-else class="text-[11px] opacity-60">
-              settings apply to the next message and are restored on reload
-            </span>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <section class="card border border-base-300 bg-base-200/70">
-      <div class="card-body gap-3 p-3 sm:p-4">
-        <div ref="scroller" class="max-h-[52vh] min-h-[18rem] space-y-3 overflow-y-auto px-1">
-          <div v-if="turns.length === 0" class="grid place-items-center gap-2 py-14 text-center">
-            <p class="text-sm opacity-80">
-              Ask the on-device model anything — or let it run your scripts.
-            </p>
-            <p class="max-w-md text-xs opacity-60">
-              Try: “Use a tool to greet Amina”, “Which scripts do you have?”, or “Explain what DPDP
-              means in one line.”
-            </p>
-          </div>
-
-          <div
-            v-for="turn in turns"
-            :key="turn.id"
-            class="chat"
-            :class="turn.role === 'user' ? 'chat-end' : 'chat-start'"
-          >
-            <div class="chat-image avatar">
-              <div
-                class="w-8 rounded-full text-xs"
-                :class="
-                  turn.role === 'user'
-                    ? 'bg-primary/25 grid place-items-center'
-                    : 'bg-secondary/25 grid place-items-center'
-                "
-              >
-                {{ turn.role === 'user' ? '🧑' : '🤖' }}
+              <div>
+                <h2 class="card-title text-base">
+                  {{ status?.modelName ?? 'Qwen3 0.6B (Q4_K_M)' }}
+                  <span v-if="status?.quantization" class="badge badge-sm badge-ghost font-mono">{{
+                    status.quantization
+                  }}</span>
+                </h2>
+                <p class="text-[11px] opacity-70">
+                  local · CPU {{ status?.threads ?? config?.threads ?? 2 }} threads · ctx
+                  {{ status?.contextSize ?? config?.contextSize ?? 0 }} · RAM
+                  {{ status?.ramUsedMb ?? 0 }} MB
+                </p>
+                <p class="truncate text-[10px] text-primary/80">
+                  {{
+                    activeChat
+                      ? `Chat: ${activeChat.title}`
+                      : historyLoading
+                        ? 'Loading chat history…'
+                        : ''
+                  }}
+                </p>
               </div>
             </div>
 
-            <div
-              class="chat-bubble max-w-[min(46rem,88vw)] text-sm"
-              :class="turn.role === 'user' ? 'chat-bubble-primary' : ''"
-            >
-              <details v-if="turn.thinking.trim()" class="mb-2 opacity-80">
-                <summary class="cursor-pointer text-[11px]">
-                  reasoning ({{ turn.thinking.length }} chars)
-                </summary>
-                <pre
-                  class="mt-1 max-h-40 overflow-auto font-mono text-[11px] whitespace-pre-wrap"
-                  >{{ turn.thinking }}</pre>
-              </details>
-
-              <p v-if="turn.text" class="whitespace-pre-wrap">{{ turn.text }}</p>
-
-              <div v-if="turn.skills && turn.skills.length > 0" class="mt-1 flex flex-wrap gap-1">
-                <span
-                  v-for="name in turn.skills"
-                  :key="name"
-                  class="badge badge-sm gap-1 border-0 bg-base-100/30 font-mono text-[10px]"
+            <div class="flex flex-wrap items-center gap-2">
+              <select
+                v-if="catalog && catalog.models.length > 0"
+                class="select select-bordered select-xs max-w-[13rem] font-mono"
+                :value="settings.modelId || catalog.active"
+                :disabled="switching || busy || !historyReady"
+                :title="activeModel?.settings.description ?? status?.description ?? ''"
+                aria-label="Active model"
+                @change="selectModel"
+              >
+                <option
+                  v-for="model in catalog.models"
+                  :key="model.settings.id"
+                  :value="model.settings.id"
                 >
-                  📘 {{ name }}
-                </span>
-              </div>
-              <span v-else-if="turn.streaming" class="loading loading-dots loading-sm" />
+                  {{ model.settings.id }}{{ model.present ? '' : ' — needs download' }}
+                </option>
+              </select>
 
-              <ol
-                v-if="turn.plans && turn.plans.length > 0"
-                class="mt-1 space-y-0.5 text-[11px] text-base-content/60"
+              <select
+                v-if="styles.length > 0"
+                class="select select-bordered select-xs max-w-[12rem]"
+                :value="activeStyle"
+                :disabled="busy || !historyReady"
+                :title="
+                  styles.find((style) => style.name === activeStyle)?.description ??
+                  'How the model should think and answer'
+                "
+                aria-label="Thinking style"
+                @change="selectStyle"
               >
-                <li v-for="(plan, index) in turn.plans" :key="index" class="truncate">
-                  📋 {{ plan.step ? `step ${plan.step} ` : '' }}{{ plan.text }}
-                </li>
-              </ol>
-
-              <div
-                v-for="(call, index) in turn.calls"
-                :key="index"
-                class="mt-2 rounded-box border border-base-content/15 bg-base-100/20 p-2"
-              >
-                <div class="flex items-center justify-between gap-2 text-[11px]">
-                  <span class="font-mono">🛠 {{ call.name }}({{ JSON.stringify(call.args) }})</span>
-                  <span
-                    class="badge badge-xs"
-                    :class="
-                      call.ok === false ? 'badge-error' : call.ok ? 'badge-success' : 'badge-ghost'
-                    "
-                  >
-                    {{
-                      call.ok === undefined
-                        ? 'running'
-                        : call.ok
-                          ? `${call.durationMs ?? 0}ms`
-                          : 'failed'
-                    }}
-                  </span>
-                </div>
-                <pre
-                  v-if="call.result !== undefined || call.error"
-                  class="mt-1 max-h-28 overflow-auto font-mono text-[10px] whitespace-pre-wrap opacity-80"
-                  >{{ call.error ?? JSON.stringify(call.result) }}</pre>
-              </div>
-
-              <p v-if="turn.error" class="mt-1 text-xs text-error">{{ turn.error }}</p>
-            </div>
-
-            <div
-              v-if="turn.role === 'assistant' && !turn.streaming && (turn.text || turn.stats)"
-              class="chat-footer flex items-center gap-2 text-[10px] opacity-60"
-            >
-              <span v-if="turn.stats" class="opacity-80">
-                {{ turn.stats.totalTokens }} tok · {{ turn.stats.tokensPerSecond }} tok/s ·
-                {{ (turn.stats.durationMs / 1000).toFixed(1) }}s
-                <template v-if="turn.stats.repairs">
-                  · {{ turn.stats.repairs }} {{ turn.stats.repairs === 1 ? 'repair' : 'repairs' }}
-                </template>
-              </span>
-              <button
-                v-if="turn.text.trim()"
-                class="btn btn-ghost btn-xs gap-1 px-2"
-                :title="copied === turn.id ? 'Copied to the clipboard' : 'Copy this response'"
-                @click="copyTurn(turn)"
-              >
-                {{ copied === turn.id ? '✓ Copied' : '⧉ Copy' }}
-              </button>
-              <button
-                v-if="turn.text.trim()"
-                class="btn btn-ghost btn-xs gap-1 px-2"
-                title="Ask again with the same message"
-                @click="regenerate(turn.id)"
-              >
-                ↻ Retry
-              </button>
-            </div>
-          </div>
-        </div>
-
-        <div class="flex flex-wrap items-end gap-2">
-          <!-- Which MCP servers the model may use: the wrench beside the box. -->
-          <div ref="mcpWrap" class="relative shrink-0 self-end">
-            <button
-              class="btn btn-sm gap-1 px-2"
-              :class="{ 'btn-primary': mcpRestricted, 'btn-ghost': !mcpRestricted }"
-              :disabled="enabledMcps.length === 0 && !mcpCatalogue"
-              :title="
-                settings.mcpServers === null
-                  ? 'MCP servers: every connected server. Click to choose.'
-                  : `MCP servers for this chat: ${selectedMcp.join(', ') || 'none'}`
-              "
-              data-testid="mcp-picker"
-              @click.stop="toggleMcpPicker"
-            >
-              🔧<span class="font-mono text-[10px] opacity-80">{{ mcpLabel }}</span>
-            </button>
-
-            <div
-              v-if="mcpPicker"
-              class="absolute bottom-full left-0 z-30 mb-2 w-80 rounded-box border border-base-300 bg-base-100 p-3 shadow-xl"
-              data-testid="mcp-picker-panel"
-              @click.stop
-            >
-              <div class="mb-2 flex items-center justify-between gap-2">
-                <span class="text-xs font-semibold">MCP servers for this chat</span>
-                <span class="flex gap-1">
-                  <button
-                    class="btn btn-ghost btn-xs"
-                    data-testid="mcp-all"
-                    @click="setAllMcp(true)"
-                  >
-                    All
-                  </button>
-                  <button
-                    class="btn btn-ghost btn-xs"
-                    data-testid="mcp-none"
-                    @click="setAllMcp(false)"
-                  >
-                    None
-                  </button>
-                </span>
-              </div>
-
-              <p v-if="enabledMcps.length === 0" class="text-[11px] opacity-70">
-                No MCP server is connected. Add or connect one in the 🔌 MCP tab — the choice here
-                takes effect on the next message.
-              </p>
+                <option value="">default style</option>
+                <option v-for="style in styles" :key="style.name" :value="style.name">
+                  🧠 {{ style.name }}
+                </option>
+              </select>
 
               <label
-                v-for="server in enabledMcps"
-                :key="server.name"
-                class="flex cursor-pointer items-center gap-2 rounded-box px-1 py-1 hover:bg-base-200"
+                class="flex items-center gap-1 text-[11px] text-base-content/70"
+                title="Tool steps one reply may take: several calls, their results, then the answer"
               >
+                steps
                 <input
-                  type="checkbox"
-                  class="checkbox checkbox-xs"
-                  :checked="selectedMcp.includes(server.name)"
-                  :data-testid="`mcp-pick-${server.name}`"
-                  @change="toggleMcp(server.name)"
+                  v-model.number="settings.maxSteps"
+                  class="input input-bordered input-xs w-14 font-mono"
+                  type="number"
+                  min="1"
+                  max="12"
+                  step="1"
+                  :disabled="busy"
+                  aria-label="Max steps"
                 />
-                <span class="min-w-0 flex-1">
-                  <span class="block truncate text-xs">{{ server.name }}</span>
-                  <span class="block truncate text-[10px] opacity-60">
-                    {{ server.tools.length }} tool(s)
-                    <template v-if="server.description">· {{ server.description }}</template>
-                  </span>
-                </span>
-                <span
-                  class="badge badge-xs"
-                  :class="{
-                    'badge-success': server.state === 'ready',
-                    'badge-warning': server.state === 'starting',
-                    'badge-error': server.state === 'error',
-                    'badge-ghost': server.state === 'stopped',
-                  }"
-                  >{{ server.state }}</span
-                >
               </label>
 
-              <p class="mt-2 border-t border-base-300 pt-2 text-[10px] opacity-60">
-                An unticked server is hidden from the model and its calls are refused. The choice
-                applies to the next message; <span class="font-semibold">Save</span> in the settings
-                panel keeps it for the next visit.
-              </p>
-            </div>
-          </div>
-
-          <div class="relative min-w-[12rem] flex-1">
-            <!-- `/` completes to a skill; the selected ones load for this turn. -->
-            <div
-              v-if="mentionOpen"
-              class="absolute bottom-full left-0 z-30 mb-1 max-h-64 w-full max-w-lg overflow-y-auto rounded-box border border-base-300 bg-base-100 p-1 shadow-xl"
-              data-testid="skill-menu"
-            >
-              <p class="px-2 py-1 text-[10px] opacity-60">
-                skill · ↑↓ move · ⏎ pick · Esc removes the /word ·
-                {{ mentionMatches.length }} match{{ mentionMatches.length === 1 ? '' : 'es' }}
-              </p>
-              <button
-                v-for="(option, index) in mentionMatches"
-                :key="option.name"
-                class="flex w-full items-start gap-2 rounded-box px-2 py-1 text-left"
-                :class="{ 'bg-primary/20': index === mentionIndex }"
-                :data-testid="`skill-option-${option.name}`"
-                @mouseenter="mentionIndex = index"
-                @mousedown.prevent
-                @click.prevent="pickSkill(index)"
+              <span
+                class="badge badge-sm gap-1"
+                :class="{
+                  'badge-success': status?.state === 'ready',
+                  'badge-warning': status?.state === 'downloading',
+                  'badge-info': status?.state === 'loading',
+                  'badge-error': status?.state === 'error' || status?.state === 'unavailable',
+                  'badge-ghost': status?.state === 'absent',
+                }"
               >
-                <span class="grid h-5 w-5 shrink-0 place-items-center text-xs">📘</span>
-                <span class="min-w-0 flex-1">
-                  <span class="block truncate font-mono text-xs">/{{ option.name }}</span>
-                  <span class="block truncate text-[10px] opacity-70">{{
-                    option.description
-                  }}</span>
-                </span>
                 <span
-                  v-if="draftSkills.includes(option.name)"
-                  class="badge badge-success badge-xs shrink-0"
-                  >attached</span
-                >
-              </button>
-            </div>
+                  v-if="status?.state === 'loading' || status?.state === 'downloading'"
+                  class="loading loading-spinner loading-xs"
+                />
+                {{ stateLabel }}
+              </span>
 
-            <textarea
-              ref="draftBox"
-              v-model="draft"
-              rows="2"
-              class="textarea textarea-bordered textarea-sm w-full"
-              :placeholder="
-                canChat
-                  ? 'Message the on-device model…  (Enter to send, Shift+Enter for a new line, / for a skill)'
-                  : 'Load the model first'
-              "
-              :disabled="busy"
-              data-testid="draft"
-              @keydown="onKeydown"
-              @keyup="syncMention"
-              @input="syncMention"
-              @click="syncMention"
-            ></textarea>
+              <button
+                v-if="status?.state === 'absent' || (activeModel && !activeModel.present)"
+                class="btn btn-primary btn-xs"
+                :disabled="downloading"
+                @click="download"
+              >
+                <span v-if="downloading" class="loading loading-spinner loading-xs" />
+                {{
+                  downloading
+                    ? 'Downloading'
+                    : `Download ${formatSize(activeModel?.sizeBytes ?? 0)}`
+                }}
+              </button>
+              <button
+                v-if="status?.modelPresent && status?.state === 'ready'"
+                class="btn btn-ghost btn-xs"
+                @click="unload"
+              >
+                Unload
+              </button>
+              <button class="btn btn-ghost btn-xs" @click="showPrompt = !showPrompt">Info</button>
+              <button
+                class="btn btn-xs"
+                :class="showSettings ? 'btn-primary' : 'btn-ghost border border-base-300'"
+                @click="showSettings = !showSettings"
+              >
+                Settings
+              </button>
+              <button class="btn btn-ghost btn-xs text-error" @click="clear">Clear</button>
+            </div>
+          </header>
+
+          <div v-if="status?.state === 'downloading'" class="space-y-1">
+            <progress
+              class="progress progress-primary w-full"
+              :value="status.downloadProgress * 100"
+              max="100"
+            />
+            <p class="text-[11px] opacity-70">
+              {{ (status.downloadedBytes / 1048576).toFixed(1) }} MB of
+              {{ (status.downloadTotalBytes / 1048576).toFixed(1) }} MB — fetched once, kept in
+              {{ config?.modelsDir }}
+            </p>
           </div>
-          <div class="flex items-center gap-2">
-            <button
-              v-if="!busy"
-              class="btn btn-primary btn-sm"
-              :disabled="!draft.trim() || !canChat"
-              @click="send"
+
+          <div v-if="status?.state === 'absent'" class="alert py-2 text-xs">
+            <span>
+              {{ status?.modelName ?? 'This model' }} ({{
+                formatSize(activeModel?.sizeBytes ?? 0)
+              }}, GGUF {{ status?.quantization || 'quantized' }} from Hugging Face) is not on this
+              machine yet. Download it once — chat runs fully offline afterwards.
+            </span>
+          </div>
+
+          <div
+            v-if="status?.state === 'unavailable' || status?.lastError"
+            class="alert alert-warning py-2 text-xs"
+          >
+            <span>{{
+              status?.lastError ??
+              'The local engine is unavailable. Run `npm install` to enable it.'
+            }}</span>
+          </div>
+
+          <pre
+            v-if="showPrompt"
+            class="rounded-box bg-base-300/50 p-3 font-mono text-[11px] whitespace-pre-wrap"
+            >{{ promptPreview() }}</pre>
+
+          <div
+            v-if="showSettings"
+            class="grid gap-3 rounded-box border border-base-300 p-3 sm:grid-cols-2"
+          >
+            <label class="form-control">
+              <span class="mb-1 flex items-center justify-between text-xs opacity-70">
+                Temperature <span class="font-mono">{{ settings.temperature.toFixed(1) }}</span>
+              </span>
+              <input
+                v-model.number="settings.temperature"
+                type="range"
+                min="0"
+                max="1.2"
+                step="0.1"
+                class="range range-xs range-primary"
+              />
+            </label>
+            <label class="form-control">
+              <span class="mb-1 text-xs opacity-70">Max new tokens</span>
+              <input
+                v-model.number="settings.maxTokens"
+                type="number"
+                min="64"
+                max="1024"
+                step="32"
+                class="input input-bordered input-xs"
+              />
+            </label>
+            <label class="flex items-center gap-2 text-xs">
+              <input v-model="settings.thinking" type="checkbox" class="toggle toggle-sm" />
+              Thinking mode (slower, shows a reasoning block)
+            </label>
+            <label class="flex items-center gap-2 text-xs">
+              <input v-model="settings.tools" type="checkbox" class="toggle toggle-sm" />
+              Let the model call scripts as tools
+            </label>
+            <label class="flex items-center gap-2 text-xs">
+              <input v-model="settings.net" type="checkbox" class="toggle toggle-sm" />
+              Internet access (webSearch, webFetch)
+            </label>
+            <div class="flex items-center gap-2 sm:col-span-2">
+              <button
+                class="btn btn-ghost btn-xs"
+                title="Raise an alert the same way showAlert does"
+                @click="sendTestAlert"
+              >
+                🔔 Send a test alert
+              </button>
+              <span class="text-[11px] opacity-60">
+                the model calls showAlert on its own when you ask for an alert
+              </span>
+            </div>
+            <label class="form-control sm:col-span-2">
+              <span class="mb-1 text-xs opacity-70"
+                >Custom system prompt (empty = generated with the script toolbox)</span
+              >
+              <textarea
+                v-model="settings.systemPrompt"
+                rows="2"
+                class="textarea textarea-bordered textarea-xs font-mono"
+              ></textarea>
+            </label>
+
+            <div
+              class="flex flex-wrap items-center gap-2 border-t border-base-300 pt-3 sm:col-span-2"
             >
-              Send
-            </button>
-            <button v-else class="btn btn-error btn-sm" @click="stop">
-              <span class="loading loading-spinner loading-xs" /> Stop
-              {{ elapsed ? `${elapsed}s` : '' }}
-            </button>
-            <button v-if="turns.length > 1" class="btn btn-ghost btn-sm" @click="regenerate()">
-              Retry
-            </button>
+              <button
+                class="btn btn-ghost btn-xs"
+                :disabled="!activeChatId || busy"
+                title="Save this chat's settings to the server now"
+                data-testid="save-settings"
+                @click="saveCurrentSettings"
+              >
+                Save now
+              </button>
+              <span
+                class="badge badge-sm"
+                :class="{
+                  'badge-success': savingState === 'saved',
+                  'badge-warning': savingState === 'saving',
+                  'badge-error': savingState === 'error',
+                }"
+                data-testid="chat-save-status"
+              >
+                {{ saveLabel }}
+              </span>
+              <span class="text-[11px] opacity-60">
+                Settings apply to the next message and save automatically with this chat.
+              </span>
+            </div>
           </div>
         </div>
+      </section>
 
-        <p class="text-[10px] opacity-50">
-          Everything runs locally through llama.cpp — no API key, no data leaving the machine.
-          <span v-if="settings.tools"> Tool calls execute scripts from the Scripts tab.</span>
-          <span v-if="draftSkills.length > 0" class="ml-1 text-base-content/70">
-            Following {{ draftSkills.map((name) => `/${name}`).join(', ') }} —
-            {{ draftSkills.length === 1 ? 'its steps are' : 'their steps are' }} loaded for this
-            message.
-          </span>
+      <section class="card border border-base-300 bg-base-200/70">
+        <div class="card-body gap-3 p-3 sm:p-4">
+          <div ref="scroller" class="max-h-[52vh] min-h-[18rem] space-y-3 overflow-y-auto px-1">
+            <div v-if="turns.length === 0" class="grid place-items-center gap-2 py-14 text-center">
+              <p class="text-sm opacity-80">
+                Ask the on-device model anything — or let it run your scripts.
+              </p>
+              <p class="max-w-md text-xs opacity-60">
+                Try: “Use a tool to greet Amina”, “Which scripts do you have?”, or “Explain what
+                DPDP means in one line.”
+              </p>
+            </div>
+
+            <div
+              v-for="turn in turns"
+              :key="turn.id"
+              class="chat"
+              :class="turn.role === 'user' ? 'chat-end' : 'chat-start'"
+            >
+              <div class="chat-image avatar">
+                <div
+                  class="w-8 rounded-full text-xs"
+                  :class="
+                    turn.role === 'user'
+                      ? 'bg-primary/25 grid place-items-center'
+                      : 'bg-secondary/25 grid place-items-center'
+                  "
+                >
+                  {{ turn.role === 'user' ? '🧑' : '🤖' }}
+                </div>
+              </div>
+
+              <div
+                class="chat-bubble max-w-[min(46rem,88vw)] text-sm"
+                :class="turn.role === 'user' ? 'chat-bubble-primary' : ''"
+              >
+                <details v-if="turn.thinking.trim()" class="mb-2 opacity-80">
+                  <summary class="cursor-pointer text-[11px]">
+                    reasoning ({{ turn.thinking.length }} chars)
+                  </summary>
+                  <pre
+                    class="mt-1 max-h-40 overflow-auto font-mono text-[11px] whitespace-pre-wrap"
+                    >{{ turn.thinking }}</pre>
+                </details>
+
+                <p v-if="turn.text" class="whitespace-pre-wrap">{{ turn.text }}</p>
+
+                <div v-if="turn.skills && turn.skills.length > 0" class="mt-1 flex flex-wrap gap-1">
+                  <span
+                    v-for="name in turn.skills"
+                    :key="name"
+                    class="badge badge-sm gap-1 border-0 bg-base-100/30 font-mono text-[10px]"
+                  >
+                    📘 {{ name }}
+                  </span>
+                </div>
+                <span v-else-if="turn.streaming" class="loading loading-dots loading-sm" />
+
+                <ol
+                  v-if="turn.plans && turn.plans.length > 0"
+                  class="mt-1 space-y-0.5 text-[11px] text-base-content/60"
+                >
+                  <li v-for="(plan, index) in turn.plans" :key="index" class="truncate">
+                    📋 {{ plan.step ? `step ${plan.step} ` : '' }}{{ plan.text }}
+                  </li>
+                </ol>
+
+                <div
+                  v-for="(call, index) in turn.calls"
+                  :key="index"
+                  class="mt-2 rounded-box border border-base-content/15 bg-base-100/20 p-2"
+                >
+                  <div class="flex items-center justify-between gap-2 text-[11px]">
+                    <span class="font-mono"
+                      >🛠 {{ call.name }}({{ JSON.stringify(call.args) }})</span
+                    >
+                    <span
+                      class="badge badge-xs"
+                      :class="
+                        call.ok === false
+                          ? 'badge-error'
+                          : call.ok
+                            ? 'badge-success'
+                            : 'badge-ghost'
+                      "
+                    >
+                      {{
+                        call.ok === undefined
+                          ? 'running'
+                          : call.ok
+                            ? `${call.durationMs ?? 0}ms`
+                            : 'failed'
+                      }}
+                    </span>
+                  </div>
+                  <pre
+                    v-if="call.result !== undefined || call.error"
+                    class="mt-1 max-h-28 overflow-auto font-mono text-[10px] whitespace-pre-wrap opacity-80"
+                    >{{ call.error ?? JSON.stringify(call.result) }}</pre>
+                </div>
+
+                <p v-if="turn.error" class="mt-1 text-xs text-error">{{ turn.error }}</p>
+              </div>
+
+              <div
+                v-if="turn.role === 'assistant' && !turn.streaming && (turn.text || turn.stats)"
+                class="chat-footer flex items-center gap-2 text-[10px] opacity-60"
+              >
+                <span v-if="turn.stats" class="opacity-80">
+                  {{ turn.stats.totalTokens }} tok · {{ turn.stats.tokensPerSecond }} tok/s ·
+                  {{ (turn.stats.durationMs / 1000).toFixed(1) }}s
+                  <template v-if="turn.stats.repairs">
+                    · {{ turn.stats.repairs }} {{ turn.stats.repairs === 1 ? 'repair' : 'repairs' }}
+                  </template>
+                </span>
+                <button
+                  v-if="turn.text.trim()"
+                  class="btn btn-ghost btn-xs gap-1 px-2"
+                  :title="copied === turn.id ? 'Copied to the clipboard' : 'Copy this response'"
+                  @click="copyTurn(turn)"
+                >
+                  {{ copied === turn.id ? '✓ Copied' : '⧉ Copy' }}
+                </button>
+                <button
+                  v-if="turn.text.trim()"
+                  class="btn btn-ghost btn-xs gap-1 px-2"
+                  title="Ask again with the same message"
+                  @click="regenerate(turn.id)"
+                >
+                  ↻ Retry
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div class="flex flex-wrap items-end gap-2">
+            <!-- Which MCP servers the model may use: the wrench beside the box. -->
+            <div ref="mcpWrap" class="relative shrink-0 self-end">
+              <button
+                class="btn btn-sm gap-1 px-2"
+                :class="{ 'btn-primary': mcpRestricted, 'btn-ghost': !mcpRestricted }"
+                :disabled="enabledMcps.length === 0 && !mcpCatalogue"
+                :title="
+                  settings.mcpServers === null
+                    ? 'MCP servers: every connected server. Click to choose.'
+                    : `MCP servers for this chat: ${selectedMcp.join(', ') || 'none'}`
+                "
+                data-testid="mcp-picker"
+                @click.stop="toggleMcpPicker"
+              >
+                🔧<span class="font-mono text-[10px] opacity-80">{{ mcpLabel }}</span>
+              </button>
+
+              <div
+                v-if="mcpPicker"
+                class="absolute bottom-full left-0 z-30 mb-2 w-80 rounded-box border border-base-300 bg-base-100 p-3 shadow-xl"
+                data-testid="mcp-picker-panel"
+                @click.stop
+              >
+                <div class="mb-2 flex items-center justify-between gap-2">
+                  <span class="text-xs font-semibold">MCP servers for this chat</span>
+                  <span class="flex gap-1">
+                    <button
+                      class="btn btn-ghost btn-xs"
+                      data-testid="mcp-all"
+                      @click="setAllMcp(true)"
+                    >
+                      All
+                    </button>
+                    <button
+                      class="btn btn-ghost btn-xs"
+                      data-testid="mcp-none"
+                      @click="setAllMcp(false)"
+                    >
+                      None
+                    </button>
+                  </span>
+                </div>
+
+                <p v-if="enabledMcps.length === 0" class="text-[11px] opacity-70">
+                  No MCP server is connected. Add or connect one in the 🔌 MCP tab — the choice here
+                  takes effect on the next message.
+                </p>
+
+                <label
+                  v-for="server in enabledMcps"
+                  :key="server.name"
+                  class="flex cursor-pointer items-center gap-2 rounded-box px-1 py-1 hover:bg-base-200"
+                >
+                  <input
+                    type="checkbox"
+                    class="checkbox checkbox-xs"
+                    :checked="selectedMcp.includes(server.name)"
+                    :data-testid="`mcp-pick-${server.name}`"
+                    @change="toggleMcp(server.name)"
+                  />
+                  <span class="min-w-0 flex-1">
+                    <span class="block truncate text-xs">{{ server.name }}</span>
+                    <span class="block truncate text-[10px] opacity-60">
+                      {{ server.tools.length }} tool(s)
+                      <template v-if="server.description">· {{ server.description }}</template>
+                    </span>
+                  </span>
+                  <span
+                    class="badge badge-xs"
+                    :class="{
+                      'badge-success': server.state === 'ready',
+                      'badge-warning': server.state === 'starting',
+                      'badge-error': server.state === 'error',
+                      'badge-ghost': server.state === 'stopped',
+                    }"
+                    >{{ server.state }}</span
+                  >
+                </label>
+
+                <p class="mt-2 border-t border-base-300 pt-2 text-[10px] opacity-60">
+                  An unticked server is hidden from the model and its calls are refused. The choice
+                  applies to the next message and saves automatically to this chat.
+                </p>
+              </div>
+            </div>
+
+            <div class="relative min-w-[12rem] flex-1">
+              <!-- `/` completes to a skill; the selected ones load for this turn. -->
+              <div
+                v-if="mentionOpen"
+                class="absolute bottom-full left-0 z-30 mb-1 max-h-64 w-full max-w-lg overflow-y-auto rounded-box border border-base-300 bg-base-100 p-1 shadow-xl"
+                data-testid="skill-menu"
+              >
+                <p class="px-2 py-1 text-[10px] opacity-60">
+                  skill · ↑↓ move · ⏎ pick · Esc removes the /word ·
+                  {{ mentionMatches.length }} match{{ mentionMatches.length === 1 ? '' : 'es' }}
+                </p>
+                <button
+                  v-for="(option, index) in mentionMatches"
+                  :key="option.name"
+                  class="flex w-full items-start gap-2 rounded-box px-2 py-1 text-left"
+                  :class="{ 'bg-primary/20': index === mentionIndex }"
+                  :data-testid="`skill-option-${option.name}`"
+                  @mouseenter="mentionIndex = index"
+                  @mousedown.prevent
+                  @click.prevent="pickSkill(index)"
+                >
+                  <span class="grid h-5 w-5 shrink-0 place-items-center text-xs">📘</span>
+                  <span class="min-w-0 flex-1">
+                    <span class="block truncate font-mono text-xs">/{{ option.name }}</span>
+                    <span class="block truncate text-[10px] opacity-70">{{
+                      option.description
+                    }}</span>
+                  </span>
+                  <span
+                    v-if="draftSkills.includes(option.name)"
+                    class="badge badge-success badge-xs shrink-0"
+                    >attached</span
+                  >
+                </button>
+              </div>
+
+              <textarea
+                ref="draftBox"
+                v-model="draft"
+                rows="2"
+                class="textarea textarea-bordered textarea-sm w-full"
+                :placeholder="
+                  canChat
+                    ? 'Message the on-device model…  (Enter to send, Shift+Enter for a new line, / for a skill)'
+                    : 'Load the model first'
+                "
+                :disabled="busy"
+                data-testid="draft"
+                @keydown="onKeydown"
+                @keyup="syncMention"
+                @input="syncMention"
+                @click="syncMention"
+              ></textarea>
+            </div>
+            <div class="flex items-center gap-2">
+              <button
+                v-if="!busy"
+                class="btn btn-primary btn-sm"
+                :disabled="!draft.trim() || !canChat"
+                @click="send"
+              >
+                Send
+              </button>
+              <button v-else class="btn btn-error btn-sm" @click="stop">
+                <span class="loading loading-spinner loading-xs" /> Stop
+                {{ elapsed ? `${elapsed}s` : '' }}
+              </button>
+              <button v-if="turns.length > 1" class="btn btn-ghost btn-sm" @click="regenerate()">
+                Retry
+              </button>
+            </div>
+          </div>
+
+          <p class="text-[10px] opacity-50">
+            Everything runs locally through llama.cpp — no API key, no data leaving the machine.
+            <span v-if="settings.tools"> Tool calls execute scripts from the Scripts tab.</span>
+            <span v-if="draftSkills.length > 0" class="ml-1 text-base-content/70">
+              Following {{ draftSkills.map((name) => `/${name}`).join(', ') }} —
+              {{ draftSkills.length === 1 ? 'its steps are' : 'their steps are' }} loaded for this
+              message.
+            </span>
+          </p>
+        </div>
+      </section>
+    </div>
+
+    <aside
+      class="card border border-base-300 bg-base-200/70 xl:sticky xl:top-4"
+      data-testid="chat-history"
+    >
+      <div class="card-body gap-3 p-3">
+        <header class="flex items-center justify-between gap-2">
+          <div class="min-w-0">
+            <h2 class="card-title text-sm">💬 Chat history</h2>
+            <p class="text-[10px] opacity-60">Each chat keeps its own model, MCPs and settings.</p>
+          </div>
+          <button
+            class="btn btn-primary btn-xs shrink-0"
+            :disabled="historyLoading || busy || switching"
+            data-testid="chat-new"
+            @click="createNewChat"
+          >
+            ＋ New
+          </button>
+        </header>
+
+        <input
+          v-model="historyFilter"
+          class="input input-bordered input-xs w-full"
+          type="search"
+          placeholder="Find a chat…"
+          aria-label="Search chat history"
+          data-testid="chat-search"
+        />
+
+        <div class="max-h-[68vh] min-h-24 space-y-1 overflow-y-auto pr-1">
+          <div v-if="historyLoading" class="grid place-items-center py-8 text-xs opacity-60">
+            <span class="loading loading-spinner loading-sm" /> Loading SQLite history…
+          </div>
+          <p
+            v-else-if="filteredChats.length === 0"
+            class="px-2 py-6 text-center text-xs opacity-60"
+          >
+            {{ historyFilter ? 'No chats match that search.' : 'No saved chats yet.' }}
+          </p>
+
+          <article
+            v-for="chat in filteredChats"
+            :key="chat.id"
+            class="group flex items-stretch gap-1 rounded-box border border-transparent p-1"
+            :class="
+              chat.id === activeChatId ? 'border-primary/50 bg-primary/10' : 'hover:bg-base-300/50'
+            "
+            :data-testid="`chat-row-${chat.id}`"
+          >
+            <button
+              class="min-w-0 flex-1 rounded-box px-2 py-1.5 text-left disabled:opacity-50"
+              :disabled="busy || switching"
+              :aria-current="chat.id === activeChatId ? 'page' : undefined"
+              :data-testid="`chat-select-${chat.id}`"
+              @click="selectChat(chat)"
+            >
+              <span class="flex items-center justify-between gap-2">
+                <span class="truncate text-xs font-medium">{{ chat.title }}</span>
+                <span class="shrink-0 text-[9px] opacity-50">{{ chat.turnCount }} turns</span>
+              </span>
+              <span class="mt-0.5 block truncate text-[10px] opacity-60">
+                {{ chat.preview || 'Empty conversation' }}
+              </span>
+              <span class="mt-1 block truncate font-mono text-[9px] opacity-45">
+                {{ chat.modelId || 'default model' }} · {{ chatUpdatedLabel(chat.updatedAt) }}
+              </span>
+            </button>
+            <button
+              class="btn btn-ghost btn-xs self-start text-error opacity-60 hover:opacity-100"
+              :disabled="busy || switching || deletingChat"
+              :aria-label="
+                confirmDeleteId === chat.id
+                  ? `Confirm delete ${chat.title}`
+                  : `Delete ${chat.title}`
+              "
+              :title="
+                confirmDeleteId === chat.id
+                  ? 'Click again to permanently delete'
+                  : `Delete ${chat.title}`
+              "
+              :data-testid="`chat-delete-${chat.id}`"
+              @click.stop="deleteChat(chat)"
+            >
+              {{ confirmDeleteId === chat.id ? 'Delete?' : '×' }}
+            </button>
+          </article>
+        </div>
+
+        <p class="border-t border-base-300 pt-2 text-[10px] opacity-50">
+          Stored in <code>chats.sqlite</code> on the server. Settings save automatically to the
+          selected chat.
         </p>
       </div>
-    </section>
+    </aside>
   </div>
 </template>

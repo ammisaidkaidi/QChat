@@ -128,13 +128,17 @@ export declare class QwenEngine {
         dir: string;
         weightsDir: string;
         active: string;
+        /** Global default used to seed a new chat; chat selections do not rewrite it. */
+        defaultActive: string;
         models: ModelRecord[];
     };
     /**
      * Switch the active model. The current one is dropped from memory first, so
      * the switch costs nothing but a lazy reload on the next message.
      */
-    useModel(id: string): Promise<ModelRecord>;
+    useModel(id: string, options?: {
+        persist?: boolean;
+    }): Promise<ModelRecord>;
     /**
      * Forget the current conversation and start the next turn from the system
      * prompt alone. The model stays loaded; only the chat history goes.

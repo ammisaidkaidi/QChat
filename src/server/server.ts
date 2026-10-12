@@ -42,8 +42,12 @@ import type { AlertBus } from '../capabilities/alerts.js';
 import type { ChatEvent, ChatRequest } from '../chat/types.js';
 import { openSse } from './sse.js';
 import { VERSION } from '../version.js';
+import { ChatStore, ChatStoreError, defaultChatDatabasePath } from './chatStore.js';
+import type { CreateChatInput, ImportChatInput } from './chatStore.js';
 
 const MAX_BODY_BYTES = 1_000_000;
+/** Full conversation snapshots can be larger than individual tool/API requests. */
+const MAX_CHAT_BODY_BYTES = 16 * 1024 * 1024;
 
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -72,6 +76,10 @@ export interface ServerOptions {
   engine?: QwenEngine;
   /** Folder with the built Vue app. Defaults to `<repo>/ui/dist`. */
   uiDir?: string;
+  /** SQLite conversation store. Inject one in tests; the default lives in app data. */
+  chatStore?: ChatStore;
+  /** Override the SQLite path (`INFAGENT_DB_PATH`/app-data by default). */
+  chatDbPath?: string;
   /** The `.env` the Config tab edits. Defaults to `<cwd>/.env`. */
   envFile?: string;
   /** Reference file whose comments explain each key. Defaults to `<cwd>/.env.example`. */
@@ -91,13 +99,16 @@ function sendJson(res: ServerResponse, status: number, payload: unknown): void {
   res.end(body);
 }
 
-async function readBody(req: IncomingMessage): Promise<Record<string, unknown>> {
+async function readBody(
+  req: IncomingMessage,
+  maxBytes = MAX_BODY_BYTES,
+): Promise<Record<string, unknown>> {
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of req) {
     const buffer = chunk as Buffer;
     size += buffer.length;
-    if (size > MAX_BODY_BYTES) throw new ScriptError('io', 'Request body too large.');
+    if (size > maxBytes) throw new ScriptError('io', 'Request body too large.');
     chunks.push(buffer);
   }
   if (chunks.length === 0) return {};
@@ -184,9 +195,7 @@ function serveStatic(res: ServerResponse, uiDir: string, pathname: string): void
  * the interface then shows the files without their load state, which is the
  * honest answer rather than an empty list.
  */
-async function toolboxStatus(
-  mcp: McpManager,
-): Promise<{
+async function toolboxStatus(mcp: McpManager): Promise<{
   files: Record<string, { tools: string[] }>;
   refused: string[];
   tools: string[];
@@ -262,6 +271,8 @@ export function createServer(options: ServerOptions = {}): Server {
   const alerts = options.alerts ?? engine.alerts;
   const uiDir = options.uiDir ?? defaultUiDir();
   const prompts = options.prompts ?? engine.prompts;
+  const chatStore =
+    options.chatStore ?? new ChatStore(options.chatDbPath ?? defaultChatDatabasePath());
   const envFile = resolve(options.envFile ?? join(process.cwd(), '.env'));
   const envReference = resolve(options.envReference ?? join(process.cwd(), '.env.example'));
   registry.ensureRoot();
@@ -270,7 +281,7 @@ export function createServer(options: ServerOptions = {}): Server {
   // and a slow or broken server never blocks startup.
   void mcp.startEnabled();
 
-  return createHttpServer((req, res) => {
+  const server = createHttpServer((req, res) => {
     void (async () => {
       const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
       const pathname = url.pathname;
@@ -303,6 +314,85 @@ export function createServer(options: ServerOptions = {}): Server {
             tools: registry.toolDefinitions(),
             systemPrompt: registry.systemPrompt(),
           });
+          return;
+        }
+
+        if (segments[1] === 'chats') {
+          if (segments.length === 2 && method === 'GET') {
+            sendJson(res, 200, { chats: chatStore.list() });
+            return;
+          }
+
+          if (segments.length === 2 && method === 'POST') {
+            const body = await readBody(req, MAX_CHAT_BODY_BYTES);
+            sendJson(res, 201, { chat: chatStore.create(body as unknown as CreateChatInput) });
+            return;
+          }
+
+          if (segments[2] === 'import' && segments.length === 3 && method === 'POST') {
+            const body = (await readBody(req, MAX_CHAT_BODY_BYTES)) as unknown as ImportChatInput;
+            sendJson(res, 200, chatStore.importLegacy(body));
+            return;
+          }
+
+          if (segments.length >= 3) {
+            const id = decodeURIComponent(segments[2] ?? '');
+            const action = segments[3];
+
+            if (action === undefined && method === 'GET') {
+              const chat = chatStore.get(id);
+              if (!chat) {
+                sendJson(res, 404, { error: 'Chat not found.' });
+                return;
+              }
+              sendJson(res, 200, { chat });
+              return;
+            }
+
+            if (action === 'settings' && method === 'PUT') {
+              const body = await readBody(req, MAX_CHAT_BODY_BYTES);
+              const chat = chatStore.updateSettings(id, body['settings']);
+              if (!chat) {
+                sendJson(res, 404, { error: 'Chat not found.' });
+                return;
+              }
+              sendJson(res, 200, { chat: chatStore.getSummary(id) });
+              return;
+            }
+
+            if (action === 'turns' && method === 'PUT') {
+              const body = await readBody(req, MAX_CHAT_BODY_BYTES);
+              const chat = chatStore.saveTurns(id, body['turns']);
+              if (!chat) {
+                sendJson(res, 404, { error: 'Chat not found.' });
+                return;
+              }
+              sendJson(res, 200, { chat: chatStore.getSummary(id) });
+              return;
+            }
+
+            if (action === undefined && method === 'PATCH') {
+              const body = await readBody(req, MAX_CHAT_BODY_BYTES);
+              const chat = chatStore.updateTitle(id, body['title']);
+              if (!chat) {
+                sendJson(res, 404, { error: 'Chat not found.' });
+                return;
+              }
+              sendJson(res, 200, { chat: chatStore.getSummary(id) });
+              return;
+            }
+
+            if (action === undefined && method === 'DELETE') {
+              if (!chatStore.delete(id)) {
+                sendJson(res, 404, { error: 'Chat not found.' });
+                return;
+              }
+              sendJson(res, 200, { deleted: id });
+              return;
+            }
+          }
+
+          sendJson(res, 404, { error: `Unknown chats route: ${pathname}` });
           return;
         }
 
@@ -830,7 +920,7 @@ export function createServer(options: ServerOptions = {}): Server {
               return;
             }
             try {
-              await engine.useModel(id);
+              await engine.useModel(id, { persist: body['persist'] !== false });
               sendJson(res, 200, { ...engine.models(), status: engine.status() });
             } catch (error) {
               sendJson(res, error instanceof ChatError ? 409 : 400, {
@@ -907,6 +997,10 @@ export function createServer(options: ServerOptions = {}): Server {
 
         sendJson(res, 404, { error: `Unknown API route: ${pathname}` });
       } catch (error) {
+        if (error instanceof ChatStoreError) {
+          sendJson(res, error.status, { error: error.message });
+          return;
+        }
         if (error instanceof ChatError) {
           const status = error.code === 'busy' ? 429 : error.code === 'unavailable' ? 503 : 409;
           sendJson(res, status, { error: error.message, code: error.code });
@@ -935,6 +1029,8 @@ export function createServer(options: ServerOptions = {}): Server {
       }
     })();
   });
+  server.once('close', () => chatStore.close());
+  return server;
 }
 
 export interface RunningServer {

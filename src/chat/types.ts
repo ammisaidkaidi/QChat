@@ -56,6 +56,8 @@ export interface ChatRequest {
   /** Allow internet capabilities (webSearch/webFetch) for this turn. */
   net?: boolean;
   messages: ChatMessage[];
+  /** Model selected for this conversation; applied only to this process, not global defaults. */
+  modelId?: string;
   temperature?: number;
   maxTokens?: number;
   /** Qwen3 thinking mode. Off by default: a 0.6B model is far snappier without it. */

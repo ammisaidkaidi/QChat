@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { ModelStore, PROJECT_ROOT } from '../src/chat/modelStore.js';
+import { QwenEngine } from '../src/chat/qwen.js';
 
 function scratch(): string {
   return mkdtempSync(join(tmpdir(), 'infagent-models-'));
@@ -185,6 +186,40 @@ describe('ModelStore', () => {
       const raw = JSON.parse(readFileSync(record.settingsPath, 'utf8')) as { id: string };
       expect(raw.id).toBe(record.settings.id);
     }
+  });
+
+  it('keeps a chat-selected model in memory without changing the global default', () => {
+    const dir = scratch();
+    const store = new ModelStore({ dir, weightsDir: scratch() });
+    store.writeSettings(store.defaultSettings('default-model', 'default.gguf'));
+    store.writeSettings(store.defaultSettings('chat-model', 'chat.gguf'));
+    store.setActive('default-model');
+
+    store.selectActive('chat-model', false);
+    expect(store.activeContext().id).toBe('chat-model');
+    expect(store.list().find((record) => record.active)?.settings.id).toBe('chat-model');
+    expect(store.defaultActive()?.settings.id).toBe('default-model');
+    expect(JSON.parse(readFileSync(join(dir, 'models-settings.json'), 'utf8'))).toMatchObject({
+      active: 'default-model',
+    });
+  });
+
+  it('keeps the Qwen engine chat model separate from the global default', async () => {
+    const dir = scratch();
+    const weightsDir = scratch();
+    const store = new ModelStore({ dir, weightsDir });
+    store.writeSettings(store.defaultSettings('base-model', 'base.gguf'));
+    store.writeSettings(store.defaultSettings('chat-model', 'chat.gguf'));
+    store.setActive('base-model');
+
+    const engine = new QwenEngine({ modelsDir: dir, weightsDir });
+    await engine.useModel('chat-model', { persist: false });
+    expect(engine.models()).toMatchObject({ active: 'chat-model', defaultActive: 'base-model' });
+    expect(engine.status().modelId).toBe('chat-model');
+    expect(JSON.parse(readFileSync(join(dir, 'models-settings.json'), 'utf8'))).toMatchObject({
+      active: 'base-model',
+    });
+    await engine.unload();
   });
 
   it('throws for an unknown model id', () => {

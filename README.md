@@ -234,15 +234,16 @@ template is one entry in a plain JSON array:
 
 - Six templates ship with the project (Precise, Step by step, Tool first,
   Explain simply, Skeptical, Options); edit, duplicate, delete or add your own.
-- The picker in the **Chat** tab (🧠 next to the model selector) chooses the
-  active one; “default style” answers with no style guide at all.
+- The global default is remembered in `models/models-settings.json`
+  (`activePrompt`), so the JSON file stays a clean array as above. The picker in
+  the **Chat** tab (🧠 next to the model selector) overrides that default for
+  the selected chat; “default style” answers with no style guide at all.
 - The chosen `prompt` is injected into every system prompt as a short
   **`# Working style`** section, right after the identity — high enough that a
   small model does not lose it under the tool declarations.
-- The selection is remembered in `models/models-settings.json` (`activePrompt`),
-  so the JSON file stays a clean array as above.
-- Per turn, `POST /api/chat/completions` accepts `promptTemplate` to override the
-  selection (`""` = no style guide), which the CLI and tests use.
+- Each chat saves its own style choice; changing it does not rewrite the global
+  `activePrompt`. Per turn, `POST /api/chat/completions` accepts
+  `promptTemplate` (`""` = no style guide), which the UI, CLI and tests use.
 
 API: `GET /api/prompts`, `POST /api/prompts` (create/update), `DELETE
 /api/prompts/<name>`, `PUT /api/prompts/active` with `{ "name": "…" }`.
@@ -505,6 +506,52 @@ instruction it was given. Per turn it travels as
 `POST /api/chat/completions` → `{ "skills": ["web-research"] }`; the CLI has
 `--skills a,b`. Up to 4 skills attach, each cut at 2 000 characters.
 
+## SQLite chat history — chats own their settings
+
+The Chat tab keeps its history on the server in SQLite (`better-sqlite3`), not
+in browser storage. By default the database is outside the checkout so it
+survives project updates:
+
+| OS | Default database |
+| --- | --- |
+| Linux | `~/.local/share/infagent/chats.sqlite` (or `$XDG_DATA_HOME/infagent/chats.sqlite`) |
+| macOS | `~/Library/Application Support/InfAgent/chats.sqlite` |
+| Windows | `%APPDATA%\InfAgent\chats.sqlite` |
+
+Set `INFAGENT_DB_PATH=/absolute/path/chats.sqlite` to choose a file, or
+`INFAGENT_DATA_DIR=/absolute/path` to choose its parent folder. The database
+uses WAL and `synchronous=FULL`; on POSIX the app-data directory is mode `0700`
+and the database file `0600`.
+
+Every conversation has its own temperature, max tokens, thinking/tools/network
+switches, custom system prompt, step limit, thinking-style selection, MCP-server
+selection, and model id. The right-hand **Chat history** menu creates, searches,
+switches and deletes conversations. Settings auto-save to the selected chat;
+opening another restores *that chat's* settings. New chats use the global
+model, its catalogue defaults and the global thinking style. Selecting a model
+for one chat
+changes the engine's in-process model but does **not** rewrite
+`models/models-settings.json`.
+
+The database stores complete user/assistant turns — reasoning, plans, tool
+arguments/results, skills, errors and token/timing stats — and restores them on
+reopen. Saved tool calls/results are also added as bounded context for the
+next model turn. On the first visit after upgrading, the old
+`infagent.chat.v1` localStorage record is imported once using a stable migration
+id; after the server confirms the transaction, localStorage keeps only the
+selected-chat pointer and idempotency token, not the transcript or settings.
+
+Chat-history API:
+
+- `GET /api/chats` — recent-first summaries
+- `POST /api/chats` — create with `{ "settings": {…} }`
+- `GET /api/chats/:id` — settings + full turns
+- `PUT /api/chats/:id/settings` — save per-chat settings
+- `PUT /api/chats/:id/turns` — replace the saved turn list atomically
+- `PATCH /api/chats/:id` — rename
+- `DELETE /api/chats/:id` — delete the conversation, its settings and turns
+- `POST /api/chats/import` — idempotent migration of the former browser chat
+
 **Alerts** — the one callback whose output is for the human rather than the
 model. Ask for one in plain language ("show me an alert when the export
 finishes") and the model calls `showAlert`, which pops a toast in the console
@@ -559,7 +606,12 @@ infagent config | run <task> | --version
 | `GET /api/chat/status` | engine state, model path, context, RAM, defaults |
 | `POST /api/chat/model/download` | SSE progress while fetching the GGUF |
 | `DELETE /api/chat/model` | unload the model from memory |
-| `POST /api/chat/completions` | SSE token stream (`status`, `thinking`, `token`, `tool_call`, `tool_result`, `reset`, `plan`, `stats`, `done`); per-turn `net`, `tools`, `promptTemplate`, `maxToolIterations`, `mcpServers`, `skills` |
+| `POST /api/chat/completions` | SSE token stream (`status`, `thinking`, `token`, `tool_call`, `tool_result`, `reset`, `plan`, `stats`, `done`); per-turn `modelId`, `net`, `tools`, `promptTemplate`, `maxToolIterations`, `mcpServers`, `skills` |
+| `GET /api/chats` / `POST /api/chats` | list history / create a chat with its own settings |
+| `GET /api/chats/:id` | saved per-chat settings and full turns |
+| `PUT /api/chats/:id/settings` / `PUT /api/chats/:id/turns` | save settings / atomic transcript snapshot |
+| `PATCH /api/chats/:id` / `DELETE /api/chats/:id` | rename / delete the chat and its turns |
+| `POST /api/chats/import` | idempotent one-time import of the former localStorage transcript |
 | `GET /api/alerts?limit=…` | recent alerts, newest first |
 | `POST /api/alerts` | raise one (`{ message, title?, level? }`) → 201 |
 | `DELETE /api/alerts` | clear the stored alerts |
@@ -585,7 +637,7 @@ infagent config | run <task> | --version
 | `DELETE /api/toolbox/file?name=…` | remove a tool file → `{ file, reload }` |
 | `POST /api/toolbox/reload` | re-import the folder → `{ reload: { ok, added[], removed[], refused[] } }` |
 | `GET /api/models` | the `models/` catalogue (ids, sizes, active flag) |
-| `PUT /api/models/active` | switch the active model |
+| `PUT /api/models/active` | switch the current model; `{ "persist": false }` selects a chat model without changing the global default |
 | `POST /api/models/refresh` | adopt GGUFs dropped into the folder |
 
 ## Interface (Vue 3 + Tailwind + daisyUI)
@@ -602,8 +654,10 @@ Seven tabs in the header: **Chat**, **Scripts**, **Skills**, **Toolbox**, **MCP*
   prompt), an *Internet access* switch for `webSearch` / `webFetch`, a 🔧
   **MCP-server picker** beside the message box, **`/`-completion over the
   skills** (filter as you type, ⏎ to pick, Esc to drop the `/word`; the picked
-  skills attach to that message and their steps are loaded), a *Send a test
-  alert* button, Stop / Clear, history kept in `localStorage`
+  skills attach to that message and their steps are loaded), a server-backed
+  **SQLite history menu** on the right (search, switch, create or delete chats;
+  full tool cards survive reloads), and per-chat settings including the model,
+  prompt style and 🔧 MCP choices, saved automatically
 - **Alerts** — toasts for anything raised by `showAlert`, the CLI or the API,
   with a bell counter in the header and *Dismiss* / *Dismiss all*
 - **Scripts** — searchable script list, detail tabs (overview, *Agent prompt*

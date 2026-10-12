@@ -71,6 +71,7 @@ async function start(): Promise<Harness> {
     uiDir: join(dir, 'ui'),
     envFile: join(dir, '.env'),
     envReference: join(dir, '.env.example'),
+    chatDbPath: join(dir, 'chats.sqlite'),
   });
   await new Promise<void>((resolveListen) => server.listen(0, '127.0.0.1', resolveListen));
   const address = server.address();
@@ -79,10 +80,9 @@ async function start(): Promise<Harness> {
 
   // The manager connects the servers in the background; wait for the toolbox.
   for (let attempt = 0; attempt < 60; attempt += 1) {
-     
     const state = manager.list().find((entry) => entry.name === 'toolbox')?.state;
     if (state === 'ready' || state === 'error') break;
-     
+
     await new Promise((wait) => setTimeout(wait, 100));
   }
 

@@ -6,6 +6,7 @@ import { McpManager } from '../mcp/manager.js';
 import { SkillRegistry } from '../skills/registry.js';
 import type { SystemPromptStore } from '../chat/prompts.js';
 import type { AlertBus } from '../capabilities/alerts.js';
+import { ChatStore } from './chatStore.js';
 export interface ServerOptions {
     /** Registry backing `/api/scripts`. Defaults to `<cwd>/scripts`. */
     registry?: ScriptRegistry;
@@ -19,6 +20,10 @@ export interface ServerOptions {
     engine?: QwenEngine;
     /** Folder with the built Vue app. Defaults to `<repo>/ui/dist`. */
     uiDir?: string;
+    /** SQLite conversation store. Inject one in tests; the default lives in app data. */
+    chatStore?: ChatStore;
+    /** Override the SQLite path (`INFAGENT_DB_PATH`/app-data by default). */
+    chatDbPath?: string;
     /** The `.env` the Config tab edits. Defaults to `<cwd>/.env`. */
     envFile?: string;
     /** Reference file whose comments explain each key. Defaults to `<cwd>/.env.example`. */

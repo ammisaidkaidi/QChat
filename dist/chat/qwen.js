@@ -283,6 +283,7 @@ export class QwenEngine {
             dir: this.store.dir,
             weightsDir: this.store.weightsDir,
             active: models.find((model) => model.active)?.settings.id ?? '',
+            defaultActive: this.store.defaultActive()?.settings.id ?? '',
             models,
         };
     }
@@ -290,10 +291,10 @@ export class QwenEngine {
      * Switch the active model. The current one is dropped from memory first, so
      * the switch costs nothing but a lazy reload on the next message.
      */
-    async useModel(id) {
+    async useModel(id, options = {}) {
         if (this.busy)
             throw new ChatError('busy', 'The model is generating — try again in a moment.');
-        const record = this.store.setActive(id);
+        const record = this.store.selectActive(id, options.persist !== false);
         await this.unload();
         this.state = record.present ? 'idle' : 'absent';
         this.lastError = null;
@@ -474,6 +475,23 @@ export class QwenEngine {
         const pendingAlerts = [];
         const stopAlerts = this.alerts.subscribe((alert) => pendingAlerts.push(alert));
         try {
+            // A chat sends its own model id. This also protects the turn if another
+            // browser selected a different chat/model since this composer last loaded.
+            // The per-chat choice is an in-process override, never a write to the
+            // global model defaults in models/models-settings.json.
+            const requestedModelId = request.modelId?.trim();
+            if (requestedModelId && requestedModelId !== this.activeModel().settings.id) {
+                let record;
+                try {
+                    record = this.store.selectActive(requestedModelId, false);
+                }
+                catch {
+                    throw new ChatError('not_ready', `Unknown model "${requestedModelId}" for this chat.`);
+                }
+                await this.unload();
+                this.state = record.present ? 'idle' : 'absent';
+                this.lastError = null;
+            }
             const loaded = await this.ensureLoaded();
             this.touchIdleTimer();
             yield { type: 'status', state: 'ready' };

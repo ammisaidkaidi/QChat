@@ -169,6 +169,37 @@ export interface ChatTurn {
   streaming?: boolean;
 }
 
+/** Settings stored with one chat rather than shared by every conversation. */
+export interface ChatSettings {
+  temperature: number;
+  maxTokens: number;
+  thinking: boolean;
+  tools: boolean;
+  net: boolean;
+  systemPrompt: string;
+  maxSteps: number;
+  /** null = every enabled MCP server; [] = none. */
+  mcpServers: string[] | null;
+  modelId: string;
+  /** Name of a shared prompt template; the selection is per chat. */
+  styleName: string;
+}
+
+export interface ChatSummary {
+  id: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+  preview: string;
+  turnCount: number;
+  modelId: string;
+}
+
+export interface StoredChat extends ChatSummary {
+  settings: ChatSettings;
+  turns: ChatTurn[];
+}
+
 /** One entry of the `models/` catalogue, as served by `GET /api/models`. */
 export interface ModelRecord {
   settings: {
@@ -201,7 +232,10 @@ export interface ModelRecord {
 export interface ModelCatalog {
   dir: string;
   weightsDir: string;
+  /** Engine's current in-process model. */
   active: string;
+  /** Global default model used only to seed a brand-new chat. */
+  defaultActive?: string;
   models: ModelRecord[];
 }
 

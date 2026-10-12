@@ -70,6 +70,8 @@ export class ModelStore {
     /** Folder holding the `.gguf` weights (outside the repository). */
     weightsDir;
     overridePath;
+    /** Per-process model selected by a chat; never written into global defaults. */
+    runtimeActiveId = null;
     constructor(options = {}) {
         this.dir = resolve(options.dir ??
             process.env['INFAGENT_SETTINGS_DIR'] ??
@@ -150,9 +152,14 @@ export class ModelStore {
         return records.map((record) => ({ ...record, active: record.settings.id === activeId }));
     }
     /** Effective active id given what is on disk and what the catalogue says. */
-    activeId(records, catalogue) {
+    activeId(records, catalogue, includeRuntime = true) {
         if (this.overridePath)
             return '';
+        if (includeRuntime &&
+            this.runtimeActiveId &&
+            records.some((record) => record.settings.id === this.runtimeActiveId)) {
+            return this.runtimeActiveId;
+        }
         const requested = catalogue.active;
         // The choice wins, even before its weights are downloaded: selecting a model
         // is how the user asks for it, and the console then says "not downloaded"
@@ -244,14 +251,35 @@ export class ModelStore {
         return fallback;
     }
     /** Point the catalogue at another model. Returns the new effective model. */
-    setActive(id) {
+    /** The model the committed/global defaults choose, ignoring a chat selection. */
+    defaultActive() {
+        if (this.overridePath)
+            return this.active();
+        const records = this.list();
+        const id = this.activeId(records, this.catalogue(), false);
+        return records.find((record) => record.settings.id === id) ?? null;
+    }
+    /**
+     * Select a model. `persist: false` is for per-chat selection: the model that
+     * is loaded changes in this process, while `models-settings.json` stays the
+     * user's global default for new chats and the next process start.
+     */
+    selectActive(id, persist = true) {
         const record = this.get(id);
         if (!record)
             throw new Error(`Unknown model "${id}".`);
+        if (!persist) {
+            this.runtimeActiveId = id;
+            return { ...record, active: true };
+        }
+        this.runtimeActiveId = null;
         const catalogue = this.catalogue();
         const order = [id, ...catalogue.order.filter((entry) => entry !== id)];
         this.saveCatalogue({ ...catalogue, version: CATALOGUE_VERSION, active: id, order });
         return { ...record, active: true };
+    }
+    setActive(id) {
+        return this.selectActive(id, true);
     }
     /** Name of the selected system-prompt template, or '' when none is selected. */
     activePrompt() {

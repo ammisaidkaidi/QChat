@@ -18,6 +18,10 @@ import type {
   ModelCatalog,
   ChatEvent,
   ChatMessage,
+  ChatSettings,
+  ChatSummary,
+  ChatTurn,
+  StoredChat,
   CreateScriptInput,
   EngineStatus,
   Health,
@@ -108,6 +112,44 @@ export const api = {
   tools: (): Promise<{ tools: ToolDefinition[]; systemPrompt: string }> => request('/api/tools'),
 };
 
+/** Server-side SQLite chat history and the settings attached to each chat. */
+export const chatsApi = {
+  list: (): Promise<{ chats: ChatSummary[] }> => request('/api/chats'),
+
+  get: (id: string): Promise<{ chat: StoredChat }> =>
+    request(`/api/chats/${encodeURIComponent(id)}`),
+
+  create: (input: { title?: string; settings: ChatSettings }): Promise<{ chat: StoredChat }> =>
+    request('/api/chats', { method: 'POST', body: input }),
+
+  /** Idempotent migration of the one legacy localStorage transcript. */
+  importLegacy: (input: {
+    importId: string;
+    title?: string;
+    settings: ChatSettings;
+    turns: ChatTurn[];
+  }): Promise<{ chat: StoredChat | null; created: boolean }> =>
+    request('/api/chats/import', { method: 'POST', body: input }),
+
+  updateSettings: (id: string, settings: ChatSettings): Promise<{ chat: ChatSummary }> =>
+    request(`/api/chats/${encodeURIComponent(id)}/settings`, {
+      method: 'PUT',
+      body: { settings },
+    }),
+
+  saveTurns: (id: string, turns: ChatTurn[]): Promise<{ chat: ChatSummary }> =>
+    request(`/api/chats/${encodeURIComponent(id)}/turns`, { method: 'PUT', body: { turns } }),
+
+  rename: (id: string, title: string): Promise<{ chat: ChatSummary }> =>
+    request(`/api/chats/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: { title },
+    }),
+
+  remove: (id: string): Promise<{ deleted: string }> =>
+    request(`/api/chats/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+};
+
 /** The `.env` file behind the Config tab. */
 export const envApi = {
   read: (): Promise<EnvSnapshot> => request<EnvSnapshot>('/api/env'),
@@ -158,6 +200,8 @@ export interface ChatStreamHandle {
 
 interface ChatStreamOptions {
   messages: ChatMessage[];
+  /** Per-chat model id; never changes the global model defaults. */
+  modelId?: string;
   temperature?: number;
   maxTokens?: number;
   thinking?: boolean;
@@ -165,6 +209,8 @@ interface ChatStreamOptions {
   /** Allow webSearch/webFetch for this turn. */
   net?: boolean;
   systemPrompt?: string;
+  /** Prompt-template body chosen by this chat, including an explicit empty choice. */
+  promptTemplate?: string;
   /** Tool steps allowed in one reply (1–12). */
   maxToolIterations?: number;
   /**
@@ -194,12 +240,16 @@ export function streamChat(options: ChatStreamOptions): ChatStreamHandle {
         signal: controller.signal,
         body: JSON.stringify({
           messages: options.messages,
+          ...(options.modelId === undefined ? {} : { modelId: options.modelId }),
           ...(options.temperature === undefined ? {} : { temperature: options.temperature }),
           ...(options.maxTokens === undefined ? {} : { maxTokens: options.maxTokens }),
           ...(options.thinking === undefined ? {} : { thinking: options.thinking }),
           ...(options.tools === undefined ? {} : { tools: options.tools }),
           ...(options.net === undefined ? {} : { net: options.net }),
           ...(options.systemPrompt ? { systemPrompt: options.systemPrompt } : {}),
+          ...(options.promptTemplate === undefined
+            ? {}
+            : { promptTemplate: options.promptTemplate }),
           ...(options.maxToolIterations === undefined
             ? {}
             : { maxToolIterations: options.maxToolIterations }),
@@ -346,9 +396,9 @@ export const chatApi = {
   /** The `models/` catalogue. */
   models: (): Promise<ModelCatalog> => request('/api/models'),
 
-  /** Switch the active model; the engine reloads lazily on the next message. */
-  useModel: (id: string): Promise<ModelCatalog & { status: EngineStatus }> =>
-    request('/api/models/active', { method: 'PUT', body: { id } }),
+  /** Select a model; chat-specific selections don't rewrite the global default. */
+  useModel: (id: string, persist = true): Promise<ModelCatalog & { status: EngineStatus }> =>
+    request('/api/models/active', { method: 'PUT', body: { id, persist } }),
 
   /** Adopt GGUFs dropped into either folder by hand. */
   refreshModels: (): Promise<ModelCatalog> => request('/api/models/refresh', { method: 'POST' }),
