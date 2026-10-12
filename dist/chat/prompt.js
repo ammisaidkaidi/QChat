@@ -653,6 +653,14 @@ export function answerStatesWrongCount(answer, count) {
     const stated = statedCount(answer);
     return stated !== null && stated !== count;
 }
+/**
+ * Does the reply present itself as *the* list ("the scripts are …", "you
+ * have …")? A sentence like that claims completeness, so naming three of six
+ * scripts is as wrong as saying there are none.
+ */
+export function answerEnumerates(answer) {
+    return /\b(scripts?|tools?|files?|items?|results?|skills?|functions?)\b\s*(:|\bare\b|\bis\b)|\byou have\b/i.test(answer);
+}
 /** Does the reply mention the failure at all? */
 export function answerMentionsError(answer, error) {
     const text = answer.toLowerCase();
@@ -777,6 +785,13 @@ export function guardToolAnswer(answer, outcome) {
     const stated = statedCount(text);
     if (items.length > 1 && stated !== null && stated !== items.length) {
         return { kind: 'replace', text: facts };
+    }
+    // A small list of named items: an enumerating sentence that names some of
+    // them and stops is incomplete, exactly like a wrong count.
+    if (items.length > 1 && items.length <= 8 && answerEnumerates(text)) {
+        const named = items.filter((name) => text.toLowerCase().includes(name.toLowerCase())).length;
+        if (named > 0 && named < items.length)
+            return { kind: 'replace', text: facts };
     }
     // Nothing usable came back (an empty reply, or the echoed JSON that
     // `stripJsonBlobs` already removed): the facts stand on their own.

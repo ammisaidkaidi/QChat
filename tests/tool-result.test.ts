@@ -20,6 +20,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   answerClaimsEmpty,
+  answerEnumerates,
   answerStatesWrongCount,
   asksAboutToolbox,
   answerUsesResult,
@@ -135,6 +136,33 @@ describe('Test A — a non-empty list survives a contradictory reply', () => {
     expect(statedCount('the scripts are hello and disk_report')).toBeNull();
     expect(answerStatesWrongCount('You have three scripts.', 6)).toBe(true);
     expect(answerStatesWrongCount('You have three scripts.', 3)).toBe(false);
+  });
+
+  it('corrects an enumerating answer that names only some of them', () => {
+    const partial = guardToolAnswer(
+      'The available scripts are hello, system_info, and net_interfaces.',
+      { name: 'listScripts', ok: true, result: SIX_SCRIPTS },
+    );
+    expect(partial.kind).toBe('replace');
+    if (partial.kind === 'replace') for (const name of NAMES) expect(partial.text).toContain(name);
+
+    // A sentence about one item is not an enumeration of the list.
+    expect(
+      guardToolAnswer('disk_report reports free and used disk space.', {
+        name: 'listScripts',
+        ok: true,
+        result: SIX_SCRIPTS,
+      }).kind,
+    ).toBe('none');
+    // And the full enumeration is left alone.
+    expect(
+      guardToolAnswer(
+        'The scripts are disk_report, hello, list_files, net_interfaces, screen_shot and system_info.',
+        { name: 'listScripts', ok: true, result: SIX_SCRIPTS },
+      ).kind,
+    ).toBe('none');
+    expect(answerEnumerates('The available scripts are hello.')).toBe(true);
+    expect(answerEnumerates('disk_report reports disk space.')).toBe(false);
   });
 
   it('adds the facts under a reply that ignored them', () => {

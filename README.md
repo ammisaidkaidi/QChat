@@ -155,9 +155,10 @@ every model, and `INFAGENT_TOOL_PROTOCOL=native`/`strict-json` force one mode.
 
 The runtime, not the model, is the authority on what a tool returned. When a
 reply denies a non-empty result ("there are no scripts"), states a count the
-payload contradicts, or hides a failure, the facts replace it; when it simply
-ignores the payload, they are appended under it. An empty list, an error and a
-missing result are three different things and are never rendered as one.
+payload contradicts, lists only some of a small catalogue as if it were all of
+it, or hides a failure, the facts replace it; when it simply ignores the payload,
+they are appended under it. An empty list, an error and a missing result are
+three different things and are never rendered as one.
 
 Measure it instead of guessing: `node tools/eval-protocol.mjs` runs 12 read-only
 prompts and reports first-try validity, repairs, failed calls, stray calls and

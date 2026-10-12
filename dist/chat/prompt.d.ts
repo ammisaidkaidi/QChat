@@ -141,6 +141,12 @@ export declare function outcomeError(outcome: ToolOutcome): string | null;
 /** The number the reply states about a list ("three scripts"), if it states one. */
 export declare function statedCount(answer: string): number | null;
 export declare function answerStatesWrongCount(answer: string, count: number): boolean;
+/**
+ * Does the reply present itself as *the* list ("the scripts are …", "you
+ * have …")? A sentence like that claims completeness, so naming three of six
+ * scripts is as wrong as saying there are none.
+ */
+export declare function answerEnumerates(answer: string): boolean;
 /** Does the reply mention the failure at all? */
 export declare function answerMentionsError(answer: string, error: string): boolean;
 /** What the model should be told after a tool ran: the facts, one readable line. */
