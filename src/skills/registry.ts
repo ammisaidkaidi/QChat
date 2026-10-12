@@ -16,7 +16,15 @@
  * (they are cheap). The body is fetched with `readSkill` when the skill is
  * actually used, which keeps the prompt small on a 0.6B model.
  */
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -26,6 +34,14 @@ import { SCRIPT_NAME_PATTERN } from '../scripts/registry.js';
 export type SkillErrorCode = 'invalid' | 'invalid_name' | 'not_found' | 'conflict' | 'io';
 
 export const SKILL_VERSION = 'infagent-skill/v1';
+
+/**
+ * How much of a pinned skill reaches the prompt. The whole catalogue is under
+ * 1 kB per file, so these are head-room rather than everyday limits — they
+ * exist so a long skill someone adds later cannot crowd out the reply.
+ */
+export const DEFAULT_ATTACHED_SKILLS = 4;
+export const DEFAULT_SKILL_BODY_CHARS = 2000;
 
 const ROOT = fileURLToPath(new URL('../..', import.meta.url));
 
@@ -237,7 +253,10 @@ export class SkillRegistry {
     return this.read(input.name);
   }
 
-  public update(name: string, patch: { description?: string; when?: string; body?: string }): SkillDetail {
+  public update(
+    name: string,
+    patch: { description?: string; when?: string; body?: string },
+  ): SkillDetail {
     const current = this.read(name);
     const source = renderSkill({
       name,
@@ -263,8 +282,49 @@ export class SkillRegistry {
     const skills = this.list();
     if (skills.length === 0) return 'No skills are defined yet.';
     return skills
-      .map((skill) => `- ${skill.meta.name}: ${skill.meta.description}${skill.meta.when ? ` (use when: ${skill.meta.when})` : ''}`)
+      .map(
+        (skill) =>
+          `- ${skill.meta.name}: ${skill.meta.description}${skill.meta.when ? ` (use when: ${skill.meta.when})` : ''}`,
+      )
       .join('\n');
+  }
+
+  /**
+   * The bodies of the named skills, for a turn that pinned them.
+   *
+   * A missing or unreadable skill is skipped rather than raised: the name came
+   * from a message box, and a skill deleted since it was typed must not turn
+   * into a failed reply. Bodies are cut to `maxChars` each and the list to
+   * `limit` entries, because the body lands in a system prompt that has to
+   * share the window with the answer.
+   */
+  public load(
+    names: readonly string[],
+    options: { limit?: number; maxChars?: number } = {},
+  ): { name: string; body: string; truncated: boolean }[] {
+    const limit = options.limit ?? DEFAULT_ATTACHED_SKILLS;
+    const maxChars = options.maxChars ?? DEFAULT_SKILL_BODY_CHARS;
+    const loaded: { name: string; body: string; truncated: boolean }[] = [];
+    const seen = new Set<string>();
+
+    for (const requested of names) {
+      if (loaded.length >= limit) break;
+      if (!SCRIPT_NAME_PATTERN.test(requested) || seen.has(requested)) continue;
+      seen.add(requested);
+      try {
+        const detail = this.read(requested);
+        const body = detail.body.length > maxChars;
+        loaded.push({
+          name: detail.meta.name,
+          body: body ? `${detail.body.slice(0, maxChars).trimEnd()}…` : detail.body,
+          truncated: body,
+        });
+      } catch {
+        // No such skill (or unreadable): the other mentions still load.
+      }
+    }
+
+    return loaded;
   }
 
   /** Compact shape sent to the UI. */

@@ -172,6 +172,8 @@ interface ChatStreamOptions {
    * `[]` = none. The engine both hides their tools and refuses their calls.
    */
   mcpServers?: string[];
+  /** Skills pinned with `/name` in the box: their bodies load for this turn. */
+  skills?: string[];
   onEvent: (event: ChatEvent) => void;
   onError: (message: string) => void;
   onClose: () => void;
@@ -202,6 +204,9 @@ export function streamChat(options: ChatStreamOptions): ChatStreamHandle {
             ? {}
             : { maxToolIterations: options.maxToolIterations }),
           ...(options.mcpServers === undefined ? {} : { mcpServers: options.mcpServers }),
+          ...(options.skills === undefined || options.skills.length === 0
+            ? {}
+            : { skills: options.skills }),
         }),
       });
 

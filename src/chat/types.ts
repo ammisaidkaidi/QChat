@@ -76,6 +76,13 @@ export interface ChatRequest {
    */
   promptTemplate?: string;
   /**
+   * Skills the user pinned with `/name` in the message box. Each one's body is
+   * loaded into this turn's system prompt, so "follow this skill" does not
+   * depend on the model deciding to call `readSkill`. Unknown names are
+   * ignored (a skill deleted meanwhile must not fail a reply).
+   */
+  skills?: string[];
+  /**
    * MCP servers this turn may use, by name. Omit for every enabled server;
    * `[]` means no MCP tool at all. The selection is enforced here, not asked
    * for in the prompt: a call to a server outside it is refused by the

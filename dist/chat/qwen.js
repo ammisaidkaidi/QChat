@@ -511,6 +511,12 @@ export class QwenEngine {
             const wantedMcp = request.mcpServers;
             const allowedMcp = selectMcpServers(this.mcp ? this.mcp.list() : [], wantedMcp);
             const allowedMcpNames = new Set(allowedMcp.map((server) => server.name));
+            /**
+             * Skills the user pinned with `/name` in the message box. The body is
+             * loaded here, in the engine, so the model follows it without having to
+             * decide to call `readSkill`.
+             */
+            const skillBodies = this.skills.load(request.skills ?? []);
             const mcpTools = this.mcp
                 ? this.mcp
                     .tools()
@@ -558,6 +564,7 @@ export class QwenEngine {
                         toolBudget: Math.max(1800, Math.min(7000, Math.round(model.contextSize * 1.15))),
                         net: useTools && net,
                         skills: this.skills.listing(),
+                        skillBodies,
                         mcp: useTools ? mcpTools : [],
                         mcpServers: useTools ? mcpServers : [],
                     }),

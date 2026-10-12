@@ -2,7 +2,15 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 
 import { pushAlert, raiseAlert } from '../alerts';
-import { chatApi, mcpApi, promptsApi, streamChat } from '../api';
+import {
+  applyMention,
+  attachedSkills,
+  dropMention,
+  filterSkills,
+  mentionAt,
+  type Mention,
+} from '../mentions';
+import { chatApi, mcpApi, promptsApi, skillsApi, streamChat } from '../api';
 import type { ChatStreamHandle } from '../api';
 import type {
   ChatConfig,
@@ -11,6 +19,7 @@ import type {
   ChatTurn,
   EngineStatus,
   McpCatalogue,
+  SkillRecord,
   ModelCatalog,
   ModelRecord,
 } from '../types';
@@ -43,6 +52,13 @@ const scroller = ref<HTMLElement | null>(null);
 const mcpCatalogue = ref<McpCatalogue | null>(null);
 const mcpPicker = ref(false);
 const mcpWrap = ref<HTMLElement | null>(null);
+/** The skills `/` can complete to, as the Skills tab sees them. */
+const skillList = ref<SkillRecord[]>([]);
+/** The `/word` under the caret, when one is being typed. */
+const mention = ref<Mention | null>(null);
+/** Which row of the completion list is highlighted. */
+const mentionIndex = ref(0);
+const draftBox = ref<HTMLTextAreaElement | null>(null);
 
 let handle: ChatStreamHandle | null = null;
 let clock: number | null = null;
@@ -417,8 +433,14 @@ async function send(): Promise<void> {
   const text = draft.value.trim();
   if (!text || busy.value) return;
 
-  newTurn('user').text = text;
+  // Read the skills off the message itself, so what is sent matches what is on
+  // screen — a mention deleted by hand is not attached.
+  const pinned = attachedSkills(text, skillNames.value);
+  const userTurn = newTurn('user');
+  userTurn.text = text;
+  if (pinned.length > 0) userTurn.skills = pinned;
   draft.value = '';
+  mention.value = null;
   const assistant = newTurn('assistant');
   busy.value = true;
   startClock();
@@ -433,6 +455,7 @@ async function send(): Promise<void> {
     net: settings.net,
     systemPrompt: settings.systemPrompt,
     maxToolIterations: settings.maxSteps,
+    ...(pinned.length > 0 ? { skills: pinned } : {}),
     // Omitted when nothing is restricted, so the engine keeps offering every
     // enabled server (and any that connects later).
     ...(settings.mcpServers === null ? {} : { mcpServers: [...selectedMcp.value] }),
@@ -499,6 +522,30 @@ function regenerate(turnId?: string): void {
 }
 
 function onKeydown(event: KeyboardEvent): void {
+  // The completion list owns the keyboard while a `/word` is being typed:
+  // Enter picks rather than sends, and Esc takes the mention back out.
+  if (mention.value) {
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      const rows = mentionMatches.value.length;
+      if (rows > 0) {
+        const step = event.key === 'ArrowDown' ? 1 : -1;
+        mentionIndex.value = (mentionIndex.value + step + rows) % rows;
+      }
+      return;
+    }
+    if ((event.key === 'Enter' || event.key === 'Tab') && mentionOpen.value) {
+      event.preventDefault();
+      void pickSkill(mentionIndex.value);
+      return;
+    }
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      void dropMentionWord();
+      return;
+    }
+  }
+
   if (event.key === 'Enter' && !event.shiftKey) {
     event.preventDefault();
     void send();
@@ -515,6 +562,7 @@ function promptPreview(): string {
     `thinking: ${settings.thinking ? 'on' : 'off (default — a 0.6B model is much faster without it)'}`,
     `steps: ${settings.maxSteps} (tool calls → results → more calls, then the answer)`,
     `mcp   : ${mcpLabel.value}${mcpRestricted.value ? ` (${selectedMcp.value.join(', ') || 'none'})` : ''}`,
+    `skills: ${draftSkills.value.join(', ') || 'none pinned by this message'}`,
     '',
     'The model runs entirely on this machine through llama.cpp.',
     `Model settings: ${status.value?.settingsFile ?? '—'}`,
@@ -522,6 +570,68 @@ function promptPreview(): string {
     'Tool calls are `<tool_call>{"name": "...", "args": {...}}</tool_call>` blocks,',
     'executed against the same script folder as the Scripts tab.',
   ].join('\n');
+}
+
+/* ── skills: `/name` in the box ───────────────────────────────────────────── */
+
+const skillNames = computed(() => skillList.value.map((skill) => skill.meta.name));
+
+/** The rows to show: everything for a bare `/`, else the filtered names. */
+const mentionMatches = computed(() => filterSkills(skillList.value, mention.value?.query ?? ''));
+
+/** The list is open as soon as a `/word` is under the caret and something matches. */
+const mentionOpen = computed(() => mention.value !== null && mentionMatches.value.length > 0);
+
+/** The skills this message will attach, read straight from the text. */
+const draftSkills = computed(() => attachedSkills(draft.value, skillNames.value));
+
+async function loadSkills(): Promise<void> {
+  try {
+    const response = await skillsApi.list();
+    skillList.value = response.skills;
+  } catch {
+    // No completions without the list; the box still works as plain text.
+  }
+}
+
+/** Re-read the caret: the mention is wherever the user is typing, not the end. */
+function syncMention(): void {
+  const box = draftBox.value;
+  if (!box) return;
+  const next = mentionAt(draft.value, box.selectionStart ?? draft.value.length);
+  if (next?.start !== mention.value?.start || next?.query !== mention.value?.query) {
+    mentionIndex.value = 0;
+  }
+  mention.value = next;
+}
+
+/** Put the caret back after a line the list rewrote. */
+async function focusBox(caret: number): Promise<void> {
+  await nextTick();
+  const box = draftBox.value;
+  if (!box) return;
+  box.focus();
+  box.setSelectionRange(caret, caret);
+  syncMention();
+}
+
+/** Use the highlighted skill (or row `index`, for a tap). */
+async function pickSkill(index: number): Promise<void> {
+  const current = mention.value;
+  const option = mentionMatches.value[index];
+  if (!current || !option) return;
+  const edit = applyMention(draft.value, current, option.name);
+  draft.value = edit.text;
+  await focusBox(edit.caret);
+}
+
+/** Esc: take the `/` and the word back out, and leave the caret where it was. */
+async function dropMentionWord(): Promise<void> {
+  const current = mention.value;
+  if (!current) return;
+  const edit = dropMention(draft.value, current);
+  draft.value = edit.text;
+  await focusBox(edit.caret);
 }
 
 /* ── the 🔧 MCP picker ───────────────────────────────────────────────────── */
@@ -592,10 +702,12 @@ onMounted(async () => {
   restore();
   document.addEventListener('click', onDocumentClick);
   void loadMcp();
+  void loadSkills();
   await Promise.all([refresh(), loadModels()]);
   window.setInterval(() => {
     void refresh();
     void loadMcp();
+    void loadSkills();
     if (!switching.value) void loadModels();
   }, 20_000);
 });
@@ -892,6 +1004,16 @@ onMounted(async () => {
               </details>
 
               <p v-if="turn.text" class="whitespace-pre-wrap">{{ turn.text }}</p>
+
+              <div v-if="turn.skills && turn.skills.length > 0" class="mt-1 flex flex-wrap gap-1">
+                <span
+                  v-for="name in turn.skills"
+                  :key="name"
+                  class="badge badge-sm gap-1 border-0 bg-base-100/30 font-mono text-[10px]"
+                >
+                  📘 {{ name }}
+                </span>
+              </div>
               <span v-else-if="turn.streaming" class="loading loading-dots loading-sm" />
 
               <ol
@@ -1053,18 +1175,60 @@ onMounted(async () => {
             </div>
           </div>
 
-          <textarea
-            v-model="draft"
-            rows="2"
-            class="textarea textarea-bordered textarea-sm flex-1"
-            :placeholder="
-              canChat
-                ? 'Message the on-device model…  (Enter to send, Shift+Enter for a new line)'
-                : 'Load the model first'
-            "
-            :disabled="busy"
-            @keydown="onKeydown"
-          ></textarea>
+          <div class="relative min-w-[12rem] flex-1">
+            <!-- `/` completes to a skill; the selected ones load for this turn. -->
+            <div
+              v-if="mentionOpen"
+              class="absolute bottom-full left-0 z-30 mb-1 max-h-64 w-full max-w-lg overflow-y-auto rounded-box border border-base-300 bg-base-100 p-1 shadow-xl"
+              data-testid="skill-menu"
+            >
+              <p class="px-2 py-1 text-[10px] opacity-60">
+                skill · ↑↓ move · ⏎ pick · Esc removes the /word ·
+                {{ mentionMatches.length }} match{{ mentionMatches.length === 1 ? '' : 'es' }}
+              </p>
+              <button
+                v-for="(option, index) in mentionMatches"
+                :key="option.name"
+                class="flex w-full items-start gap-2 rounded-box px-2 py-1 text-left"
+                :class="{ 'bg-primary/20': index === mentionIndex }"
+                :data-testid="`skill-option-${option.name}`"
+                @mouseenter="mentionIndex = index"
+                @mousedown.prevent
+                @click.prevent="pickSkill(index)"
+              >
+                <span class="grid h-5 w-5 shrink-0 place-items-center text-xs">📘</span>
+                <span class="min-w-0 flex-1">
+                  <span class="block truncate font-mono text-xs">/{{ option.name }}</span>
+                  <span class="block truncate text-[10px] opacity-70">{{
+                    option.description
+                  }}</span>
+                </span>
+                <span
+                  v-if="draftSkills.includes(option.name)"
+                  class="badge badge-success badge-xs shrink-0"
+                  >attached</span
+                >
+              </button>
+            </div>
+
+            <textarea
+              ref="draftBox"
+              v-model="draft"
+              rows="2"
+              class="textarea textarea-bordered textarea-sm w-full"
+              :placeholder="
+                canChat
+                  ? 'Message the on-device model…  (Enter to send, Shift+Enter for a new line, / for a skill)'
+                  : 'Load the model first'
+              "
+              :disabled="busy"
+              data-testid="draft"
+              @keydown="onKeydown"
+              @keyup="syncMention"
+              @input="syncMention"
+              @click="syncMention"
+            ></textarea>
+          </div>
           <div class="flex items-center gap-2">
             <button
               v-if="!busy"
@@ -1087,6 +1251,11 @@ onMounted(async () => {
         <p class="text-[10px] opacity-50">
           Everything runs locally through llama.cpp — no API key, no data leaving the machine.
           <span v-if="settings.tools"> Tool calls execute scripts from the Scripts tab.</span>
+          <span v-if="draftSkills.length > 0" class="ml-1 text-base-content/70">
+            Following {{ draftSkills.map((name) => `/${name}`).join(', ') }} —
+            {{ draftSkills.length === 1 ? 'its steps are' : 'their steps are' }} loaded for this
+            message.
+          </span>
         </p>
       </div>
     </section>

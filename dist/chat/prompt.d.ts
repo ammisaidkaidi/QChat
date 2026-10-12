@@ -90,6 +90,15 @@ export interface SystemPromptOptions {
         name: string;
         description?: string;
     }[];
+    /**
+     * Skill bodies the user pinned with `/name` for this turn, loaded in full.
+     * They sit above the tool listing: it is an instruction the user chose, and a
+     * small model buries anything that comes after a few kB of tool schemas.
+     */
+    skillBodies?: readonly {
+        name: string;
+        body: string;
+    }[];
 }
 export declare function buildSystemPrompt(options: SystemPromptOptions): string;
 /** One-line-per-script summary, used by the CLI and the interface. */

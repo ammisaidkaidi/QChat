@@ -487,6 +487,24 @@ infagent skills read web-research
 infagent skills create deploy-check --desc "Pre-deploy sanity checks" --when "Before a release"
 ```
 
+**Typing `/` in the message box** opens the skill list, filtered by whatever
+follows the slash (case-insensitive, anywhere in the name; a name that *starts*
+with it comes first). ↑↓ move the highlight, ⏎ or Tab picks, and **Esc takes the
+`/word` back out** — one of the two spaces that meet in the middle goes with it.
+Several mentions are allowed in one message, anywhere a word can start: a `/`
+that begins the text or follows whitespace, so `1/2` and `skills/web.md` are
+left alone. Picking writes `/web-research` into the text, which is what makes
+the turn reproducible: the message says which skill it means, a mention deleted
+by hand is no longer attached, and each attached skill shows as a 📘 chip.
+
+An attached skill is not just a mention the model may follow — **its body is
+loaded into that turn's system prompt** (`# Skills to follow`, above the tool
+listing, so it survives a few kB of tool schemas). That is the difference from
+asking nicely: even the 0.6B follows the steps, because they are part of the
+instruction it was given. Per turn it travels as
+`POST /api/chat/completions` → `{ "skills": ["web-research"] }`; the CLI has
+`--skills a,b`. Up to 4 skills attach, each cut at 2 000 characters.
+
 **Alerts** — the one callback whose output is for the human rather than the
 model. Ask for one in plain language ("show me an alert when the export
 finishes") and the model calls `showAlert`, which pops a toast in the console
@@ -541,7 +559,7 @@ infagent config | run <task> | --version
 | `GET /api/chat/status` | engine state, model path, context, RAM, defaults |
 | `POST /api/chat/model/download` | SSE progress while fetching the GGUF |
 | `DELETE /api/chat/model` | unload the model from memory |
-| `POST /api/chat/completions` | SSE token stream (`status`, `thinking`, `token`, `tool_call`, `tool_result`, `reset`, `plan`, `stats`, `done`); per-turn `net`, `tools`, `promptTemplate`, `maxToolIterations`, `mcpServers` |
+| `POST /api/chat/completions` | SSE token stream (`status`, `thinking`, `token`, `tool_call`, `tool_result`, `reset`, `plan`, `stats`, `done`); per-turn `net`, `tools`, `promptTemplate`, `maxToolIterations`, `mcpServers`, `skills` |
 | `GET /api/alerts?limit=…` | recent alerts, newest first |
 | `POST /api/alerts` | raise one (`{ message, title?, level? }`) → 201 |
 | `DELETE /api/alerts` | clear the stored alerts |
@@ -582,8 +600,10 @@ Seven tabs in the header: **Chat**, **Scripts**, **Skills**, **Toolbox**, **MCP*
   reasoning, tool-call cards with arguments and results, **copy** and retry on
   every reply, settings (temperature, max tokens, thinking, tools, custom system
   prompt), an *Internet access* switch for `webSearch` / `webFetch`, a 🔧
-  **MCP-server picker** beside the message box, a *Send a test alert* button,
-  Stop / Clear, history kept in `localStorage`
+  **MCP-server picker** beside the message box, **`/`-completion over the
+  skills** (filter as you type, ⏎ to pick, Esc to drop the `/word`; the picked
+  skills attach to that message and their steps are loaded), a *Send a test
+  alert* button, Stop / Clear, history kept in `localStorage`
 - **Alerts** — toasts for anything raised by `showAlert`, the CLI or the API,
   with a bell counter in the header and *Dismiss* / *Dismiss all*
 - **Scripts** — searchable script list, detail tabs (overview, *Agent prompt*

@@ -270,6 +270,12 @@ export interface SystemPromptOptions {
    * happens to be called `log`.
    */
   mcpServers?: readonly { name: string; description?: string }[];
+  /**
+   * Skill bodies the user pinned with `/name` for this turn, loaded in full.
+   * They sit above the tool listing: it is an instruction the user chose, and a
+   * small model buries anything that comes after a few kB of tool schemas.
+   */
+  skillBodies?: readonly { name: string; body: string }[];
 }
 
 /** The internet tools, offered only when internet access is on. */
@@ -397,6 +403,7 @@ export function buildSystemPrompt(options: SystemPromptOptions): string {
     mcp = [],
     mcpServers,
     styleGuide,
+    skillBodies = [],
   } = options;
   const parts = [identity];
 
@@ -412,6 +419,14 @@ export function buildSystemPrompt(options: SystemPromptOptions): string {
     // Other families (Hammer2.1, xLAM) have no such switch — sending /no_think
     // to them would only add noise to the prompt.
     parts.push('/no_think', 'Do not write a <think> block; answer immediately.');
+  }
+
+  if (skillBodies.length > 0) {
+    // The user picked these by typing `/name`: the steps are wanted now, not
+    // "available if you feel like reading them".
+    parts.push('', '# Skills to follow');
+    for (const skill of skillBodies) parts.push(`## ${skill.name}`, skill.body.trim());
+    parts.push('Follow these steps for this reply.');
   }
 
   if (tools) {

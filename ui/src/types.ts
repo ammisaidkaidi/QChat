@@ -157,6 +157,8 @@ export interface ChatTurn {
   calls: ChatToolCall[];
   /** The plan lines of a multi-step turn, in order. */
   plans?: { text: string; step?: number }[];
+  /** Skills a user turn pinned with `/name` — loaded for that message. */
+  skills?: string[];
   stats?: {
     totalTokens: number;
     tokensPerSecond: number;

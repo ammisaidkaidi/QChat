@@ -290,7 +290,7 @@ function mcpFunctionSchema(server, tool) {
     };
 }
 export function buildSystemPrompt(options) {
-    const { records, tools, thinking, style = 'qwen3', identity = IDENTITY, net = false, skills, mcp = [], mcpServers, styleGuide, } = options;
+    const { records, tools, thinking, style = 'qwen3', identity = IDENTITY, net = false, skills, mcp = [], mcpServers, styleGuide, skillBodies = [], } = options;
     const parts = [identity];
     if (styleGuide?.trim()) {
         // One template, one heading, no preamble: a 0.6B model copies the last
@@ -303,6 +303,14 @@ export function buildSystemPrompt(options) {
         // Other families (Hammer2.1, xLAM) have no such switch — sending /no_think
         // to them would only add noise to the prompt.
         parts.push('/no_think', 'Do not write a <think> block; answer immediately.');
+    }
+    if (skillBodies.length > 0) {
+        // The user picked these by typing `/name`: the steps are wanted now, not
+        // "available if you feel like reading them".
+        parts.push('', '# Skills to follow');
+        for (const skill of skillBodies)
+            parts.push(`## ${skill.name}`, skill.body.trim());
+        parts.push('Follow these steps for this reply.');
     }
     if (tools) {
         // Nothing is declared twice: an MCP server may re-expose a script that is

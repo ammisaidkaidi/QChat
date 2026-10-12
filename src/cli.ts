@@ -60,6 +60,7 @@ Chat subcommands:
       --thinking               Show the model's reasoning block (on stderr)
       --no-tools               Disable script tool calls
       --steps N                Tool steps one reply may take (default 6)
+      --skills a,b             Follow these skills for this turn (as /name in the box)
       --mcp a,b                MCP servers this turn may use (default: all)
       --no-mcp                 No MCP tool at all for this turn
       --no-net                 Disable webSearch / webFetch for this turn
@@ -413,6 +414,15 @@ async function chatCommand(sub: string | undefined, rest: string[]): Promise<num
         ...(flag('temp') ? { temperature: Number(flag('temp')) } : {}),
         ...(flag('max') ? { maxTokens: Number(flag('max')) } : {}),
         ...(flag('steps') ? { maxToolIterations: Number(flag('steps')) } : {}),
+        // The same per-turn skill pinning a `/name` mention sends.
+        ...(flag('skills')
+          ? {
+              skills: String(flag('skills'))
+                .split(',')
+                .map((name) => name.trim())
+                .filter(Boolean),
+            }
+          : {}),
         // The same per-turn MCP selection the console's 🔧 button sends.
         ...(argv.includes('--no-mcp')
           ? { mcpServers: [] }
