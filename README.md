@@ -690,8 +690,8 @@ expands to show labels or collapses to icons.
   skills** (filter as you type, ⏎ to pick, Esc to drop the `/word`; the picked
   skills attach to that message and their steps are loaded), a server-backed
   **SQLite history panel** beside the conversation (search, switch, create or
-  delete chats; full tool cards survive reloads; show/hide state is remembered),
-  and per-chat settings including the model,
+  delete chats; full tool cards survive reloads), with a **History** toggle in the
+  right navigation that remembers visibility, and per-chat settings including the model,
   prompt style and 🔧 MCP choices, saved automatically
 - **Models** — local model catalogue, weight downloads, engine status and explicit
   new-chat default management alongside cloud providers, API-key management,

@@ -37,6 +37,8 @@ import type {
   ModelRecord,
 } from '../types';
 
+const props = defineProps<{ historyVisible: boolean }>();
+
 const emit = defineEmits<{
   (event: 'notify', message: string, tone: 'success' | 'error'): void;
 }>();
@@ -61,8 +63,6 @@ const chats = ref<ChatSummary[]>([]);
 const activeChatId = ref('');
 const historyReady = ref(false);
 const historyLoading = ref(true);
-const HISTORY_PANEL_KEY = 'infagent.chat.history.visible.v1';
-const historyPanelVisible = ref(readBrowserValue(HISTORY_PANEL_KEY) !== 'false');
 const savingState = ref<'saved' | 'saving' | 'error'>('saved');
 const historyFilter = ref('');
 const deletingChat = ref(false);
@@ -340,9 +340,6 @@ async function saveCurrentSettings(): Promise<void> {
 }
 
 watch(settings, scheduleSettingsSave, { deep: true, flush: 'sync' });
-watch(historyPanelVisible, (visible) => {
-  writeBrowserValue(HISTORY_PANEL_KEY, String(visible));
-});
 watch(turns, scheduleTurnsSave, { deep: true, flush: 'sync' });
 
 function summaryFromRecord(chat: StoredChat): ChatSummary {
@@ -1264,7 +1261,7 @@ onMounted(async () => {
   <div
     class="grid gap-4"
     :class="
-      historyPanelVisible ? 'xl:grid-cols-[minmax(0,1fr)_19rem] xl:items-start' : 'grid-cols-1'
+      props.historyVisible ? 'xl:grid-cols-[minmax(0,1fr)_19rem] xl:items-start' : 'grid-cols-1'
     "
   >
     <div class="grid min-w-0 gap-4">
@@ -1292,17 +1289,6 @@ onMounted(async () => {
             <div class="flex items-center gap-2">
               <button class="btn btn-ghost btn-xs" @click="showPrompt = !showPrompt">
                 {{ showPrompt ? 'Hide info' : 'Info' }}
-              </button>
-              <button
-                class="btn btn-ghost btn-xs"
-                type="button"
-                :aria-expanded="historyPanelVisible"
-                aria-controls="chat-history"
-                :title="historyPanelVisible ? 'Hide chat history' : 'Show chat history'"
-                data-testid="chat-history-toggle"
-                @click="historyPanelVisible = !historyPanelVisible"
-              >
-                {{ historyPanelVisible ? 'Hide history' : 'Show history' }}
               </button>
               <button class="btn btn-ghost btn-xs text-error" @click="clear">Clear</button>
             </div>
@@ -2198,7 +2184,7 @@ onMounted(async () => {
     </div>
 
     <aside
-      v-if="historyPanelVisible"
+      v-if="props.historyVisible"
       id="chat-history"
       class="card border border-base-300 bg-base-200/70 xl:sticky xl:top-4"
       data-testid="chat-history"

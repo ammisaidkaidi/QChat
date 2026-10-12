@@ -39,6 +39,7 @@ const TABS: { id: Tab; icon: string; label: string }[] = [
 
 const TAB_KEY = 'infagent.tab';
 const NAV_COLLAPSED_KEY = 'infagent.nav.collapsed.v1';
+const HISTORY_PANEL_KEY = 'infagent.chat.history.visible.v1';
 
 function readNavCollapsed(): boolean {
   try {
@@ -47,6 +48,15 @@ function readNavCollapsed(): boolean {
     return false;
   }
 }
+
+function readHistoryPanelVisible(): boolean {
+  try {
+    return localStorage.getItem(HISTORY_PANEL_KEY) !== 'false';
+  } catch {
+    return true;
+  }
+}
+
 const storedTab = ((): Tab => {
   try {
     const value = localStorage.getItem(TAB_KEY);
@@ -58,11 +68,19 @@ const storedTab = ((): Tab => {
 })();
 const tab = ref<Tab>(storedTab);
 const navCollapsed = ref(readNavCollapsed());
+const historyPanelVisible = ref(readHistoryPanelVisible());
 watch(navCollapsed, (collapsed) => {
   try {
     localStorage.setItem(NAV_COLLAPSED_KEY, String(collapsed));
   } catch {
     /* the navigation still works when browser storage is unavailable */
+  }
+});
+watch(historyPanelVisible, (visible) => {
+  try {
+    localStorage.setItem(HISTORY_PANEL_KEY, String(visible));
+  } catch {
+    /* the panel still works when browser storage is unavailable */
   }
 });
 watch(tab, (value) => {
@@ -72,6 +90,20 @@ watch(tab, (value) => {
     /* private mode — the tab still works, it just is not remembered */
   }
 });
+
+const historyNavAction = computed(() => {
+  if (tab.value !== 'chat') return 'Open Chat history';
+  return historyPanelVisible.value ? 'Hide Chat history' : 'Show Chat history';
+});
+
+function activateChatHistory(): void {
+  if (tab.value !== 'chat') {
+    tab.value = 'chat';
+    historyPanelVisible.value = true;
+    return;
+  }
+  historyPanelVisible.value = !historyPanelVisible.value;
+}
 
 const scripts = ref<ScriptRecord[]>([]);
 const stats = ref<ScriptStats | null>(null);
@@ -271,7 +303,7 @@ onMounted(async () => {
         </main>
 
         <main v-else class="mx-auto max-w-7xl p-3 sm:p-4">
-          <ChatPanel @notify="notify" />
+          <ChatPanel :history-visible="historyPanelVisible" @notify="notify" />
         </main>
 
         <footer
@@ -305,25 +337,46 @@ onMounted(async () => {
         </div>
 
         <nav class="flex-1 space-y-1 overflow-y-auto px-2 pb-3" aria-label="Main navigation">
-          <button
-            v-for="entry in TABS"
-            :key="entry.id"
-            class="btn btn-sm w-full min-w-0 gap-2"
-            :class="[
-              tab === entry.id ? 'btn-primary' : 'btn-ghost',
-              navCollapsed ? 'justify-center px-0' : 'justify-center px-0 lg:justify-start lg:px-2',
-            ]"
-            :title="entry.label"
-            :aria-label="entry.label"
-            :aria-current="tab === entry.id ? 'page' : undefined"
-            :data-testid="`nav-${entry.id}`"
-            @click="tab = entry.id"
-          >
-            <span aria-hidden="true" class="shrink-0">{{ entry.icon }}</span>
-            <span v-if="!navCollapsed" class="hidden truncate text-xs lg:inline">{{
-              entry.label
-            }}</span>
-          </button>
+          <template v-for="entry in TABS" :key="entry.id">
+            <button
+              class="btn btn-sm w-full min-w-0 gap-2"
+              :class="[
+                tab === entry.id ? 'btn-primary' : 'btn-ghost',
+                navCollapsed
+                  ? 'justify-center px-0'
+                  : 'justify-center px-0 lg:justify-start lg:px-2',
+              ]"
+              :title="entry.label"
+              :aria-label="entry.label"
+              :aria-current="tab === entry.id ? 'page' : undefined"
+              :data-testid="`nav-${entry.id}`"
+              @click="tab = entry.id"
+            >
+              <span aria-hidden="true" class="shrink-0">{{ entry.icon }}</span>
+              <span v-if="!navCollapsed" class="hidden truncate text-xs lg:inline">{{
+                entry.label
+              }}</span>
+            </button>
+            <button
+              v-if="entry.id === 'chat'"
+              class="btn btn-sm w-full min-w-0 gap-2"
+              :class="[
+                tab === 'chat' && historyPanelVisible ? 'btn-primary' : 'btn-ghost',
+                navCollapsed
+                  ? 'justify-center px-0'
+                  : 'justify-center px-0 lg:justify-start lg:pl-5 lg:pr-2',
+              ]"
+              type="button"
+              :title="historyNavAction"
+              :aria-label="historyNavAction"
+              :aria-pressed="tab === 'chat' && historyPanelVisible"
+              data-testid="nav-chat-history"
+              @click="activateChatHistory"
+            >
+              <span aria-hidden="true" class="shrink-0">🕘</span>
+              <span v-if="!navCollapsed" class="hidden truncate text-xs lg:inline">History</span>
+            </button>
+          </template>
         </nav>
       </aside>
     </div>
