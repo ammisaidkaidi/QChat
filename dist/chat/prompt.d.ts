@@ -6,8 +6,11 @@
  * was trained on), the calling convention is shown with a concrete example, and
  * the model is told to prefer a script over answering from memory.
  */
+import type { ModelStyle } from './modelStore.js';
 import type { ScriptRecord } from '../scripts/types.js';
 export declare const IDENTITY: string;
+/** Collapse whitespace and cut at a word boundary, never mid-word. */
+export declare function trimText(text: string, limit: number): string;
 /** The function half of a tool declaration. */
 interface FunctionSchema {
     name: string;
@@ -29,11 +32,18 @@ export interface SystemPromptOptions {
     records: readonly ScriptRecord[];
     tools: boolean;
     thinking: boolean;
+    /** Prompting convention of the active model. Defaults to `qwen3`. */
+    style?: ModelStyle;
     identity?: string;
     /** Internet capabilities (webSearch/webFetch) are available. */
     net?: boolean;
     /** One line per skill, shown so the model knows what it can load. */
     skills?: string;
+    /**
+     * Characters the tool declarations may occupy. The engine sets this from the
+     * model's context size; tools that do not fit are listed by name only.
+     */
+    toolBudget?: number;
     /** Tools exposed by connected MCP servers, with the schema each one declares. */
     mcp?: readonly {
         server: string;

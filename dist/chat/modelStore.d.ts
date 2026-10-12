@@ -8,6 +8,15 @@ export declare const DEFAULT_SETTINGS_DIR: string;
 export declare const DEFAULT_WEIGHTS_DIR: string;
 /** The catalogue folder — kept under its old name for the public API. */
 export declare const DEFAULT_MODELS_DIR: string;
+/**
+ * How a model is prompted and how it answers tool calls.
+ *
+ *   `qwen3` (default) — Qwen3 convention: an optional `/no_think` switch and
+ *     calls inside `<tool_call>{…}</tool_call>`.
+ *   `xlam` — the Hammer2.1 / xLAM convention: no thinking switch, and the reply
+ *     is a bare JSON array of calls, `[{"name": …, "arguments": {…}}]`.
+ */
+export type ModelStyle = 'qwen3' | 'xlam';
 export interface ModelSettings {
     version: string;
     /** Stable identifier; also the settings file name. */
@@ -33,6 +42,8 @@ export interface ModelSettings {
     thinking?: boolean;
     /** Chat wrapper `node-llama-cpp` should use (`chatml` | `qwen` | `auto`). */
     chatWrapper?: 'chatml' | 'qwen' | 'auto';
+    /** Prompting / tool-call convention. Defaults to `qwen3`. */
+    style?: ModelStyle;
     /** Extra system-prompt text prepended for this model. */
     agentPrompt?: string;
 }
@@ -103,6 +114,7 @@ export declare class ModelStore {
         maxTokens: number;
         thinking: boolean;
         chatWrapper: NonNullable<ModelSettings['chatWrapper']>;
+        style: ModelStyle;
         agentPrompt: string;
     };
     private number;

@@ -39,6 +39,7 @@ const DEFAULTS = {
     maxTokens: 512,
     thinking: false,
     chatWrapper: 'chatml',
+    style: 'qwen3',
 };
 /** `Qwen3-0.6B-Q4_K_M.gguf` → `Qwen3-0.6B-Q4_K_M` (underscores carry meaning). */
 function modelStem(file) {
@@ -149,13 +150,13 @@ export class ModelStore {
         if (this.overridePath)
             return '';
         const requested = catalogue.active;
-        if (requested && records.some((record) => record.settings.id === requested)) {
-            const record = records.find((entry) => entry.settings.id === requested);
-            // Prefer the requested model, but do not strand the user on a model whose
-            // weights were never downloaded when another one is ready to run.
-            if (record?.present || records.every((entry) => !entry.present))
-                return requested;
-        }
+        // The choice wins, even before its weights are downloaded: selecting a model
+        // is how the user asks for it, and the console then says "not downloaded"
+        // and offers the download — silently keeping the previous model was worse.
+        if (requested && records.some((record) => record.settings.id === requested))
+            return requested;
+        // A catalogue entry whose settings file is gone falls back to something
+        // runnable rather than leaving the console pointing at nothing.
         const present = records.find((record) => record.present);
         return present?.settings.id ?? records[0]?.settings.id ?? '';
     }
@@ -225,6 +226,7 @@ export class ModelStore {
             maxTokens: this.number(settings?.maxTokens, undefined, DEFAULTS.maxTokens),
             thinking: settings?.thinking ?? DEFAULTS.thinking,
             chatWrapper: settings?.chatWrapper ?? DEFAULTS.chatWrapper,
+            style: settings?.style ?? DEFAULTS.style,
             agentPrompt: settings?.agentPrompt?.trim() ?? '',
         };
     }

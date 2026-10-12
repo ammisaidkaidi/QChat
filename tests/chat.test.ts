@@ -132,11 +132,117 @@ describe('extractToolCalls', () => {
     expect(rest).toContain('Algiers');
   });
 
+  it('reads the bare JSON array Hammer2.1 and xLAM emit', () => {
+    const { calls, rest } = extractToolCalls(
+      '[{"name": "listScripts", "arguments": {}}, {"name": "hello", "arguments": {"name": "Sara"}}]',
+      { knownScripts: ['hello', 'disk_report'] },
+    );
+    expect(calls).toEqual([
+      { name: 'listScripts', args: {} },
+      { name: 'hello', args: { name: 'Sara' } },
+    ]);
+    expect(rest.trim()).toBe('');
+  });
+
+  it('reads an array of calls that is still wrapped in the Qwen3 tags', () => {
+    const { calls } = extractToolCalls(
+      '<tool_call>[{"name":"runScript","arguments":{"name":"hello"}}]</tool_call>',
+    );
+    expect(calls).toEqual([{ name: 'runScript', args: { name: 'hello' } }]);
+  });
+
+  it('keeps the real calls and drops invented ones from an array', () => {
+    const { calls } = extractToolCalls(
+      '[{"name": "hello", "arguments": {}}, {"name": "totally_made_up", "arguments": {}}]',
+      { knownScripts: ['hello'] },
+    );
+    expect(calls).toEqual([{ name: 'hello', args: {} }]);
+  });
+
+  it('does not turn a plain JSON array in prose into a call', () => {
+    const { calls, rest } = extractToolCalls('Cities: ["Algiers", "Oran"]', {
+      knownScripts: ['hello'],
+    });
+    expect(calls).toHaveLength(0);
+    expect(rest).toContain('Oran');
+
+    // An empty list is how Hammer2.1 declines to call anything.
+    expect(extractToolCalls('[]').calls).toHaveLength(0);
+  });
+
+  it('prefers the outer object when a call carries an array inside it', () => {
+    const { calls } = extractToolCalls('{"list_scripts": [{"name": "hello"}]}', {
+      knownScripts: ['hello'],
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.name).toBe('list_scripts');
+  });
+
   it('ignores malformed blocks and deduplicates', () => {
     const { calls } = extractToolCalls(
       '<tool_call>not json</tool_call><tool_call>{"name":"a","args":{}}</tool_call><tool_call>{"name":"a","args":{}}</tool_call>',
     );
     expect(calls).toHaveLength(1);
+  });
+});
+
+describe('chat prompt styles', () => {
+  const registry = new ScriptRegistry({ root: '/tmp/infagent-style-test' });
+
+  it('declares the Qwen3 convention for a qwen3 model', () => {
+    const prompt = buildSystemPrompt({ records: registry.list(), tools: true, thinking: false });
+    expect(prompt).toContain('/no_think');
+    expect(prompt).toContain('<tool_call>');
+    expect(prompt).toContain('<tools>');
+  });
+
+  it('keeps the tool block inside its budget and names what did not fit', () => {
+    const many = Array.from({ length: 40 }, (_, index) => ({
+      server: 'fake',
+      name: `tool_${index}`,
+      description: `Tool number ${index}. `.repeat(6),
+      inputSchema: {
+        type: 'object',
+        properties: { path: { type: 'string', description: 'Where to look.'.repeat(6) } },
+        required: ['path'],
+      },
+    }));
+
+    const prompt = buildSystemPrompt({
+      records: registry.list(),
+      tools: true,
+      thinking: false,
+      mcp: many,
+      toolBudget: 3000,
+    });
+
+    const block = prompt.slice(prompt.indexOf('# Tools'), prompt.indexOf('These tools exist'));
+    expect(block.length).toBeLessThan(6000);
+    expect(prompt).toContain('These tools exist too');
+    expect(prompt).toMatch(/fake__tool_39/);
+    // Declarations stay valid JSON with the schema the server declared.
+    const declaration = prompt
+      .split('\n')
+      .find((line) => line.includes('fake__tool_0"'));
+    expect(declaration).toBeDefined();
+    const parsed = JSON.parse(declaration ?? '{}');
+    expect(parsed.function.parameters.properties.path.type).toBe('string');
+    expect(parsed.function.description.length).toBeLessThanOrEqual(120);
+  });
+
+  it('declares the JSON-array convention for a Hammer2.1 / xLAM model', () => {
+    const prompt = buildSystemPrompt({
+      records: registry.list(),
+      tools: true,
+      thinking: false,
+      style: 'xlam',
+    });
+    // No Qwen3-only thinking switch, and the call shape it was trained on.
+    expect(prompt).not.toContain('/no_think');
+    expect(prompt).not.toContain('<tool_call>');
+    expect(prompt).toContain('[BEGIN OF AVAILABLE_TOOLS]');
+    expect(prompt).toContain('[END OF AVAILABLE_TOOLS]');
+    expect(prompt).toContain('single JSON array');
   });
 });
 

@@ -17,5 +17,6 @@
   "maxTokens": 512,
   "thinking": false,
   "chatWrapper": "chatml",
-  "agentPrompt": ""
+  "agentPrompt": "",
+  "style": "qwen3"
 }

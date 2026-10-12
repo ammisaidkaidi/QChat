@@ -33,31 +33,45 @@ npx tsx src/cli.ts scripts list
 npx tsx src/cli.ts scripts run hello '{"name":"world"}'
 ```
 
-## Chat tab — Qwen3-0.6B on CPU
+## Chat tab — local models on CPU
 
-The model runs in-process through llama.cpp; nothing leaves the machine.
+The model runs in-process through llama.cpp; nothing leaves the machine. Four
+models ship in the catalogue and the picker in the Chat tab switches between
+them; the weights of the extra ones are downloaded on demand.
+
+| Model | Weights | Style |
+| --- | --- | --- |
+| `Qwen3-0.6B-Q4_K_M` **default** | 0.4 GB | Qwen3 tools (`<tool_call>`) |
+| `Hammer2.1-3b-Q4_K_M` | 1.9 GB | function-calling fine-tune, JSON array of calls |
+| `xLAM-2-3B-fc-r-Q4_K_M` | 1.9 GB | function-calling fine-tune, JSON array of calls |
+| `Qwen3-4B-Thinking-2507-Q4_K_M` | 2.5 GB | Qwen3 tools, reasoning block before the answer |
 
 | | |
 | --- | --- |
-| Model | `Qwen3-0.6B-Q4_K_M.gguf` (~380 MB, `unsloth/Qwen3-0.6B-GGUF`) |
 | Folder | `models/` next to the project — see [models/README.md](models/README.md) |
-| Backend | CPU only, 2 threads by default, 2048-token context |
-| Speed | ~10-17 tok/s on 2 cores; first token ≈ 1.3 s warm, ~4 s cold |
-| Memory | ~1 GB RSS while loaded; unloads automatically after 10 idle minutes |
+| Backend | CPU only, 2 threads by default, per-model context (2048 for the 0.6B, 4096 for the bigger ones) |
+| Speed | ~10-17 tok/s on 2 cores for the 0.6B; first token ≈ 1.3 s warm, ~4 s cold |
+| Memory | ~1 GB RSS for the 0.6B; ~3 GB for the 3B models, ~4 GB for the 4B |
+| Unload | automatic after 10 idle minutes |
 
 How it works:
 
-1. The system prompt declares every script in the Scripts tab as a Qwen3 tool
-   (`<tools>[…]</tools>`), plus `listScripts` / `createScript`.
-2. The model replies with `<tool_call>{"name": "hello", "args": {…}}</tool_call>`.
+1. The system prompt declares every script in the Scripts tab, the agent
+   callbacks and each connected MCP tool, in the shape the active model was
+   trained on — Qwen3's `<tools>` block, or `[BEGIN OF AVAILABLE_TOOLS]` for the
+   Hammer2.1 / xLAM models. Declarations are trimmed and budgeted to the model's
+   context, so a wall of MCP tools cannot crowd out the conversation.
+2. The model replies with `<tool_call>{"name": "hello", "args": {…}}</tool_call>`,
+   or with a JSON array of calls on the models that answer that way.
 3. The server executes the call against the same registry as the Scripts tab,
    feeds the result back, and streams the final answer.
 4. Token streaming, the reasoning block and tool activity are all shown live.
 
 Practical notes:
 
-- **Thinking mode is off by default.** Qwen3 still emits a reasoning block on
-  tool turns; it is streamed into a collapsible "reasoning" section.
+- **Thinking mode follows the model.** Off for the default 0.6B (which still
+  emits a reasoning block on tool turns) and on for Qwen3-4B-Thinking; either way
+  the reasoning is streamed into a collapsible "reasoning" section.
 - **Tool calling is defended in depth.** Qwen3-0.6B does not always follow its
   own protocol, so the engine declares tools in the exact trained shape, retries
   once when a reply arrives with no call at all, salvages calls with missing
@@ -75,8 +89,8 @@ Practical notes:
 ```bash
 infagent chat status              # active model, folder, context, RAM
 infagent chat models              # every model in the folder
-infagent chat use Qwen3-0.6B-Q4_K_M   # switch the active model
-infagent chat download [model-id] # fetch the GGUF into models/
+infagent chat use Hammer2.1-3b-Q4_K_M  # switch the active model
+infagent chat download [model-id]    # fetch the GGUF into the weights folder
 infagent chat ask "…" [--thinking] [--no-tools] [--temp 0.4] [--max 512]
 infagent chat unload              # free ~1 GB of RAM now
 ```
@@ -85,9 +99,12 @@ infagent chat unload              # free ~1 GB of RAM now
 
 ```
 models/
-  models-settings.json                  # which model is active, and the order
-  Qwen3-0.6B-Q4_K_M.settings.json       # how to run the model (committed)
-  Qwen3-0.6B-Q4_K_M.gguf               # the weights (git-ignored, ~380 MB)
+  models-settings.json                       # which model is active, and the order
+  Qwen3-0.6B-Q4_K_M.settings.json            # how to run each model (committed)
+  Hammer2.1-3b-Q4_K_M.settings.json
+  xLAM-2-3B-fc-r-Q4_K_M.settings.json
+  Qwen3-4B-Thinking-2507-Q4_K_M.settings.json
+~/.cache/infagent/models/*.gguf              # the weights (never in git)
 ```
 
 Each model is a GGUF plus a settings file carrying its context size, threads,

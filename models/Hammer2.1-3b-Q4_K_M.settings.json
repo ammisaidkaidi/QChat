@@ -1,0 +1,22 @@
+{
+  "version": "infagent-model/v1",
+  "id": "Hammer2.1-3b-Q4_K_M",
+  "name": "Hammer2.1 3B (Q4_K_M)",
+  "file": "Hammer2.1-3b.Q4_K_M.gguf",
+  "family": "qwen2",
+  "quantization": "Q4_K_M",
+  "description": "MadeAgents Hammer2.1 3B \u2014 function-calling specialist built on Qwen2.5-Coder-3B. Answers calls as a JSON array, so it needs style \"xlam\". Weights are ~1.9 GB, budget ~3 GB of RAM.",
+  "source": {
+    "repo": "mradermacher/Hammer2.1-3b-GGUF",
+    "url": "https://huggingface.co/mradermacher/Hammer2.1-3b-GGUF/resolve/main/Hammer2.1-3b.Q4_K_M.gguf"
+  },
+  "sizeBytes": 1929442272,
+  "contextSize": 4096,
+  "threads": 2,
+  "temperature": 0.2,
+  "maxTokens": 512,
+  "thinking": false,
+  "style": "xlam",
+  "chatWrapper": "chatml",
+  "agentPrompt": ""
+}

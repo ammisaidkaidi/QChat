@@ -1,7 +1,29 @@
 export const IDENTITY = [
-    'You are InfAgent, a concise on-device assistant running fully offline (Qwen3-0.6B, CPU only).',
+    'You are InfAgent, a concise on-device assistant running fully offline (llama.cpp, CPU only).',
     'Answer in the user’s language and keep replies to one or two sentences.',
 ].join('\n');
+/**
+ * A tool declaration is a fixed cost paid on every single turn, so descriptions
+ * are trimmed to what the model needs to choose the tool. With four MCP servers
+ * connected the untrimmed block was ~11 KB (≈3 200 tokens) — more than the whole
+ * context window of the small default model.
+ */
+const TOOL_DESCRIPTION_LIMIT = 110;
+const PARAM_DESCRIPTION_LIMIT = 60;
+/** Characters of tool declarations the prompt may spend. Set by the engine. */
+const DEFAULT_TOOL_BUDGET = 5000;
+/** Collapse whitespace and cut at a word boundary, never mid-word. */
+export function trimText(text, limit) {
+    const flat = String(text ?? '')
+        .replace(/\s+/g, ' ')
+        .trim();
+    if (flat.length <= limit)
+        return flat;
+    const head = flat.slice(0, limit);
+    const cut = head.lastIndexOf(' ');
+    const body = (cut > limit * 0.6 ? head.slice(0, cut) : head).replace(/[.,;:]$/, '');
+    return `${body}…`;
+}
 /**
  * Qwen3 was trained on OpenAI-style tool objects, and its chat template dumps
  * one per line inside `<tools>`. A bare function object (without the
@@ -9,6 +31,23 @@ export const IDENTITY = [
  */
 function asNativeTool(schema) {
     return { type: 'function', function: schema };
+}
+/** A declaration with every description trimmed to its budget. */
+function trimmed(schema) {
+    const properties = {};
+    for (const [name, value] of Object.entries(schema.parameters.properties)) {
+        const short = value.description ? trimText(value.description, PARAM_DESCRIPTION_LIMIT) : '';
+        properties[name] = { type: value.type, ...(short ? { description: short } : {}) };
+    }
+    return {
+        name: schema.name,
+        description: trimText(schema.description, TOOL_DESCRIPTION_LIMIT),
+        parameters: {
+            type: 'object',
+            properties,
+            ...(schema.parameters.required ? { required: schema.parameters.required } : {}),
+        },
+    };
 }
 /** JSON-schema declaration for one script, in Qwen3's tool-call format. */
 export function scriptFunctionSchema(record) {
@@ -61,9 +100,29 @@ export const TOOL_PROTOCOL = [
     'If a function matches the request, call it instead of guessing from memory.',
     'Never answer a question about the available scripts, tools or your own capabilities from this listing: call listScripts and use its output.',
     'For general knowledge, chit-chat, or anything no function covers, answer directly without calling one.',
-    'Emit the <tool_call> block alone, with no prose around it.',
     'A tool result is then supplied to you: answer the user in one short sentence of plain language, without repeating the JSON.',
 ].join('\n');
+/**
+ * The call convention, per model style.
+ *
+ * Qwen3 was fine-tuned on the `<tool_call>` wording, and the Hammer2.1 / xLAM
+ * family on a bare JSON array (`[...]`, "NO other text MUST be included"), so
+ * each one gets the shape it was trained on rather than a compromise.
+ */
+const CALL_FORMAT = {
+    qwen3: [
+        'For each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:',
+        '<tool_call>',
+        '{"name": <function-name>, "arguments": <args-json-object>}',
+        '</tool_call>',
+        'Emit the <tool_call> block alone, with no prose around it.',
+    ],
+    xlam: [
+        'To call one or more functions, reply with a single JSON array and nothing else — no prose, no code fence:',
+        '[{"name": <function-name>, "arguments": <args-json-object>}, …]',
+        'If no function is needed, answer the user in plain text instead.',
+    ],
+};
 /** The internet tools, offered only when internet access is on. */
 const NET_TOOLS = [
     {
@@ -141,30 +200,87 @@ const ALWAYS_ON_TOOLS = [
 ];
 /** Tool declaration for one MCP tool, namespaced `server__tool`. */
 function mcpFunctionSchema(server, tool) {
+    const schema = (tool.inputSchema ?? {});
+    const properties = {};
+    for (const [name, value] of Object.entries(schema.properties ?? {})) {
+        const type = typeof value?.type === 'string' ? value.type : 'string';
+        const description = typeof value?.description === 'string' && value.description.length > 0
+            ? trimText(value.description, PARAM_DESCRIPTION_LIMIT)
+            : undefined;
+        properties[name] = { type, ...(description ? { description } : {}) };
+    }
+    const required = Array.isArray(schema.required)
+        ? schema.required.filter((entry) => typeof entry === 'string')
+        : [];
     return {
         name: `${server}__${tool.name}`,
-        description: `[MCP: ${server}] ${tool.description || tool.name}`,
-        parameters: { type: 'object', properties: {} },
+        description: `[MCP: ${server}] ${trimText(tool.description || tool.name, TOOL_DESCRIPTION_LIMIT)}`,
+        parameters: {
+            type: 'object',
+            properties,
+            ...(required.length > 0 ? { required } : {}),
+        },
     };
 }
 export function buildSystemPrompt(options) {
-    const { records, tools, thinking, identity = IDENTITY, net = false, skills, mcp = [] } = options;
+    const { records, tools, thinking, style = 'qwen3', identity = IDENTITY, net = false, skills, mcp = [], } = options;
     const parts = [identity];
-    if (!thinking) {
+    if (style === 'qwen3' && !thinking) {
         // Qwen3 honours two soft switches: the token itself and an explicit
         // directive. Both are placed high so a long tool listing cannot bury them.
+        // Other families (Hammer2.1, xLAM) have no such switch — sending /no_think
+        // to them would only add noise to the prompt.
         parts.push('/no_think', 'Do not write a <think> block; answer immediately.');
     }
     if (tools) {
-        // Verbatim Qwen3 preamble: the model was fine-tuned on this exact wording,
-        // line layout (`<tools>` holds one JSON object per line, not an array) and
-        // `arguments` key, so it must not be "improved".
-        parts.push('', '# Tools', '', 'You may call one or more functions to assist with the user query.', '', 'You are provided with function signatures within <tools></tools> XML tags:', '<tools>', ...[
+        // Nothing is declared twice: an MCP server may re-expose a script that is
+        // already in the toolbox.
+        const seen = new Set();
+        const wanted = [
             ...toolSchemas(records),
             ...ALWAYS_ON_TOOLS,
             ...(net ? NET_TOOLS : []),
             ...mcp.map((tool) => mcpFunctionSchema(tool.server, tool)),
-        ].map((schema) => JSON.stringify(asNativeTool(schema))), '</tools>', '', 'For each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:', '<tool_call>', '{"name": <function-name>, "arguments": <args-json-object>}', '</tool_call>');
+        ].filter((schema) => {
+            if (seen.has(schema.name))
+                return false;
+            seen.add(schema.name);
+            return true;
+        });
+        // Spend the budget in priority order (the agent's own tools first, then the
+        // MCP servers) and keep the overflow as bare names: the model may still call
+        // a tool it only knows the name of, it just does not get a description.
+        const budget = options.toolBudget ?? DEFAULT_TOOL_BUDGET;
+        const signatures = [];
+        const overflow = [];
+        let spent = 0;
+        for (const schema of wanted) {
+            const line = JSON.stringify(asNativeTool(trimmed(schema)));
+            if (signatures.length === 0 || spent + line.length <= budget) {
+                signatures.push(line);
+                spent += line.length;
+            }
+            else {
+                overflow.push(schema.name);
+            }
+        }
+        parts.push('', '# Tools', '', 'You may call one or more functions to assist with the user query.', '');
+        if (style === 'qwen3') {
+            // Verbatim Qwen3 preamble: the model was fine-tuned on this exact wording,
+            // line layout (`<tools>` holds one JSON object per line, not an array) and
+            // `arguments` key, so it must not be "improved".
+            parts.push('You are provided with function signatures within <tools></tools> XML tags:', '<tools>', ...signatures, '</tools>');
+        }
+        else {
+            // Hammer2.1 lists its functions between these two markers; xLAM-2 reads
+            // the same JSON dump from its system turn.
+            parts.push('You are provided with function signatures within ' +
+                '[BEGIN OF AVAILABLE_TOOLS] and [END OF AVAILABLE_TOOLS] markers:', '[BEGIN OF AVAILABLE_TOOLS]', ...signatures, '[END OF AVAILABLE_TOOLS]');
+        }
+        if (overflow.length > 0) {
+            parts.push('', 'These tools exist too — call them the same way, with the arguments their name implies:', overflow.join(', '));
+        }
+        parts.push('', ...CALL_FORMAT[style]);
         parts.push('', TOOL_PROTOCOL);
         if (net) {
             parts.push('', 'webSearch and webFetch reach the internet; use them instead of guessing about current events.');

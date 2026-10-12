@@ -7,6 +7,8 @@
  *   1. `<tool_call>{"name":"runScript","arguments":{"name":"hello","args":{…}}}</tool_call>`
  *   2. `<tool_call>{"name":"hello","args":{…}}</tool_call>`   ← the common one
  *   3. a bare `<tool_call>{ "name": "listScripts" }</tool_call>`
+ *   4. `[{"name":"listScripts","arguments":{}}]` — the Hammer2.1 / xLAM shape,
+ *      either bare or inside the XML tags
  *
  * Dispatch order: built-in callbacks first (`listScripts`, `createScript`, …),
  * then a registered script called by name, then `runScript` with a nested name.
@@ -21,8 +23,15 @@ import type { SkillRegistry } from '../skills/registry.js';
 import { asSkillInput, SkillError } from '../skills/registry.js';
 import type { ChatToolCall } from './types.js';
 
-/** Walk `text` and return every balanced `{…}` slice (string literals respected). */
-function findJsonObjects(text: string): { raw: string; index: number }[] {
+/**
+ * Walk `text` and return every balanced `open…close` slice, string literals
+ * respected. Used to lift JSON out of a reply that carries no XML tags at all.
+ */
+function findBalanced(
+  text: string,
+  open: string,
+  close: string,
+): { raw: string; index: number }[] {
   const found: { raw: string; index: number }[] = [];
   let depth = 0;
   let start = -1;
@@ -38,10 +47,10 @@ function findJsonObjects(text: string): { raw: string; index: number }[] {
       continue;
     }
     if (char === '"') inString = true;
-    else if (char === '{') {
+    else if (char === open) {
       if (depth === 0) start = index;
       depth += 1;
-    } else if (char === '}' && depth > 0) {
+    } else if (char === close && depth > 0) {
       depth -= 1;
       if (depth === 0 && start !== -1) {
         found.push({ raw: text.slice(start, index + 1), index: start });
@@ -51,6 +60,16 @@ function findJsonObjects(text: string): { raw: string; index: number }[] {
   }
 
   return found;
+}
+
+/** Every balanced `{…}` slice. */
+function findJsonObjects(text: string): { raw: string; index: number }[] {
+  return findBalanced(text, '{', '}');
+}
+
+/** Every balanced `[…]` slice. */
+function findJsonArrays(text: string): { raw: string; index: number }[] {
+  return findBalanced(text, '[', ']');
 }
 
 const TOOL_CALL_BLOCK = /<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/gi;
@@ -133,7 +152,11 @@ export function extractToolCalls(
 
   const scan = (value: string): void => {
     try {
-      consider(JSON.parse(value.trim()));
+      const parsed: unknown = JSON.parse(value.trim());
+      // Hammer2.1 / xLAM answer with an array of calls, sometimes still wrapped
+      // in the Qwen3 tags.
+      if (Array.isArray(parsed)) parsed.forEach(consider);
+      else consider(parsed);
       return;
     } catch {
       /* fall through to the lenient pass */
@@ -166,6 +189,45 @@ export function extractToolCalls(
     return '';
   });
   if (calls.length === 0) rest = text;
+
+  if (calls.length === 0) {
+    // Hammer2.1 and xLAM emit exactly one JSON array and nothing else, e.g.
+    // `[{"name": "runScript", "arguments": {"name": "hello"}}]`. Every entry has
+    // to name a real tool, so a list of strings in prose is never a call.
+    const outerObjects = findJsonObjects(rest);
+    for (const candidate of findJsonArrays(rest)) {
+      // Skip an array that sits *inside* a JSON object: that object is itself a
+      // candidate call (`{"list_scripts": [...]}`), and it is the outer value
+      // the model meant.
+      const nested = outerObjects.some(
+        (object) =>
+          candidate.index >= object.index &&
+          candidate.index + candidate.raw.length <= object.index + object.raw.length,
+      );
+      if (nested) continue;
+
+      try {
+        const parsed: unknown = JSON.parse(candidate.raw);
+        if (!Array.isArray(parsed) || parsed.length === 0) continue;
+        // Keep only the entries that name a real tool: an array with no
+        // addressed call at all is prose, not a request.
+        const addressed = parsed.filter((entry) => {
+          const record = asRecord(entry);
+          const name = record?.['name'];
+          return typeof name === 'string' && isToolName(name, knownScripts, true);
+        });
+        if (addressed.length === 0) continue;
+
+        for (const entry of addressed) consider(entry);
+        if (calls.length > 0) {
+          rest = `${rest.slice(0, candidate.index)}${rest.slice(candidate.index + candidate.raw.length)}`;
+          break;
+        }
+      } catch {
+        /* not JSON — keep scanning */
+      }
+    }
+  }
 
   if (calls.length === 0) {
     // Last resort: the model sometimes emits the call with no tags at all (or

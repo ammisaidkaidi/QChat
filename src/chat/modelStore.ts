@@ -38,6 +38,16 @@ export const DEFAULT_WEIGHTS_DIR = join(homedir(), '.cache', 'infagent', 'models
 /** The catalogue folder — kept under its old name for the public API. */
 export const DEFAULT_MODELS_DIR = DEFAULT_SETTINGS_DIR;
 
+/**
+ * How a model is prompted and how it answers tool calls.
+ *
+ *   `qwen3` (default) — Qwen3 convention: an optional `/no_think` switch and
+ *     calls inside `<tool_call>{…}</tool_call>`.
+ *   `xlam` — the Hammer2.1 / xLAM convention: no thinking switch, and the reply
+ *     is a bare JSON array of calls, `[{"name": …, "arguments": {…}}]`.
+ */
+export type ModelStyle = 'qwen3' | 'xlam';
+
 export interface ModelSettings {
   version: string;
   /** Stable identifier; also the settings file name. */
@@ -60,6 +70,8 @@ export interface ModelSettings {
   thinking?: boolean;
   /** Chat wrapper `node-llama-cpp` should use (`chatml` | `qwen` | `auto`). */
   chatWrapper?: 'chatml' | 'qwen' | 'auto';
+  /** Prompting / tool-call convention. Defaults to `qwen3`. */
+  style?: ModelStyle;
   /** Extra system-prompt text prepended for this model. */
   agentPrompt?: string;
 }
@@ -102,6 +114,7 @@ const DEFAULTS = {
   maxTokens: 512,
   thinking: false,
   chatWrapper: 'chatml' as const,
+  style: 'qwen3' as const,
 };
 
 /** `Qwen3-0.6B-Q4_K_M.gguf` → `Qwen3-0.6B-Q4_K_M` (underscores carry meaning). */
@@ -230,12 +243,12 @@ export class ModelStore {
   private activeId(records: readonly ModelRecord[], catalogue: ModelCatalogue): string {
     if (this.overridePath) return '';
     const requested = catalogue.active;
-    if (requested && records.some((record) => record.settings.id === requested)) {
-      const record = records.find((entry) => entry.settings.id === requested);
-      // Prefer the requested model, but do not strand the user on a model whose
-      // weights were never downloaded when another one is ready to run.
-      if (record?.present || records.every((entry) => !entry.present)) return requested;
-    }
+    // The choice wins, even before its weights are downloaded: selecting a model
+    // is how the user asks for it, and the console then says "not downloaded"
+    // and offers the download — silently keeping the previous model was worse.
+    if (requested && records.some((record) => record.settings.id === requested)) return requested;
+    // A catalogue entry whose settings file is gone falls back to something
+    // runnable rather than leaving the console pointing at nothing.
     const present = records.find((record) => record.present);
     return present?.settings.id ?? records[0]?.settings.id ?? '';
   }
@@ -310,6 +323,7 @@ export class ModelStore {
     maxTokens: number;
     thinking: boolean;
     chatWrapper: NonNullable<ModelSettings['chatWrapper']>;
+    style: ModelStyle;
     agentPrompt: string;
   } {
     const record = this.active();
@@ -333,6 +347,7 @@ export class ModelStore {
       maxTokens: this.number(settings?.maxTokens, undefined, DEFAULTS.maxTokens),
       thinking: settings?.thinking ?? DEFAULTS.thinking,
       chatWrapper: settings?.chatWrapper ?? DEFAULTS.chatWrapper,
+      style: settings?.style ?? DEFAULTS.style,
       agentPrompt: settings?.agentPrompt?.trim() ?? '',
     };
   }

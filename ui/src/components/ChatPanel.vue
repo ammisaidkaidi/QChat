@@ -583,8 +583,9 @@ onMounted(async () => {
 
         <div v-if="status?.state === 'absent'" class="alert py-2 text-xs">
           <span>
-            The model (~380 MB, GGUF Q4_K_M from Hugging Face) is not on this machine yet. Download
-            it once — chat runs fully offline afterwards.
+            {{ status?.modelName ?? 'This model' }} ({{ formatSize(activeModel?.sizeBytes ?? 0) }},
+            GGUF {{ status?.quantization || 'quantized' }} from Hugging Face) is not on this machine
+            yet. Download it once — chat runs fully offline afterwards.
           </span>
         </div>
 

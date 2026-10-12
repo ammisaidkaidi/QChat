@@ -65,7 +65,7 @@ describe('ModelStore', () => {
     expect(store.active()?.settings.name).toBe('Beta');
   });
 
-  it('reports missing weights and falls back to a downloadable model', () => {
+  it('keeps a selected model active even before its weights are downloaded', () => {
     const dir = scratch();
     const store = new ModelStore({ dir, weightsDir: dir });
     store.writeSettings(
@@ -77,10 +77,33 @@ describe('ModelStore', () => {
     writeFileSync(join(dir, 'here.gguf'), 'weights');
 
     store.setActive('missing');
-    // The catalogue still lists both, but the ready-to-run one is effective.
-    expect(store.setActive('missing').settings.id).toBe('missing');
     const models = store.list();
-    expect(models.find((model) => model.settings.id === 'missing')?.present).toBe(false);
+    expect(store.active()?.settings.id).toBe('missing');
+    const missing = models.find((model) => model.settings.id === 'missing');
+    expect(missing?.present).toBe(false);
+    expect(missing?.active).toBe(true);
+    // The download source survives the switch, which is what the console turns
+    // into "not downloaded" plus a working Download button.
+    expect(missing?.settings.source?.url).toBe('https://example.test/missing.gguf');
+  });
+
+  it('falls back to a model that is on disk when the catalogue entry is gone', () => {
+    const dir = scratch();
+    const store = new ModelStore({ dir, weightsDir: dir });
+    store.writeSettings(
+      store.defaultSettings('missing', 'missing.gguf', {
+        source: { url: 'https://example.test/missing.gguf' },
+      }),
+    );
+    store.writeSettings(store.defaultSettings('here', 'here.gguf'));
+    writeFileSync(join(dir, 'here.gguf'), 'weights');
+
+    // A catalogue pointing at a settings file that no longer exists.
+    writeFileSync(
+      join(dir, 'models-settings.json'),
+      JSON.stringify({ version: 'infagent-models/v1', active: 'deleted', order: [] }),
+    );
+    const models = store.list();
     expect(models.find((model) => model.settings.id === 'here')?.active).toBe(true);
   });
 
@@ -112,6 +135,47 @@ describe('ModelStore', () => {
     expect(new ModelStore({ dir, weightsDir: dir }).activeContext().contextSize).toBe(1024);
     if (previous === undefined) delete process.env['INFAGENT_LLM_CONTEXT'];
     else process.env['INFAGENT_LLM_CONTEXT'] = previous;
+  });
+
+  it('ships the four catalogued models with their call conventions', () => {
+    // The real `models/` folder, not a scratch dir: this is the shipped list.
+    const store = new ModelStore({});
+    const models = store.list();
+    const byId = new Map(models.map((record) => [record.settings.id, record]));
+
+    for (const id of [
+      'Qwen3-0.6B-Q4_K_M',
+      'Hammer2.1-3b-Q4_K_M',
+      'xLAM-2-3B-fc-r-Q4_K_M',
+      'Qwen3-4B-Thinking-2507-Q4_K_M',
+    ]) {
+      const record = byId.get(id);
+      expect(record, `${id} is missing from models/`).toBeDefined();
+      expect(record?.settings.source?.url).toMatch(/^https:\/\/huggingface\.co\//);
+      expect(record?.settings.sizeBytes).toBeGreaterThan(100_000_000);
+    }
+
+    // Exactly these four are catalogued. The order file is the picker's order
+    // and `setActive` moves the chosen model to the front (most recent first),
+    // so the assertion is on the set, not on a fixed sequence.
+    expect(models.map((record) => record.settings.id).sort()).toEqual([
+      'Hammer2.1-3b-Q4_K_M',
+      'Qwen3-0.6B-Q4_K_M',
+      'Qwen3-4B-Thinking-2507-Q4_K_M',
+      'xLAM-2-3B-fc-r-Q4_K_M',
+    ]);
+
+    // Hammer2.1 and xLAM answer with a JSON array; Qwen3 keeps its own tags.
+    expect(byId.get('Hammer2.1-3b-Q4_K_M')?.settings.style).toBe('xlam');
+    expect(byId.get('xLAM-2-3B-fc-r-Q4_K_M')?.settings.style).toBe('xlam');
+    expect(byId.get('Qwen3-4B-Thinking-2507-Q4_K_M')?.settings.style).toBe('qwen3');
+    expect(byId.get('Qwen3-4B-Thinking-2507-Q4_K_M')?.settings.thinking).toBe(true);
+
+    // The settings files on disk parse and carry their own id.
+    for (const record of models) {
+      const raw = JSON.parse(readFileSync(record.settingsPath, 'utf8')) as { id: string };
+      expect(raw.id).toBe(record.settings.id);
+    }
   });
 
   it('throws for an unknown model id', () => {

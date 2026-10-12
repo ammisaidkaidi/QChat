@@ -435,6 +435,7 @@ export class QwenEngine {
                 temperature: model.temperature,
                 maxTokens: model.maxTokens,
                 thinking: model.thinking,
+                style: model.style,
             };
             const useTools = request.tools !== false && this.allowRun;
             const thinking = request.thinking ?? defaults.thinking;
@@ -455,6 +456,10 @@ export class QwenEngine {
                         records: this.registry.list(),
                         tools: useTools,
                         thinking,
+                        style: model.style,
+                        // Tool declarations are a per-turn cost. At ~3.2 characters per
+                        // token this leaves most of a small window to the conversation.
+                        toolBudget: Math.max(1800, Math.min(7000, Math.round(model.contextSize * 1.35))),
                         net: useTools && net,
                         skills: this.skills.listing(),
                         mcp: useTools ? mcpTools : [],
@@ -462,7 +467,11 @@ export class QwenEngine {
                 ]
                     .filter(Boolean)
                     .join('\n\n');
-            const prompt = thinking ? lastUser.content : `${lastUser.content}\n/no_think`;
+            // `/no_think` is a Qwen3-only soft switch: sending it to Hammer2.1 or
+            // xLAM would just be stray text at the end of the user turn.
+            const prompt = thinking || model.style !== 'qwen3'
+                ? lastUser.content
+                : `${lastUser.content}\n/no_think`;
             const session = await this.sessionFor(loaded, systemPrompt, history.slice(0, lastUserIndex));
             if (process.env['INFAGENT_CHAT_DEBUG'] === '1') {
                 const rendered = session
@@ -474,8 +483,36 @@ export class QwenEngine {
             }
             // Qwen3 spends 150-250 tokens on a reasoning block before answering, so the
             // budget must cover thinking *and* the reply, or the visible answer is cut off.
-            const maxTokens = request.maxTokens ?? defaults.maxTokens;
+            const requestedMaxTokens = request.maxTokens ?? defaults.maxTokens;
             const temperature = request.temperature ?? defaults.temperature;
+            /** Characters one chat-history item contributes to the prompt. */
+            const historyChars = (item) => {
+                const record = item;
+                if (typeof record?.text === 'string')
+                    return record.text.length;
+                if (typeof record?.content === 'string')
+                    return record.content.length;
+                if (Array.isArray(record?.content)) {
+                    return record.content.reduce((sum, part) => sum + historyChars(part), 0);
+                }
+                return 0;
+            };
+            /**
+             * How many tokens this generation may spend.
+             *
+             * llama.cpp shifts context when prompt + generation exceed the window, and
+             * it gives up entirely when even the system message does not fit. Clamping
+             * the budget to the room that is actually left keeps every turn viable.
+             * The ratio is a deliberate overshoot (~3.2 characters per token) so the
+             * estimate errs on the safe side.
+             */
+            const tokenBudget = (prompt) => {
+                const chars = session.getChatHistory().reduce((sum, item) => sum + historyChars(item), 0) +
+                    prompt.length +
+                    256;
+                const room = model.contextSize - Math.ceil(chars / 3.2) - 96;
+                return Math.max(64, Math.min(requestedMaxTokens, room));
+            };
             const splitter = new OutputSplitter();
             const channel = new EventChannel();
             /** Visible assistant text for the whole turn (thinking and tool blocks excluded). */
@@ -485,7 +522,7 @@ export class QwenEngine {
             const runGeneration = async function* (prompt) {
                 let raw = '';
                 const work = session.prompt(prompt, {
-                    maxTokens,
+                    maxTokens: tokenBudget(prompt),
                     temperature,
                     ...(signal ? { signal, stopOnAbortSignal: true } : {}),
                     onToken: (tokens) => {

@@ -1,0 +1,22 @@
+{
+  "version": "infagent-model/v1",
+  "id": "Qwen3-4B-Thinking-2507-Q4_K_M",
+  "name": "Qwen3 4B Thinking 2507 (Q4_K_M)",
+  "file": "Qwen3-4B-Thinking-2507-Q4_K_M.gguf",
+  "family": "qwen3",
+  "quantization": "Q4_K_M",
+  "description": "Qwen3 4B thinking model (July 2025 build) \u2014 reasons before it answers, so replies take longer and the reasoning shows in a collapsible block. Keeps the Qwen3 <tool_call> format. Weights are ~2.5 GB, budget ~4 GB of RAM.",
+  "source": {
+    "repo": "unsloth/Qwen3-4B-Thinking-2507-GGUF",
+    "url": "https://huggingface.co/unsloth/Qwen3-4B-Thinking-2507-GGUF/resolve/main/Qwen3-4B-Thinking-2507-Q4_K_M.gguf"
+  },
+  "sizeBytes": 2497281152,
+  "contextSize": 4096,
+  "threads": 2,
+  "temperature": 0.6,
+  "maxTokens": 2048,
+  "thinking": true,
+  "style": "qwen3",
+  "chatWrapper": "chatml",
+  "agentPrompt": ""
+}

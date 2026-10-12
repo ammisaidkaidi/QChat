@@ -16,7 +16,10 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 // @ts-expect-error — no declaration file for the agent script
 import { run } from '../scripts/screen_shot.js';
 
-const hasPlaywright = await import('playwright')
+// The specifier is built at runtime so the file type-checks (and the suite is
+// skipped) on a checkout where the optional browser dependency is absent.
+const playwrightSpecifier = 'playwright';
+const hasPlaywright = await import(playwrightSpecifier)
   .then(() => true)
   .catch(() => false);
 

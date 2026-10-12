@@ -1,5 +1,10 @@
 {
   "version": "infagent-models/v1",
   "active": "Qwen3-0.6B-Q4_K_M",
-  "order": ["Qwen3-0.6B-Q4_K_M"]
+  "order": [
+    "Qwen3-0.6B-Q4_K_M",
+    "Hammer2.1-3b-Q4_K_M",
+    "xLAM-2-3B-fc-r-Q4_K_M",
+    "Qwen3-4B-Thinking-2507-Q4_K_M"
+  ]
 }

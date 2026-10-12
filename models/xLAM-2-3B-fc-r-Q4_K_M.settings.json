@@ -1,0 +1,22 @@
+{
+  "version": "infagent-model/v1",
+  "id": "xLAM-2-3B-fc-r-Q4_K_M",
+  "name": "xLAM 2 3B fc-r (Q4_K_M)",
+  "file": "xLAM-2-3B-fc-r-Q4_K_M.gguf",
+  "family": "qwen2",
+  "quantization": "Q4_K_M",
+  "description": "Salesforce xLAM-2 3B function-calling model (research release, CC-BY-NC-4.0 \u2014 non-commercial). Answers calls as a JSON array, so it needs style \"xlam\". Weights are ~1.9 GB, budget ~3 GB of RAM.",
+  "source": {
+    "repo": "Salesforce/xLAM-2-3b-fc-r-gguf",
+    "url": "https://huggingface.co/Salesforce/xLAM-2-3b-fc-r-gguf/resolve/main/xLAM-2-3B-fc-r-Q4_K_M.gguf"
+  },
+  "sizeBytes": 1929902656,
+  "contextSize": 4096,
+  "threads": 2,
+  "temperature": 0.2,
+  "maxTokens": 512,
+  "thinking": false,
+  "style": "xlam",
+  "chatWrapper": "chatml",
+  "agentPrompt": ""
+}
