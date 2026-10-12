@@ -13,6 +13,11 @@
  * at construction time, and every error message and stderr line is passed
  * through `redact()` first, so a token cannot reach a log, the interface or the
  * model.
+ *
+ * The request identifies itself with a real `User-Agent`: hosted endpoints sit
+ * behind an edge (Supabase's is Cloudflare) that answers a bare or library
+ * default agent with "403 Error 1010: browser_signature_banned", which looks
+ * exactly like an auth failure and is not one.
  */
 import { type McpServerConfig, type McpTool, type McpToolResult } from './client.js';
 export interface HttpMcpConfig extends McpServerConfig {
@@ -21,6 +26,8 @@ export interface HttpMcpConfig extends McpServerConfig {
     /** Extra headers, typically `{"Authorization": "Bearer …"}`. */
     headers?: Record<string, string>;
 }
+/** One header every remote request carries, so an edge cannot mistake us for a scraper. */
+export declare const HTTP_MCP_USER_AGENT = "InfAgent/1.0 (+https://github.com/ammisaidkaidi/InfAgent; MCP client)";
 /** Replace any credential-looking value with `***`, wherever it appears. */
 export declare function redact(text: string, secrets?: readonly string[]): string;
 /** Values in a config that must never be echoed, e.g. authorization headers. */

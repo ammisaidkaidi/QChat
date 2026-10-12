@@ -13,6 +13,11 @@
  * at construction time, and every error message and stderr line is passed
  * through `redact()` first, so a token cannot reach a log, the interface or the
  * model.
+ *
+ * The request identifies itself with a real `User-Agent`: hosted endpoints sit
+ * behind an edge (Supabase's is Cloudflare) that answers a bare or library
+ * default agent with "403 Error 1010: browser_signature_banned", which looks
+ * exactly like an auth failure and is not one.
  */
 import { MCP_PROTOCOL_VERSION, McpError, type McpServerConfig, type McpTool, type McpToolResult } from './client.js';
 
@@ -22,6 +27,10 @@ export interface HttpMcpConfig extends McpServerConfig {
   /** Extra headers, typically `{"Authorization": "Bearer …"}`. */
   headers?: Record<string, string>;
 }
+
+/** One header every remote request carries, so an edge cannot mistake us for a scraper. */
+export const HTTP_MCP_USER_AGENT =
+  'InfAgent/1.0 (+https://github.com/ammisaidkaidi/InfAgent; MCP client)';
 
 interface JsonRpcResponse {
   id?: number | string;
@@ -94,6 +103,7 @@ export class HttpMcpClient {
       'content-type': 'application/json',
       accept: 'application/json, text/event-stream',
       'mcp-protocol-version': MCP_PROTOCOL_VERSION,
+      'user-agent': HTTP_MCP_USER_AGENT,
       ...this.headers,
     };
     if (this.sessionId) headers['mcp-session-id'] = this.sessionId;
@@ -120,6 +130,21 @@ export class HttpMcpClient {
     if (response.status === 401 || response.status === 403) {
       const body = await response.text().catch(() => '');
       this.note(`${response.status} from ${this.displayUrl}: ${body.slice(0, 200)}`);
+
+      // An edge block is not an authentication problem, and saying it is sends
+      // people to the wrong place (we hit exactly that with Cloudflare 1010).
+      if (/error 1010|browser_signature|cloudflare|access denied/i.test(body)) {
+        throw new McpError(
+          'protocol',
+          redact(
+            `${this.name}: the endpoint's edge refused this client — HTTP ${response.status}` +
+              `${/1010/.test(body) ? ' (Cloudflare 1010, browser signature banned)' : ''}. ` +
+              'This is not a token problem: retry, or check whether the host blocks automated clients.',
+            this.secrets,
+          ),
+        );
+      }
+
       throw new McpError(
         'protocol',
         `${this.name}: authentication failed (${response.status}). Check the token in this server's headers — it is read from the environment, never from mcp.json.`,

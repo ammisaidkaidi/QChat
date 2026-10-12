@@ -29,6 +29,8 @@ interface MockOptions {
   token?: string;
   /** Answer with this status instead of a result. */
   failWith?: number;
+  /** Body sent with `failWith` (defaults to a plain denial). */
+  failBody?: unknown;
   /** Wait this long before answering. */
   delayMs?: number;
 }
@@ -37,17 +39,20 @@ async function mockRemote(options: MockOptions = {}): Promise<{
   url: string;
   close: () => Promise<void>;
   calls: string[];
+  headers: Record<string, string>[];
 }> {
   const calls: string[] = [];
+  const headers: Record<string, string>[] = [];
   const server: Server = createServer((req, res) => {
     let body = '';
+    headers.push(Object.fromEntries(Object.entries(req.headers).map(([k, v]) => [k, String(v)])));
     req.on('data', (chunk: Buffer) => (body += chunk.toString()));
     req.on('end', () => {
       const reply = (payload: unknown, status = 200): void => {
         const send = (): void => {
           if (options.failWith) {
             res.writeHead(options.failWith, { 'content-type': 'application/json' });
-            res.end(JSON.stringify({ error: 'denied' }));
+            res.end(JSON.stringify(options.failBody ?? { error: 'denied' }));
             return;
           }
           if (options.token && req.headers.authorization !== `Bearer ${options.token}`) {
@@ -134,6 +139,7 @@ async function mockRemote(options: MockOptions = {}): Promise<{
     url: `http://127.0.0.1:${port}/mcp`,
     close: () => new Promise<void>((done) => server.close(() => done())),
     calls,
+    headers,
   };
 }
 
@@ -229,6 +235,53 @@ describe('MCP over HTTP', () => {
       await remote.close();
     }
   });
+
+  it('identifies itself with a real User-Agent', async () => {
+    // Hosted endpoints sit behind an edge that bans library default agents; the
+    // request has to look like a client the edge accepts.
+    const remote = await mockRemote();
+    const manager = managerFor(remote.url);
+    try {
+      await manager.start('remote');
+      const first = remote.headers[0] ?? {};
+      expect(first['user-agent']).toContain('InfAgent');
+      expect(first['accept']).toContain('text/event-stream');
+      expect(first['mcp-protocol-version']).toBeTruthy();
+      // No agent leaks the session header before initialize answers.
+      expect(first['authorization']).toBe(`Bearer ${TOKEN}`);
+    } finally {
+      await manager.stopAll();
+      await remote.close();
+    }
+  }, 20_000);
+
+  it('calls an edge block an edge block, not an authentication problem', async () => {
+    const remote = await mockRemote({
+      failWith: 403,
+      failBody: {
+        title: 'Error 1010: Access denied',
+        detail: "The site owner has blocked access based on your browser's signature.",
+        error_code: 1010,
+        error_name: 'browser_signature_banned',
+      },
+    });
+    const manager = managerFor(remote.url);
+    try {
+      // A refused connection is reported as a status, not thrown at the caller.
+      const status = await manager.start('remote');
+      expect(status.state).toBe('error');
+      expect(status.lastError).toMatch(/edge refused/);
+      expect(status.lastError).toMatch(/not a token problem/);
+      expect(status.lastError).not.toContain(TOKEN);
+      expect(status.lastError).not.toMatch(/Check the token/);
+      const stderr = status.stderr.join('\n');
+      expect(stderr).toMatch(/1010/);
+      expect(stderr).not.toContain(TOKEN);
+    } finally {
+      await manager.stopAll();
+      await remote.close();
+    }
+  }, 20_000);
 
   it('times out instead of hanging on a stalled server', async () => {
     const remote = await mockRemote({ delayMs: 1500 });

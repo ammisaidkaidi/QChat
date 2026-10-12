@@ -252,6 +252,32 @@ infagent mcp call filesystem__read_file '{"path":"scripts/hello.js"}'
 infagent mcp call sqlite__read_query '{"database":"demo","sql":"select * from notes limit 5"}'
 ```
 
+**Supabase, connected.** The official remote endpoint is the entry in `mcp.json`;
+it needs two values in `.env` (never in the config file) and a project reference:
+
+```bash
+# .env — gitignored; `npm run env:from-txt` regenerates it from env.txt
+SUPABASE_ACCESS_TOKEN=sbp_…      # Supabase dashboard → Account → Access tokens
+SUPABASE_PROJECT_REF=abcdefghijklmnop   # the ref in your project URL
+```
+
+Then `infagent mcp start supabase` (or the **Connect** button in the MCP tab).
+It connects **read-only**: the URL pins `read_only=true`, and the server refuses
+the connection if the flag is missing unless `INFAGENT_ALLOW_SUPABASE_WRITES=1`
+is set deliberately. With that flag off, a write is rejected by Postgres itself
+(`ERROR 25006: cannot execute INSERT in a read-only transaction`), not merely by
+hiding a tool. Verified end to end against a real project: `list_tables`,
+`execute_sql` (read) and `list_migrations` all answer, `create table` and
+`insert` are refused.
+
+If the connection fails, the error says which of the two it is: an **auth**
+problem (401/403 → check the token) or an **edge block** — hosted endpoints sit
+behind Cloudflare, which answers an unrecognised client with "Error 1010:
+browser_signature_banned". Every remote request carries a real `User-Agent` for
+that reason, and an edge refusal is reported as such rather than as a bad token.
+A server that is simply switched off in `mcp.json` is labelled **disabled** with
+a Connect button, not shown as an error.
+
 Adding a third-party server by hand works the same way (the Add server form
 accepts anything from `npx -y @modelcontextprotocol/server-filesystem .` to a
 remote URL), but its guarantees are then that package's, not InfAgent's.

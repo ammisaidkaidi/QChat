@@ -538,14 +538,20 @@ describe('default mcp.json', () => {
       expect(blob).not.toMatch(/sk-|sbp_|nvapi-/);
     }
 
-    // Supabase ships disabled until a token exists, and read-only by default.
+    // Supabase is read-only by default and only reachable over https with a
+    // bearer token read from the environment — never a literal secret.
     const supabase = servers.find((server) => server.name === 'supabase');
-    expect(supabase?.enabled).toBe(false);
     expect(JSON.stringify(supabase)).toContain('read_only=true');
+    expect(JSON.stringify(supabase)).toContain('https://mcp.supabase.com/mcp');
+    // The catalogue never carries header values; the placeholder lives in the file.
+    expect(JSON.stringify(supabase)).not.toContain('Authorization');
+    // Writes stay behind an explicit flag, whatever `enabled` says: the URL is
+    // pinned to read_only=true and the manager refuses a config without it.
+    expect(JSON.stringify(supabase)).toMatch(/read_only=true/);
 
     // The token itself only ever appears as a placeholder in the config file.
     const raw = readFileSync(join(REPO, 'mcp.json'), 'utf8');
-    expect(raw).toMatch(/\$\{SUPABASE_ACCESS_TOKEN\}/);
+    expect(raw).toMatch(/Bearer \$\{SUPABASE_ACCESS_TOKEN\}/);
     expect(raw).not.toMatch(/sbp_[A-Za-z0-9]/);
   });
 });

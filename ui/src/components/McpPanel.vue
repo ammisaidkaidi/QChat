@@ -62,6 +62,15 @@ async function stop(name: string): Promise<void> {
   }
 }
 
+/** First sentence of a tool description, capped — long schemas stay in the tooltip. */
+function summary(text: string, limit = 140): string {
+  const flat = (text ?? '').replace(/\s+/g, ' ').trim();
+  if (flat.length <= limit) return flat;
+  const head = flat.slice(0, limit);
+  const cut = head.lastIndexOf(' ');
+  return `${cut > limit * 0.6 ? head.slice(0, cut) : head}…`;
+}
+
 async function remove(name: string): Promise<void> {
   if (!window.confirm(`Remove the MCP server "${name}" from mcp.json?`)) return;
   try {
@@ -163,10 +172,11 @@ onMounted(load);
                     'badge-success': server.state === 'ready',
                     'badge-warning': server.state === 'starting',
                     'badge-error': server.state === 'error',
-                    'badge-ghost': server.state === 'stopped',
+                    'badge-ghost': server.state === 'stopped' && server.enabled,
+                    'badge-neutral': server.state === 'stopped' && !server.enabled,
                   }"
                 >
-                  {{ server.state }}
+                  {{ server.state === 'stopped' && !server.enabled ? 'disabled' : server.state }}
                 </span>
                 <span v-if="server.serverInfo.name" class="badge badge-ghost badge-sm font-mono">
                   {{ server.serverInfo.name }} {{ server.serverInfo.version }}
@@ -200,14 +210,28 @@ onMounted(load);
             </div>
           </div>
 
+          <!-- A disabled server is not a failure: say what to press instead of
+               showing its configuration notes as if they were an error. -->
+          <p
+            v-if="server.state === 'stopped' && !server.enabled"
+            class="mt-2 rounded bg-base-200 p-2 text-[11px] opacity-70"
+          >
+            Switched off in <span class="font-mono">mcp.json</span> (no autostart). Press
+            <span class="font-semibold">Connect</span> to use it for this session, or set
+            <span class="font-mono">"enabled": true</span> to start it with the console.
+          </p>
+
           <p v-if="server.lastError" class="mt-2 rounded bg-error/10 p-2 text-[11px] text-error">
             {{ server.lastError }}
           </p>
 
           <ul v-if="server.tools.length > 0" class="mt-2 grid gap-1">
+            <!-- Remote servers describe a tool in kilobytes (Supabase's search_docs
+                 ships its whole GraphQL schema); show the gist, keep the rest in
+                 the tooltip. The model gets the same shortened text. -->
             <li v-for="tool in server.tools" :key="tool.name" class="text-[11px] opacity-80">
               <span class="font-mono">{{ server.name }}__{{ tool.name }}</span>
-              — {{ tool.description }}
+              — <span :title="tool.description">{{ summary(tool.description) }}</span>
             </li>
           </ul>
           <p v-else class="mt-2 text-[11px] opacity-50">No tools listed.</p>
