@@ -56,7 +56,8 @@ function sensitive(parts) {
     if (part === '.git') return '.git is not readable';
     if (SENSITIVE_DIRS.includes(part)) return `${part} holds credentials`;
     if (SENSITIVE_NAMES.includes(part)) return `${part} holds credentials`;
-    if (SENSITIVE_SUFFIXES.some((suffix) => part.endsWith(suffix))) return `${part} looks like a key`;
+    if (SENSITIVE_SUFFIXES.some((suffix) => part.endsWith(suffix)))
+      return `${part} looks like a key`;
     if (/^\.env(\.|$)/.test(part)) return `${part} holds credentials`;
   }
   const joined = lower.join('/');
@@ -66,8 +67,21 @@ function sensitive(parts) {
   return null;
 }
 
+const FOLD_CASE = process.platform === 'win32';
+
+function fold(path) {
+  return FOLD_CASE ? path.toLowerCase() : path;
+}
+
+/**
+ * Is `child` inside `parent`? Windows compares paths case-insensitively — a
+ * plain `startsWith` would refuse `D:\App\scripts` against the root
+ * `d:\app\scripts`.
+ */
 function inside(child, parent) {
-  return child === parent || child.startsWith(parent.endsWith(sep) ? parent : `${parent}${sep}`);
+  const lower = fold(parent.endsWith(sep) ? parent : `${parent}${sep}`);
+  const self = fold(child);
+  return self === fold(parent) || self.startsWith(lower);
 }
 
 /**
@@ -173,7 +187,10 @@ const BLOCKED_V4 = [
 
 function v4ToInt(address) {
   const parts = address.split('.').map(Number);
-  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) {
+  if (
+    parts.length !== 4 ||
+    parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)
+  ) {
     return null;
   }
   return ((parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3]) >>> 0;
@@ -299,7 +316,10 @@ export class UrlPolicy {
         const records = await dns.lookup(hostname, { all: true, verbatim: true });
         addresses = [...new Set(records.map((record) => record.address))];
       } catch (error) {
-        throw new PolicyError(`Could not resolve ${hostname}: ${error.code ?? error.message}`, 'dns');
+        throw new PolicyError(
+          `Could not resolve ${hostname}: ${error.code ?? error.message}`,
+          'dns',
+        );
       }
     }
 

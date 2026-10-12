@@ -441,6 +441,14 @@ newer TypeScript. Run `npm run ui:install` (or plain `npm install` — the root
 `postinstall` does it) and build again; `ui`'s own `prebuild` step now checks the
 toolchain first and prints that sentence instead of a stack trace.
 
+**The console says "The Vue interface has not been built yet" on Windows, however
+often you build.** That was a Windows-only path bug: the server derived `ui/dist`
+from a URL pathname, which on Windows is `/D:/dev/app/ui/dist`, and `path.resolve`
+then made `D:\D:\dev\app\ui\dist` — a path that never exists. It now goes
+through `fileURLToPath`, so the same clone serves the interface on Windows, macOS
+and Linux. Update your checkout if you still see it; `tests/platform.test.ts`
+guards the resolution and the request path (percent-encoded `..` included).
+
 **`npm run ui:build` fails with `Could not resolve entry module "#/index.html"`,**
 or Vite warns that the project root contains `#`. Something in the script is a
 shell comment: npm runs scripts through `sh` on Linux and macOS but through

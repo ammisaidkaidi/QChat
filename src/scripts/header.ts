@@ -15,6 +15,8 @@
  *     Use this script when the user greets someone.
  *     Call it with {"name": "<person>"} and read result.message.
  */
+import process from 'node:process';
+
 import type { ScriptLanguage, ScriptMeta, ScriptParam } from './types.js';
 
 export const HEADER_VERSION = 'infagent-script/v1';
@@ -181,11 +183,14 @@ export function parseHeader(source: string, language: ScriptLanguage, name: stri
   return { meta, found, bodyStart: end + 1 };
 }
 
+/** What the usage line should tell a reader to type: Windows has no `python3`. */
+const PYTHON_LABEL = process.platform === 'win32' ? 'python' : 'python3';
+
 export function defaultUsage(name: string, language: ScriptLanguage): string {
   const payload = '\'{"example":true}\'';
   return language === 'js'
     ? `node scripts/${name}.js ${payload}`
-    : `python3 scripts/${name}.py ${payload}`;
+    : `${PYTHON_LABEL} scripts/${name}.py ${payload}`;
 }
 
 export function defaultAgentPrompt(

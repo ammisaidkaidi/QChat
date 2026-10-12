@@ -7,6 +7,7 @@
  * hard timeout kills runaway scripts.
  */
 import { spawn, spawnSync } from 'node:child_process';
+import { relative } from 'node:path';
 import process from 'node:process';
 /**
  * Candidate Python interpreters, in order of preference.
@@ -49,10 +50,14 @@ export function interpreterFor(language) {
 }
 export function commandLabel(language, file, args) {
     const payload = JSON.stringify(args);
-    const relative = file.replace(`${process.cwd()}/`, '');
+    // `path.relative` rather than replacing `${cwd}/`: Windows uses `\` as its
+    // separator, so the replacement never matched and the label printed the whole
+    // absolute path.
+    const shown = relative(process.cwd(), file);
+    const label = shown && !shown.startsWith('..') ? shown : file;
     return language === 'js'
-        ? `node ${relative} '${payload}'`
-        : `${interpreterFor('py')} ${relative} '${payload}'`;
+        ? `node ${label} '${payload}'`
+        : `${interpreterFor('py')} ${label} '${payload}'`;
 }
 function parseEnvelope(stdout) {
     const trimmed = stdout.trim();

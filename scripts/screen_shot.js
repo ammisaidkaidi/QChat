@@ -10,21 +10,24 @@
  *   Use this script when: the user asks to take, capture or save a screenshot of the screen (or of a web page), or wants a picture of the running InfAgent interface.
  *   Call it with JSON arguments: { "url": <string>, "out": <string>, "name": <string>, "keep": <number> }.
  *   It prints a single JSON envelope on stdout: { "ok": true, "result": { "file", "backend", "width", "height", "bytes" } }.
- *   `backend` says how the picture was taken: x11 (import -window root), wayland (grim), xvfb (virtual display), or web (headless browser of `url`).
+ *   `backend` says how the picture was taken: x11 (scrot/import), wayland (grim), win32 (PowerShell), xvfb (virtual display), or web (headless browser of `url`).
  *   On failure it prints { "ok": false, "error": "..." } and exits non-zero — read `error` before retrying: no display usually means you must pass a `url`.
  *   Never guess a different name: the script is registered as "screen_shot".
  */
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync } from 'node:fs';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import process from 'node:process';
 
 const PROJECT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
+/** Is this executable on PATH? `sh` does not exist on Windows, so ask `where`. */
 function have(binary) {
+  const [command, args] =
+    process.platform === 'win32' ? ['where', [binary]] : ['sh', ['-c', `command -v ${binary}`]];
   try {
-    execFileSync('sh', ['-c', `command -v ${binary}`], { stdio: 'ignore' });
+    execFileSync(command, args, { stdio: 'ignore' });
     return true;
   } catch {
     return false;
@@ -79,8 +82,33 @@ function prune(folder, keep) {
   return removed;
 }
 
-/** Capture the real desktop: Wayland first, then scrot, then ImageMagick. */
+/**
+ * Windows has no X11: PowerShell borrows System.Drawing and grabs the primary
+ * screen, which needs no extra install.
+ */
+function captureWindows(file) {
+  const target = file.replace(/'/g, "''");
+  const script = [
+    'Add-Type -AssemblyName System.Windows.Forms,System.Drawing',
+    '$b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds',
+    '$bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height',
+    '$g = [System.Drawing.Graphics]::FromImage($bmp)',
+    '$g.CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)',
+    `$bmp.Save('${target}', [System.Drawing.Imaging.ImageFormat]::Png)`,
+    '$g.Dispose()',
+    '$bmp.Dispose()',
+  ].join('; ');
+
+  execFileSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', script], {
+    stdio: 'ignore',
+  });
+  return 'win32';
+}
+
+/** Capture the real desktop: Windows first, then Wayland, scrot, ImageMagick. */
 function captureScreen(file, display) {
+  if (process.platform === 'win32') return captureWindows(file);
+
   const env = display ? { ...process.env, DISPLAY: display } : process.env;
 
   if (process.env['WAYLAND_DISPLAY'] && have('grim')) {
@@ -100,7 +128,9 @@ function captureScreen(file, display) {
     return 'x11';
   }
 
-  throw new Error('No screen capture tool found (install scrot, grim or ImageMagick).');
+  throw new Error(
+    'No screen capture tool found (Linux: install scrot, grim or ImageMagick; Windows: PowerShell must be on PATH).',
+  );
 }
 
 /** No display? Xvfb gives one to capture from. */
@@ -172,7 +202,8 @@ export async function run(args = {}) {
 
   return {
     file,
-    relativePath: file.replace(`${PROJECT_ROOT}/`, ''),
+    // `path.relative`, because a string replace never matched on Windows.
+    relativePath: relative(PROJECT_ROOT, file),
     backend,
     source: url ?? (backend === 'xvfb' ? 'virtual display (no real screen attached)' : 'screen'),
     ...pngSize(file),

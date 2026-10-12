@@ -21,6 +21,23 @@ export interface ServerOptions {
     port?: number;
     host?: string;
 }
+/**
+ * Where the built interface lives, derived from this module's own URL.
+ *
+ * `new URL(...).pathname` looks right and is wrong outside POSIX: on Windows it
+ * returns `/D:/dev/app/ui/dist` — a leading slash with the drive letter inside —
+ * and `path.resolve` then makes `D:\D:\dev\app\ui\dist`, a path that never
+ * exists. The server answered "the Vue interface has not been built yet"
+ * however often you built it. `fileURLToPath` is the conversion Node provides
+ * for exactly this, and it decodes `%20` and friends on the way.
+ */
+export declare function resolveUiDir(moduleUrl: string): string;
+/**
+ * Which file answers a request path: the real file when it lives inside the
+ * built interface, otherwise `index.html` so the app can route client-side.
+ * `..` — plain or percent-encoded — never escapes `uiDir`, on either platform.
+ */
+export declare function staticFileFor(uiDir: string, pathname: string): string;
 export declare function createServer(options?: ServerOptions): Server;
 export interface RunningServer {
     server: Server;

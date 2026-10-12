@@ -1,3 +1,21 @@
+/**
+ * The script header contract.
+ *
+ * Every script starts with a header block that doubles as (a) a docstring in
+ * the target language and (b) a machine-readable prompt for an AI agent:
+ *
+ *   @infagent-script v1
+ *   @name hello
+ *   @language js
+ *   @description Say hello to someone.
+ *   @callback run({ name }) -> { ok, result }
+ *   @usage node scripts/hello.js '{"name":"World"}'
+ *   @params [{"name":"name","type":"string","required":false}]
+ *   @agent
+ *     Use this script when the user greets someone.
+ *     Call it with {"name": "<person>"} and read result.message.
+ */
+import process from 'node:process';
 export const HEADER_VERSION = 'infagent-script/v1';
 const JS_OPEN = '/**';
 const JS_CLOSE = ' */';
@@ -144,11 +162,13 @@ export function parseHeader(source, language, name) {
     };
     return { meta, found, bodyStart: end + 1 };
 }
+/** What the usage line should tell a reader to type: Windows has no `python3`. */
+const PYTHON_LABEL = process.platform === 'win32' ? 'python' : 'python3';
 export function defaultUsage(name, language) {
     const payload = '\'{"example":true}\'';
     return language === 'js'
         ? `node scripts/${name}.js ${payload}`
-        : `python3 scripts/${name}.py ${payload}`;
+        : `${PYTHON_LABEL} scripts/${name}.py ${payload}`;
 }
 export function defaultAgentPrompt(name, description, params) {
     const args = params

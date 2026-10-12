@@ -1,20 +1,3 @@
-/**
- * The script header contract.
- *
- * Every script starts with a header block that doubles as (a) a docstring in
- * the target language and (b) a machine-readable prompt for an AI agent:
- *
- *   @infagent-script v1
- *   @name hello
- *   @language js
- *   @description Say hello to someone.
- *   @callback run({ name }) -> { ok, result }
- *   @usage node scripts/hello.js '{"name":"World"}'
- *   @params [{"name":"name","type":"string","required":false}]
- *   @agent
- *     Use this script when the user greets someone.
- *     Call it with {"name": "<person>"} and read result.message.
- */
 import type { ScriptLanguage, ScriptMeta, ScriptParam } from './types.js';
 export declare const HEADER_VERSION = "infagent-script/v1";
 declare const ORDERED_KEYS: readonly ["version", "name", "language", "description", "callback", "usage", "params"];

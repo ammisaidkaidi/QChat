@@ -15,10 +15,14 @@
  * Screenshots and a request log land in ./preview.
  */
 import { mkdirSync, writeFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import { chromium } from 'playwright';
 
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const BASE = process.env['BASE'] ?? 'http://127.0.0.1:8787';
-const OUT = process.env['OUT'] ?? '/home/user/preview';
+const OUT = process.env['OUT'] ?? join(ROOT, 'preview');
 mkdirSync(OUT, { recursive: true });
 
 const log = [];

@@ -7,7 +7,8 @@
  */
 import { createServer as createHttpServer } from 'node:http';
 import { existsSync, readFileSync, statSync } from 'node:fs';
-import { extname, join, normalize, resolve } from 'node:path';
+import { extname, isAbsolute, join, relative, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import process from 'node:process';
 import { ScriptError, ScriptRegistry } from '../scripts/registry.js';
 import { webFetch, webSearch, WebError } from '../capabilities/search.js';
@@ -62,15 +63,52 @@ async function readBody(req) {
         throw new ScriptError('io', 'Body is not valid JSON.');
     }
 }
+/**
+ * Where the built interface lives, derived from this module's own URL.
+ *
+ * `new URL(...).pathname` looks right and is wrong outside POSIX: on Windows it
+ * returns `/D:/dev/app/ui/dist` — a leading slash with the drive letter inside —
+ * and `path.resolve` then makes `D:\D:\dev\app\ui\dist`, a path that never
+ * exists. The server answered "the Vue interface has not been built yet"
+ * however often you built it. `fileURLToPath` is the conversion Node provides
+ * for exactly this, and it decodes `%20` and friends on the way.
+ */
+export function resolveUiDir(moduleUrl) {
+    return resolve(fileURLToPath(new URL('../../ui/dist/', moduleUrl)));
+}
 function defaultUiDir() {
     // src/server/*.ts and dist/server/*.js are both two levels below the repo root.
-    return resolve(new URL('../../ui/dist', import.meta.url).pathname);
+    return resolveUiDir(import.meta.url);
+}
+/**
+ * Which file answers a request path: the real file when it lives inside the
+ * built interface, otherwise `index.html` so the app can route client-side.
+ * `..` — plain or percent-encoded — never escapes `uiDir`, on either platform.
+ */
+export function staticFileFor(uiDir, pathname) {
+    const index = join(uiDir, 'index.html');
+    let decoded = pathname;
+    try {
+        decoded = decodeURIComponent(pathname);
+    }
+    catch {
+        // Malformed escapes: fall back to the raw path instead of guessing.
+    }
+    const candidate = join(uiDir, decoded.replace(/^[/\\]+/, ''));
+    const inside = relative(uiDir, candidate);
+    if (inside.startsWith('..') || isAbsolute(inside))
+        return index;
+    try {
+        if (existsSync(candidate) && !statSync(candidate).isDirectory())
+            return candidate;
+    }
+    catch {
+        /* unreadable file: treat it as missing */
+    }
+    return index;
 }
 function serveStatic(res, uiDir, pathname) {
-    const safePath = normalize(pathname).replace(/^(\.\.[/\\])+/, '');
-    let file = join(uiDir, safePath);
-    if (!existsSync(file) || statSync(file).isDirectory())
-        file = join(uiDir, 'index.html');
+    const file = staticFileFor(uiDir, pathname);
     if (!existsSync(file)) {
         res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
         res.end(`<!doctype html><meta charset="utf-8"><title>InfAgent</title>

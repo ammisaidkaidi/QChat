@@ -19,13 +19,14 @@
       "description": "Hardened fetch server \u2014 https only, SSRF-blocked, size and time capped. Add hosts to allow_private for internal endpoints."
     },
     "sqlite": {
-      "command": "python3",
+      "command": "node",
       "args": [
+        "mcp/servers/python.mjs",
         "mcp/servers/sqlite.py",
         "{\"databases\":{\"demo\":\"./mcp/data/demo.db\"},\"read_only\":true,\"max_rows\":200,\"max_bytes\":262144,\"timeout_ms\":5000}"
       ],
       "enabled": true,
-      "description": "Hardened SQLite server \u2014 read-only, one statement per call, bound parameters, row/time caps. Point the databases map at your own files."
+      "description": "Hardened SQLite server \u2014 read-only, one statement per call, bound parameters, row/time caps. Starts through mcp/servers/python.mjs so any interpreter name (python3, python, py) works. Point the databases map at your own files."
     },
     "supabase": {
       "transport": "http",
@@ -38,9 +39,7 @@
     },
     "example": {
       "command": "node",
-      "args": [
-        "mcp/example-server.mjs"
-      ],
+      "args": ["mcp/example-server.mjs"],
       "enabled": true,
       "description": "Bundled demo server (echo, add, now) \u2014 replace or remove it."
     }
