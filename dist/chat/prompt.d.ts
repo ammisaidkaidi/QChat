@@ -102,6 +102,16 @@ export declare function filteredCount(result: unknown): number;
  * `listScripts`, producing a vague answer. The engine uses this to nudge it once.
  */
 export declare function asksAboutToolbox(text: string): boolean;
+/**
+ * Which inventory a question about the agent's own belongings is about:
+ * `scripts` for the toolbox (scripts/tools/functions/callbacks), `skills` for
+ * the skill library, `null` when it is not such a question at all.
+ *
+ * Both listings are declared in the system prompt, so a small model will answer
+ * from them and get the count or the names wrong. The caller turns this into a
+ * real call to the registry, which is the authority.
+ */
+export declare function askedListing(text: string): 'scripts' | 'skills' | null;
 export declare function stripJsonBlobs(text: string): string;
 /**
  * Instruction appended after tool results are supplied.

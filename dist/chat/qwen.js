@@ -20,8 +20,8 @@ import { ScriptRegistry } from '../scripts/registry.js';
 import { SkillRegistry } from '../skills/registry.js';
 import { DEFAULT_MODELS_DIR, ModelStore } from './modelStore.js';
 import { SystemPromptStore } from './prompts.js';
-import { asksAboutToolbox, buildSystemPrompt, finalAnswerPrompt, formatToolResult, guardToolAnswer, progressPrompt, readableResult, stripJsonBlobs, toolResultPrompt, toolboxNames, unusedRequestPaths, } from './prompt.js';
-import { MAX_REPAIRS, ProtocolStream, TOOL_CALL_EXAMPLE, envelopeGrammarSchema, envelopeRepairPrompt, finalOnlyGrammarSchema, grammarEnabled, parseEnvelope, resolveProtocolMode, resultEnvelope, stepBudget, } from './protocol.js';
+import { askedListing, buildSystemPrompt, finalAnswerPrompt, formatToolResult, guardToolAnswer, progressPrompt, readableResult, stripJsonBlobs, toolResultPrompt, toolboxNames, unusedRequestPaths, } from './prompt.js';
+import { MAX_REPAIRS, ProtocolStream, envelopeGrammarSchema, envelopeRepairPrompt, finalOnlyGrammarSchema, grammarEnabled, parseEnvelope, resolveProtocolMode, resultEnvelope, stepBudget, } from './protocol.js';
 import { OutputSplitter } from './splitter.js';
 import { dispatchTool, extractToolCalls } from './tools.js';
 /**
@@ -726,24 +726,28 @@ export class QwenEngine {
             // registry, yet the model sometimes replies from the tool listing in its
             // own prompt ("I have scripts available."). Nudge it once instead of
             // showing that vague answer.
-            if (useTools && calls.length === 0 && asksAboutToolbox(lastUser.content)) {
+            // Which registry the question is about — scripts/tools or the skill
+            // library — or `null` when it is not about the agent's own inventory.
+            const wanted = useTools ? askedListing(lastUser.content) : null;
+            const wantedTool = wanted === 'skills' ? 'listSkills' : 'listScripts';
+            if (wanted && calls.length === 0) {
                 if (process.env['INFAGENT_CHAT_DEBUG'] === '1')
-                    process.stderr.write('[chat] toolbox question without a call, retrying\n');
+                    process.stderr.write(`[chat] ${wanted} question without a call, retrying\n`);
                 yield { type: 'reset' };
                 visibleText = '';
-                pass = yield* generate(`${prompt}\n\nCall the listScripts function now. Reply with exactly this and nothing else:\n` +
+                pass = yield* generate(`${prompt}\n\nCall the ${wantedTool} function now. Reply with exactly this and nothing else:\n` +
                     (strict
-                        ? TOOL_CALL_EXAMPLE
-                        : '<tool_call>\n{"name": "listScripts", "arguments": {}}\n</tool_call>'));
+                        ? `{"type":"tool_call","calls":[{"name":"${wantedTool}","arguments":{}}]}`
+                        : `<tool_call>\n{"name": "${wantedTool}", "arguments": {}}\n</tool_call>`));
                 calls = pass.calls;
             }
             // The model answered a toolbox question twice without calling the tool.
             // The registry knows the answer, so supply it rather than showing a vague
             // sentence; the wording still comes from the model below.
-            if (useTools && calls.length === 0 && asksAboutToolbox(lastUser.content)) {
+            if (wanted && calls.length === 0) {
                 if (process.env['INFAGENT_CHAT_DEBUG'] === '1')
-                    process.stderr.write('[chat] running listScripts for an ungrounded answer\n');
-                calls = [{ name: 'listScripts', args: {} }];
+                    process.stderr.write(`[chat] running ${wantedTool} for an ungrounded answer\n`);
+                calls = [{ name: wantedTool, args: {} }];
             }
             // The envelope's `content` is the answer; what streamed can differ after
             // a repair, so the parsed text is what the user is left with.

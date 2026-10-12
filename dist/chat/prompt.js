@@ -99,7 +99,7 @@ export function toolSchemas(records) {
 }
 export const TOOL_PROTOCOL = [
     'If a function matches the request, call it instead of guessing from memory.',
-    'Never answer a question about the available scripts, tools or your own capabilities from this listing: call listScripts and use its output.',
+    'Never answer a question about the available scripts, tools or skills from this listing: call listScripts (scripts, tools) or listSkills (skills) and use its output.',
     'For general knowledge, chit-chat, or anything no function covers, answer directly without calling one.',
     'A tool result is then supplied to you: answer the user in one short sentence of plain language, without repeating the JSON.',
 ].join('\n');
@@ -416,8 +416,8 @@ export function fallbackAnswer(toolName, result) {
     if (Array.isArray(value) &&
         value.length > 0 &&
         value.every((item) => typeof item === 'object' && item !== null)) {
-        const items = value
-            .slice(0, 6)
+        const shown = value.slice(0, 6);
+        const items = shown
             .map((item) => {
             const record = item;
             const name = typeof record['name'] === 'string' ? record['name'] : undefined;
@@ -427,8 +427,12 @@ export function fallbackAnswer(toolName, result) {
             return description ? `${name} — ${description}` : name;
         })
             .filter(Boolean);
-        if (items.length > 0)
-            return `${toolName}: ${items.join('; ')}`;
+        if (items.length > 0) {
+            // A list longer than what fits says how long it is — six names out of
+            // twelve must never read as the whole library.
+            const more = value.length > shown.length ? `${value.length} items: ` : '';
+            return `${toolName}: ${more}${items.join('; ')}${value.length > shown.length ? '…' : ''}`;
+        }
     }
     const flat = flatten(value).split('\n').filter(Boolean).slice(0, 4).join(' · ');
     const filtered = filteredCount(value);
@@ -453,6 +457,18 @@ export function filteredCount(result) {
  * `listScripts`, producing a vague answer. The engine uses this to nudge it once.
  */
 export function asksAboutToolbox(text) {
+    return askedListing(text) !== null;
+}
+/**
+ * Which inventory a question about the agent's own belongings is about:
+ * `scripts` for the toolbox (scripts/tools/functions/callbacks), `skills` for
+ * the skill library, `null` when it is not such a question at all.
+ *
+ * Both listings are declared in the system prompt, so a small model will answer
+ * from them and get the count or the names wrong. The caller turns this into a
+ * real call to the registry, which is the authority.
+ */
+export function askedListing(text) {
     const question = text.toLowerCase();
     const noun = '(scripts?|tools?|functions?|callbacks?)';
     // A question is only about *this* agent's toolbox when it points at the agent
@@ -469,10 +485,25 @@ export function asksAboutToolbox(text) {
     // with "there are no scripts": the registry knows, so the engine asks it.
     const bare = question.replace(/[?!.,\s]+$/u, '').trim();
     const bareCommand = /^(ls|list)[\s_-]*(all[\s_-]*)?(my[\s_-]*)?scripts?$/.test(bare);
-    return (bareCommand ||
+    const asksScripts = bareCommand ||
         ((asksWhich || availability || hasAny) && directed) ||
         /\bwhat can you do\b/.test(question) ||
-        /\byour\s+(capabilit\w*|tools|scripts)\b/.test(question));
+        /\byour\s+(capabilit\w*|tools|scripts)\b/.test(question);
+    if (asksScripts)
+        return 'scripts';
+    // The same question shapes, asked about the skill library. A definitional
+    // question ("what are skills?") stays a general question: it needs the hint
+    // that the user means *this* agent's skills.
+    const skill = '(skills?)';
+    const skillBare = /^(ls|list|show)[\s_-]*(all[\s_-]*)?(my[\s_-]*)?skills?$/.test(bare);
+    const skillWhich = new RegExp(`\\b(which|what|how many|list|show|name|tell me)\\b(?:\\s+\\w+){0,3}\\s+${skill}\\b`).test(question);
+    const skillAvailability = new RegExp(`\\b${skill}\\s+(are|is)\\s+(available|installed|there|defined)\\b`).test(question);
+    const skillAny = new RegExp(`\\b(any|some)\\s+${skill}\\b`).test(question);
+    const skillDirected = /\b(your|you|me|my|available|installed|defined)\b/.test(question);
+    if (skillBare || ((skillWhich || skillAvailability || skillAny) && skillDirected)) {
+        return 'skills';
+    }
+    return null;
 }
 export function stripJsonBlobs(text) {
     return text
@@ -687,7 +718,7 @@ const NUMBER_WORDS = {
 /** Every count the reply states, in the order they appear ("4 files", "two rows"). */
 export function statedCounts(answer) {
     const found = [];
-    const pattern = /\b(\d{1,3}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+(scripts?|tools?|files?|items?|results?|records?|entries|rows?|matches)\b/g;
+    const pattern = /\b(\d{1,3}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+(scripts?|tools?|skills?|files?|items?|results?|records?|entries|rows?|matches)\b/g;
     for (const match of answer.toLowerCase().matchAll(pattern)) {
         const value = NUMBER_WORDS[match[1] ?? ''] ?? Number(match[1]);
         if (Number.isFinite(value))

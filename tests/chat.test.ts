@@ -10,6 +10,7 @@ import {
 } from '../src/chat/protocol.js';
 import {
   answerUsesResult,
+  askedListing,
   asksAboutToolbox,
   buildSystemPrompt,
   fallbackAnswer,
@@ -260,6 +261,43 @@ describe('chat prompt styles', () => {
     expect(prompt).toContain('[BEGIN OF AVAILABLE_TOOLS]');
     expect(prompt).toContain('[END OF AVAILABLE_TOOLS]');
     expect(prompt).toContain('single JSON array');
+  });
+});
+
+describe('askedListing', () => {
+  it('points a skills question at the skill library', () => {
+    for (const question of [
+      'Which skills do you have?',
+      'what skills are available',
+      'List my skills',
+      'listskills',
+      'list skills',
+      'tell me your skills',
+      'do you have any skills installed?',
+    ]) {
+      expect(askedListing(question), question).toBe('skills');
+    }
+  });
+
+  it('keeps scripts questions on the toolbox', () => {
+    for (const question of [
+      'Which scripts do you have?',
+      'what tools are available',
+      'ls scripts',
+    ]) {
+      expect(askedListing(question), question).toBe('scripts');
+    }
+  });
+
+  it('leaves general questions alone, skills included', () => {
+    for (const question of [
+      'What are skills in an AI agent?',
+      'How do I write a Python function?',
+      'What is a function call in an AI agent?',
+      'Explain what a callback is.',
+    ]) {
+      expect(askedListing(question), question).toBeNull();
+    }
   });
 });
 

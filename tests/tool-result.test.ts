@@ -373,3 +373,29 @@ describe('Test F — the reported request, through the real registry', () => {
     expect(fallbackAnswer('notATool', { ok: false, error: failing.error })).toMatch(/failed:/);
   });
 });
+
+describe('a stated count of skills', () => {
+  it('is read like any other count', () => {
+    const skills = Array.from({ length: 12 }, (_, index) => ({ name: `skill-${index + 1}` }));
+    const guard = guardToolAnswer('You have three skills: skill-1, skill-2.', {
+      name: 'listSkills',
+      ok: true,
+      result: skills,
+    });
+    expect(guard.kind).toBe('replace');
+    // The facts line says how long the library is, even though it can only show
+    // the first few names.
+    expect(guard.kind === 'replace' && guard.text).toContain('12 items');
+  });
+
+  it('lets the right count stand', () => {
+    const skills = Array.from({ length: 12 }, (_, index) => ({ name: `skill-${index + 1}` }));
+    expect(
+      guardToolAnswer('You have 12 skills, listed above.', {
+        name: 'listSkills',
+        ok: true,
+        result: skills,
+      }).kind,
+    ).toBe('none');
+  });
+});
