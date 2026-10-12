@@ -17,20 +17,23 @@ plus a **Vue interface** with two tabs: a chat agent running **Qwen3-0.6B locall
 ## Quick start
 
 ```bash
+# 1. install everything (the root install pulls in ui/ as well)
 npm install
 
-# 1. install everything: the root package installs ui/ as well
-npm install
-# (on a machine where that step was skipped: npm run ui:install)
+# 2. build and run the console (API + interface on one port)
+npm run ui:build         # interface → ui/dist
+npm run build            # TypeScript → dist/
+npm run serve            # → http://localhost:8787
 
-# 2. run the console (API + interface on one port)
-npm run ui:build        # build the Vue app into ui/dist
-npm run build           # compile the TypeScript to dist/
-npm run serve           # → http://localhost:8787
-
-# 2. chat tab: download the model once (~380 MB), then talk to it
-npm run chat:model      # or click "Download model" in the Chat tab
+# 3. chat tab: download the model once (~380 MB), then talk to it
+npm run chat:model       # or click "Download model" in the Chat tab
 npm run chat:ask -- "Use a tool to greet Amina"
+```
+
+Tip for Windows: put trailing explanations **above** a command, never after it on
+the same line — `cmd.exe` has no `#` comment and would pass the words to the
+program (this bites in `package.json` scripts too, see the troubleshooting notes
+below).
 
 # 3. or drive the scripts from the terminal
 npx tsx src/cli.ts scripts list
@@ -437,6 +440,16 @@ is often an old 1.x that patches the TypeScript compiler by regex and breaks on
 newer TypeScript. Run `npm run ui:install` (or plain `npm install` — the root
 `postinstall` does it) and build again; `ui`'s own `prebuild` step now checks the
 toolchain first and prints that sentence instead of a stack trace.
+
+**`npm run ui:build` fails with `Could not resolve entry module "#/index.html"`,**
+or Vite warns that the project root contains `#`. Something in the script is a
+shell comment: npm runs scripts through `sh` on Linux and macOS but through
+`cmd.exe` on Windows, and `cmd.exe` has no `#` comment, so
+`vite build # build the interface` hands `#`, `build`, … to Vite and `#` becomes
+the project root. Delete everything from `#` to the end of the line in
+`scripts` — in `package.json`, `ui/package.json` and any script you add — and
+keep the explanation in the docs instead. `tests/portability.test.ts` fails the
+suite if shell-only syntax creeps back into a script.
 
 **`Missing script: "ui:install"`.** Scripts resolve against the `package.json` of
 the current folder — `ui:install`, `ui:build` and the rest live in the *root*
