@@ -69,6 +69,7 @@ const draft = ref('');
 const busy = ref(false);
 const downloading = ref(false);
 const showSettings = ref(false);
+const settingsDialog = ref<HTMLDialogElement | null>(null);
 /** Thinking styles offered by the Prompts tab; the selected one shapes every turn. */
 const styles = ref<{ name: string; description: string; prompt: string }[]>([]);
 const defaultStyleName = ref('');
@@ -627,6 +628,77 @@ async function selectLocalModel(id: string): Promise<void> {
 
 async function selectModel(event: Event): Promise<void> {
   await selectLocalModel((event.target as HTMLSelectElement).value);
+}
+
+async function selectModelSource(source: 'local' | 'cloud'): Promise<void> {
+  if (source === settings.modelSource) return;
+
+  if (source === 'local') {
+    const id =
+      catalog.value?.models.find((model) => model.settings.id === settings.modelId)?.settings.id ||
+      catalog.value?.defaultActive ||
+      catalog.value?.active ||
+      catalog.value?.models[0]?.settings.id ||
+      '';
+    if (id) await selectLocalModel(id);
+    else {
+      settings.modelSource = 'local';
+      settings.providerId = '';
+      settings.modelId = '';
+      mcpPicker.value = false;
+    }
+    return;
+  }
+
+  if (!cloudProvidersReady.value) await loadCloudProviders();
+  const provider =
+    cloudProviders.value.find((candidate) => candidate.id === settings.providerId) ??
+    cloudProviders.value.find(
+      (candidate) => candidate.keyConfigured && candidate.models.length > 0,
+    ) ??
+    cloudProviders.value[0];
+  settings.modelSource = 'cloud';
+  mcpPicker.value = false;
+  settings.providerId = provider?.id ?? '';
+  settings.modelId =
+    provider?.models.find((model) => model.id === settings.modelId)?.id ??
+    provider?.models[0]?.id ??
+    '';
+}
+
+function selectCloudProviderForSettings(event: Event): void {
+  const providerId = (event.target as HTMLSelectElement).value;
+  const provider = cloudProviders.value.find((candidate) => candidate.id === providerId);
+  settings.modelSource = 'cloud';
+  settings.providerId = provider?.id ?? '';
+  settings.modelId =
+    provider?.models.find((model) => model.id === settings.modelId)?.id ??
+    provider?.models[0]?.id ??
+    '';
+  mcpPicker.value = false;
+}
+
+function selectCloudModelForSettings(event: Event): void {
+  const provider = selectedCloudProvider.value;
+  if (provider) selectCloudModel(provider, (event.target as HTMLSelectElement).value);
+}
+
+async function openSettings(): Promise<void> {
+  showSettings.value = true;
+  await nextTick();
+  const dialog = settingsDialog.value;
+  if (dialog && !dialog.open) dialog.showModal();
+  if (!cloudProvidersReady.value) void loadCloudProviders();
+}
+
+function closeSettings(): void {
+  const dialog = settingsDialog.value;
+  if (dialog?.open) dialog.close();
+  showSettings.value = false;
+}
+
+function onSettingsDialogClose(): void {
+  showSettings.value = false;
 }
 
 function selectCloudModel(provider: CloudProvider, modelId: string): void {
@@ -1191,32 +1263,11 @@ onMounted(async () => {
           <header class="flex flex-wrap items-center justify-between gap-3">
             <div class="flex items-center gap-3">
               <span class="grid h-10 w-10 place-items-center rounded-xl bg-primary/15 text-lg"
-                >🤖</span
+                >💬</span
               >
               <div>
-                <h2 class="card-title text-base">
-                  {{
-                    settings.modelSource === 'cloud'
-                      ? (selectedCloudModel?.name ?? settings.modelId ?? 'Cloud model')
-                      : (status?.modelName ?? 'Qwen3 0.6B (Q4_K_M)')
-                  }}
-                  <span
-                    v-if="settings.modelSource === 'local' && status?.quantization"
-                    class="badge badge-sm badge-ghost font-mono"
-                    >{{ status.quantization }}</span
-                  >
-                </h2>
-                <p class="text-[11px] opacity-70">
-                  <template v-if="settings.modelSource === 'cloud'">
-                    cloud · {{ selectedCloudProvider?.name ?? 'provider unavailable' }} · hosted API
-                  </template>
-                  <template v-else>
-                    local · CPU {{ status?.threads ?? config?.threads ?? 2 }} threads · ctx
-                    {{ status?.contextSize ?? config?.contextSize ?? 0 }} · RAM
-                    {{ status?.ramUsedMb ?? 0 }} MB
-                  </template>
-                </p>
-                <p class="truncate text-[10px] text-primary/80">
+                <h2 class="card-title text-base">Chat</h2>
+                <p class="truncate text-[11px] text-primary/80">
                   {{
                     activeChat
                       ? `Chat: ${activeChat.title}`
@@ -1228,260 +1279,415 @@ onMounted(async () => {
               </div>
             </div>
 
-            <div class="flex flex-wrap items-center gap-2">
-              <select
-                v-if="settings.modelSource === 'local' && catalog && catalog.models.length > 0"
-                class="select select-bordered select-xs max-w-[13rem] font-mono"
-                :value="settings.modelId || catalog.active"
-                :disabled="switching || busy || !historyReady"
-                :title="activeModel?.settings.description ?? status?.description ?? ''"
-                aria-label="Active model"
-                @change="selectModel"
-              >
-                <option
-                  v-for="model in catalog.models"
-                  :key="model.settings.id"
-                  :value="model.settings.id"
-                >
-                  {{ model.settings.id }}{{ model.present ? '' : ' — needs download' }}
-                </option>
-              </select>
-
-              <select
-                v-if="styles.length > 0"
-                class="select select-bordered select-xs max-w-[12rem]"
-                :value="activeStyle"
-                :disabled="busy || !historyReady"
-                :title="
-                  styles.find((style) => style.name === activeStyle)?.description ??
-                  'How the model should think and answer'
-                "
-                aria-label="Thinking style"
-                @change="selectStyle"
-              >
-                <option value="">default style</option>
-                <option v-for="style in styles" :key="style.name" :value="style.name">
-                  🧠 {{ style.name }}
-                </option>
-              </select>
-
-              <label
-                v-if="settings.modelSource === 'local'"
-                class="flex items-center gap-1 text-[11px] text-base-content/70"
-                title="Tool steps one reply may take: several calls, their results, then the answer"
-              >
-                steps
-                <input
-                  v-model.number="settings.maxSteps"
-                  class="input input-bordered input-xs w-14 font-mono"
-                  type="number"
-                  min="1"
-                  max="12"
-                  step="1"
-                  :disabled="busy"
-                  aria-label="Max steps"
-                />
-              </label>
-
-              <span
-                v-if="settings.modelSource === 'local'"
-                class="badge badge-sm gap-1"
-                :class="{
-                  'badge-success': status?.state === 'ready',
-                  'badge-warning': status?.state === 'downloading',
-                  'badge-info': status?.state === 'loading',
-                  'badge-error': status?.state === 'error' || status?.state === 'unavailable',
-                  'badge-ghost': status?.state === 'absent',
-                }"
-              >
-                <span
-                  v-if="status?.state === 'loading' || status?.state === 'downloading'"
-                  class="loading loading-spinner loading-xs"
-                />
-                {{ stateLabel }}
-              </span>
-              <span
-                v-if="settings.modelSource === 'cloud'"
-                class="badge badge-sm"
-                :class="canChat ? 'badge-success' : 'badge-warning'"
-                data-testid="cloud-model-status"
-              >
-                {{ canChat ? 'provider configured' : 'model or key needed' }}
-              </span>
-
-              <button
-                v-if="
-                  settings.modelSource === 'local' &&
-                  (status?.state === 'absent' || (activeModel && !activeModel.present))
-                "
-                class="btn btn-primary btn-xs"
-                :disabled="downloading"
-                @click="download"
-              >
-                <span v-if="downloading" class="loading loading-spinner loading-xs" />
-                {{
-                  downloading
-                    ? 'Downloading'
-                    : `Download ${formatSize(activeModel?.sizeBytes ?? 0)}`
-                }}
-              </button>
-              <button
-                v-if="
-                  settings.modelSource === 'local' &&
-                  status?.modelPresent &&
-                  status?.state === 'ready'
-                "
-                class="btn btn-ghost btn-xs"
-                @click="unload"
-              >
-                Unload
-              </button>
-              <button class="btn btn-ghost btn-xs" @click="showPrompt = !showPrompt">Info</button>
-              <button
-                class="btn btn-xs"
-                :class="showSettings ? 'btn-primary' : 'btn-ghost border border-base-300'"
-                @click="showSettings = !showSettings"
-              >
-                Settings
+            <div class="flex items-center gap-2">
+              <button class="btn btn-ghost btn-xs" @click="showPrompt = !showPrompt">
+                {{ showPrompt ? 'Hide info' : 'Info' }}
               </button>
               <button class="btn btn-ghost btn-xs text-error" @click="clear">Clear</button>
             </div>
           </header>
 
-          <div
-            v-if="settings.modelSource === 'cloud' && historyReady && !canChat"
-            class="alert alert-warning py-2 text-xs"
-          >
-            <span>
-              This chat's cloud provider or model is unavailable. Open the model picker to choose
-              another model, or configure a provider under Config → Cloud AI providers.
-            </span>
-          </div>
-
-          <div
-            v-if="settings.modelSource === 'local' && status?.state === 'downloading'"
-            class="space-y-1"
-          >
-            <progress
-              class="progress progress-primary w-full"
-              :value="status.downloadProgress * 100"
-              max="100"
-            />
-            <p class="text-[11px] opacity-70">
-              {{ (status.downloadedBytes / 1048576).toFixed(1) }} MB of
-              {{ (status.downloadTotalBytes / 1048576).toFixed(1) }} MB — fetched once, kept in
-              {{ config?.modelsDir }}
-            </p>
-          </div>
-
-          <div
-            v-if="settings.modelSource === 'local' && status?.state === 'absent'"
-            class="alert py-2 text-xs"
-          >
-            <span>
-              {{ status?.modelName ?? 'This model' }} ({{
-                formatSize(activeModel?.sizeBytes ?? 0)
-              }}, GGUF {{ status?.quantization || 'quantized' }} from Hugging Face) is not on this
-              machine yet. Download it once — chat runs fully offline afterwards.
-            </span>
-          </div>
-
-          <div
-            v-if="
-              settings.modelSource === 'local' &&
-              (status?.state === 'unavailable' || status?.lastError)
-            "
-            class="alert alert-warning py-2 text-xs"
-          >
-            <span>{{
-              status?.lastError ??
-              'The local engine is unavailable. Run `npm install` to enable it.'
-            }}</span>
-          </div>
-
           <pre
             v-if="showPrompt"
             class="rounded-box bg-base-300/50 p-3 font-mono text-[11px] whitespace-pre-wrap"
             >{{ promptPreview() }}</pre>
+        </div>
+      </section>
 
-          <div
-            v-if="showSettings"
-            class="grid gap-3 rounded-box border border-base-300 p-3 sm:grid-cols-2"
-          >
-            <label class="form-control">
-              <span class="mb-1 flex items-center justify-between text-xs opacity-70">
-                Temperature <span class="font-mono">{{ settings.temperature.toFixed(1) }}</span>
-              </span>
-              <input
-                v-model.number="settings.temperature"
-                type="range"
-                min="0"
-                max="1.2"
-                step="0.1"
-                class="range range-xs range-primary"
-              />
-            </label>
-            <label class="form-control">
-              <span class="mb-1 text-xs opacity-70">Max new tokens</span>
-              <input
-                v-model.number="settings.maxTokens"
-                type="number"
-                min="64"
-                max="1024"
-                step="32"
-                class="input input-bordered input-xs"
-              />
-            </label>
-            <label class="flex items-center gap-2 text-xs">
-              <input v-model="settings.thinking" type="checkbox" class="toggle toggle-sm" />
-              Thinking mode (slower, shows a reasoning block)
-            </label>
-            <label class="flex items-center gap-2 text-xs">
-              <input
-                v-model="settings.tools"
-                type="checkbox"
-                class="toggle toggle-sm"
-                :disabled="settings.modelSource === 'cloud'"
-              />
-              Let the model call scripts as tools (local only)
-            </label>
-            <label class="flex items-center gap-2 text-xs">
-              <input
-                v-model="settings.net"
-                type="checkbox"
-                class="toggle toggle-sm"
-                :disabled="settings.modelSource === 'cloud'"
-              />
-              Internet access (webSearch, webFetch; local only)
-            </label>
-            <div class="flex items-center gap-2 sm:col-span-2">
-              <button
-                class="btn btn-ghost btn-xs"
-                title="Raise an alert the same way showAlert does"
-                @click="sendTestAlert"
-              >
-                🔔 Send a test alert
-              </button>
-              <span class="text-[11px] opacity-60">
-                the model calls showAlert on its own when you ask for an alert
-              </span>
+      <dialog
+        v-if="showSettings"
+        id="chat-settings-modal"
+        ref="settingsDialog"
+        class="modal"
+        aria-labelledby="chat-settings-title"
+        data-testid="chat-settings-modal"
+        @close="onSettingsDialogClose"
+      >
+        <div class="modal-box max-h-[90vh] max-w-3xl overflow-y-auto p-4 sm:p-6">
+          <header class="mb-4 flex items-start justify-between gap-3 border-b border-base-300 pb-3">
+            <div>
+              <h2 id="chat-settings-title" class="text-base font-semibold">⚙ Chat settings</h2>
+              <p class="text-[11px] opacity-65">
+                Settings are saved to
+                <span class="font-medium">{{ activeChat?.title ?? 'this chat' }}</span> and apply to
+                the next message.
+              </p>
             </div>
-            <label class="form-control sm:col-span-2">
-              <span class="mb-1 text-xs opacity-70"
-                >Custom system prompt (empty = generated with the script toolbox)</span
-              >
-              <textarea
-                v-model="settings.systemPrompt"
-                rows="2"
-                class="textarea textarea-bordered textarea-xs font-mono"
-              ></textarea>
-            </label>
-
-            <div
-              class="flex flex-wrap items-center gap-2 border-t border-base-300 pt-3 sm:col-span-2"
+            <button
+              class="btn btn-circle btn-ghost btn-sm shrink-0"
+              type="button"
+              aria-label="Close chat settings"
+              title="Close settings"
+              data-testid="chat-settings-close"
+              @click="closeSettings"
             >
+              ✕
+            </button>
+          </header>
+
+          <div class="space-y-5">
+            <section class="space-y-3">
+              <div class="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <h3 class="text-sm font-semibold">Model and runtime</h3>
+                  <p class="text-[11px] opacity-60">
+                    Choose the model source and settings for this chat.
+                  </p>
+                </div>
+                <div class="join" role="group" aria-label="Model source">
+                  <button
+                    class="btn btn-xs join-item"
+                    :class="settings.modelSource === 'local' ? 'btn-primary' : 'btn-ghost'"
+                    type="button"
+                    :disabled="busy || switching || !historyReady"
+                    :aria-pressed="settings.modelSource === 'local'"
+                    data-testid="settings-source-local"
+                    @click="selectModelSource('local')"
+                  >
+                    Local
+                  </button>
+                  <button
+                    class="btn btn-xs join-item"
+                    :class="settings.modelSource === 'cloud' ? 'btn-primary' : 'btn-ghost'"
+                    type="button"
+                    :disabled="busy || switching || !historyReady"
+                    :aria-pressed="settings.modelSource === 'cloud'"
+                    data-testid="settings-source-cloud"
+                    @click="selectModelSource('cloud')"
+                  >
+                    Cloud
+                  </button>
+                </div>
+              </div>
+
+              <div v-if="settings.modelSource === 'local'" class="space-y-3">
+                <label class="form-control">
+                  <span class="mb-1 text-xs opacity-70">Local model</span>
+                  <select
+                    v-if="catalog && catalog.models.length > 0"
+                    class="select select-bordered select-sm w-full font-mono"
+                    :value="settings.modelId || catalog.active"
+                    :disabled="switching || busy || !historyReady"
+                    :title="activeModel?.settings.description ?? status?.description ?? ''"
+                    aria-label="Model for this chat"
+                    data-testid="settings-local-model"
+                    @change="selectModel"
+                  >
+                    <option
+                      v-for="model in catalog.models"
+                      :key="model.settings.id"
+                      :value="model.settings.id"
+                    >
+                      {{ model.settings.id }}{{ model.present ? '' : ' — needs download' }}
+                    </option>
+                  </select>
+                  <span v-else class="rounded-box bg-base-200 p-3 text-xs opacity-65">
+                    {{
+                      catalog ? 'No local models are in the catalogue.' : 'Loading local models…'
+                    }}
+                  </span>
+                </label>
+
+                <div class="flex flex-wrap items-center gap-2">
+                  <span
+                    class="badge badge-sm gap-1"
+                    :class="{
+                      'badge-success': status?.state === 'ready',
+                      'badge-warning': status?.state === 'downloading',
+                      'badge-info': status?.state === 'loading',
+                      'badge-error': status?.state === 'error' || status?.state === 'unavailable',
+                      'badge-ghost': status?.state === 'absent' || status?.state === 'idle',
+                    }"
+                    data-testid="local-model-status"
+                  >
+                    <span
+                      v-if="status?.state === 'loading' || status?.state === 'downloading'"
+                      class="loading loading-spinner loading-xs"
+                    />
+                    {{ stateLabel }}
+                  </span>
+                  <span class="min-w-0 truncate text-[11px] opacity-65">
+                    {{ status?.modelName ?? selectedModelLabel }}
+                    <template v-if="status?.threads"> · {{ status.threads }} CPU threads</template>
+                    <template v-if="status?.contextSize"> · ctx {{ status.contextSize }}</template>
+                    <template v-if="status?.ramUsedMb"> · RAM {{ status.ramUsedMb }} MB</template>
+                  </span>
+                  <button
+                    v-if="status?.state === 'absent' || (activeModel && !activeModel.present)"
+                    class="btn btn-primary btn-xs"
+                    type="button"
+                    :disabled="downloading || switching || busy || status?.state === 'downloading'"
+                    data-testid="settings-download-model"
+                    @click="download"
+                  >
+                    <span v-if="downloading" class="loading loading-spinner loading-xs" />
+                    {{
+                      downloading || status?.state === 'downloading'
+                        ? 'Downloading…'
+                        : `Download ${activeModel?.sizeBytes ? formatSize(activeModel.sizeBytes) : 'weights'}`
+                    }}
+                  </button>
+                  <button
+                    v-if="status?.modelPresent && status?.state === 'ready'"
+                    class="btn btn-ghost btn-xs"
+                    type="button"
+                    :disabled="busy || switching"
+                    data-testid="settings-unload-model"
+                    @click="unload"
+                  >
+                    Unload from memory
+                  </button>
+                </div>
+
+                <div
+                  v-if="settings.modelSource === 'local' && status?.state === 'downloading'"
+                  class="space-y-1 rounded-box bg-base-200 p-3"
+                >
+                  <progress
+                    class="progress progress-primary w-full"
+                    :value="status.downloadProgress * 100"
+                    max="100"
+                  />
+                  <p class="text-[11px] opacity-70">
+                    {{ (status.downloadedBytes / 1048576).toFixed(1) }} MB of
+                    {{ (status.downloadTotalBytes / 1048576).toFixed(1) }} MB — stored in
+                    {{ config?.modelsDir ?? '~/.cache/infagent/models' }}
+                  </p>
+                </div>
+                <div
+                  v-if="status?.state === 'absent'"
+                  class="alert py-2 text-xs"
+                  data-testid="local-model-not-downloaded"
+                >
+                  <span>
+                    {{ status.modelName ?? 'This model' }} is not on this machine yet. Download its
+                    weights once to chat locally.
+                  </span>
+                </div>
+                <div
+                  v-if="status?.state === 'unavailable' || status?.lastError"
+                  class="alert alert-warning py-2 text-xs"
+                >
+                  <span>{{
+                    status?.lastError ??
+                    'The local engine is unavailable. Run `npm install` to enable it.'
+                  }}</span>
+                </div>
+              </div>
+
+              <div v-else class="space-y-3">
+                <div class="grid gap-3 sm:grid-cols-2">
+                  <label class="form-control">
+                    <span class="mb-1 text-xs opacity-70">Cloud provider</span>
+                    <select
+                      class="select select-bordered select-sm w-full"
+                      :value="settings.providerId"
+                      :disabled="busy || switching || !historyReady"
+                      aria-label="Cloud provider for this chat"
+                      data-testid="settings-cloud-provider"
+                      @change="selectCloudProviderForSettings"
+                    >
+                      <option value="">Choose a provider</option>
+                      <option
+                        v-for="provider in cloudProviders"
+                        :key="provider.id"
+                        :value="provider.id"
+                      >
+                        {{ provider.name }}{{ provider.keyConfigured ? '' : ' — API key needed' }}
+                      </option>
+                    </select>
+                  </label>
+                  <label class="form-control">
+                    <span class="mb-1 text-xs opacity-70">Cloud model</span>
+                    <select
+                      class="select select-bordered select-sm w-full font-mono"
+                      :value="settings.modelId"
+                      :disabled="
+                        busy ||
+                        switching ||
+                        !historyReady ||
+                        !selectedCloudProvider?.keyConfigured ||
+                        selectedCloudProvider.models.length === 0
+                      "
+                      aria-label="Cloud model for this chat"
+                      data-testid="settings-cloud-model"
+                      @change="selectCloudModelForSettings"
+                    >
+                      <option value="">Choose a model</option>
+                      <option
+                        v-for="model in selectedCloudProvider?.models ?? []"
+                        :key="model.id"
+                        :value="model.id"
+                      >
+                        {{ model.name || model.id }}
+                      </option>
+                    </select>
+                  </label>
+                </div>
+                <div
+                  class="flex flex-wrap items-center gap-2"
+                  :class="canChat ? '' : 'text-warning'"
+                  data-testid="cloud-model-status"
+                >
+                  <span class="badge badge-sm" :class="canChat ? 'badge-success' : 'badge-warning'">
+                    {{ canChat ? 'provider configured' : 'model or API key needed' }}
+                  </span>
+                  <span
+                    v-if="cloudProvidersLoading"
+                    class="flex items-center gap-1 text-[11px] opacity-60"
+                  >
+                    <span class="loading loading-spinner loading-xs" /> Refreshing providers…
+                  </span>
+                  <span v-else-if="cloudProviders.length === 0" class="text-[11px] opacity-70">
+                    Add a cloud provider under Models → Cloud AI providers.
+                  </span>
+                  <span
+                    v-else-if="selectedCloudProvider && !selectedCloudProvider.keyConfigured"
+                    class="text-[11px] opacity-70"
+                  >
+                    Add its API key under Models before using this provider.
+                  </span>
+                  <span
+                    v-else-if="selectedCloudProvider?.models.length === 0"
+                    class="text-[11px] opacity-70"
+                  >
+                    This provider has no model IDs yet; add one under Models.
+                  </span>
+                </div>
+                <div v-if="historyReady && !canChat" class="alert alert-warning py-2 text-xs">
+                  <span>
+                    This chat's cloud model is not ready. Choose a configured provider and model, or
+                    add one in Models → Cloud AI providers.
+                  </span>
+                </div>
+              </div>
+
+              <div class="grid gap-3 sm:grid-cols-2">
+                <label v-if="styles.length > 0" class="form-control">
+                  <span class="mb-1 text-xs opacity-70">Thinking style</span>
+                  <select
+                    class="select select-bordered select-sm w-full"
+                    :value="activeStyle"
+                    :disabled="busy || !historyReady"
+                    :title="
+                      styles.find((style) => style.name === activeStyle)?.description ??
+                      'How the model should think and answer'
+                    "
+                    aria-label="Thinking style"
+                    data-testid="settings-thinking-style"
+                    @change="selectStyle"
+                  >
+                    <option value="">default style</option>
+                    <option v-for="style in styles" :key="style.name" :value="style.name">
+                      {{ style.name }}
+                    </option>
+                  </select>
+                </label>
+                <label
+                  v-if="settings.modelSource === 'local'"
+                  class="form-control"
+                  title="Tool steps one reply may take: several calls, their results, then the answer"
+                >
+                  <span class="mb-1 text-xs opacity-70">Maximum tool steps</span>
+                  <input
+                    v-model.number="settings.maxSteps"
+                    class="input input-bordered input-sm w-full font-mono"
+                    type="number"
+                    min="1"
+                    max="12"
+                    step="1"
+                    :disabled="busy"
+                    aria-label="Max steps"
+                    data-testid="settings-max-steps"
+                  />
+                </label>
+              </div>
+            </section>
+
+            <div class="border-t border-base-300" />
+
+            <section class="space-y-3">
+              <div>
+                <h3 class="text-sm font-semibold">Response settings</h3>
+                <p class="text-[11px] opacity-60">Changes are saved automatically for this chat.</p>
+              </div>
+              <div class="grid gap-3 sm:grid-cols-2">
+                <label class="form-control">
+                  <span class="mb-1 flex items-center justify-between text-xs opacity-70">
+                    Temperature <span class="font-mono">{{ settings.temperature.toFixed(1) }}</span>
+                  </span>
+                  <input
+                    v-model.number="settings.temperature"
+                    type="range"
+                    min="0"
+                    max="1.2"
+                    step="0.1"
+                    class="range range-xs range-primary"
+                  />
+                </label>
+                <label class="form-control">
+                  <span class="mb-1 text-xs opacity-70">Max new tokens</span>
+                  <input
+                    v-model.number="settings.maxTokens"
+                    type="number"
+                    min="64"
+                    max="1024"
+                    step="32"
+                    class="input input-bordered input-sm"
+                  />
+                </label>
+                <label class="flex items-center gap-2 text-xs">
+                  <input v-model="settings.thinking" type="checkbox" class="toggle toggle-sm" />
+                  Thinking mode (slower, shows a reasoning block)
+                </label>
+                <label class="flex items-center gap-2 text-xs">
+                  <input
+                    v-model="settings.tools"
+                    type="checkbox"
+                    class="toggle toggle-sm"
+                    :disabled="settings.modelSource === 'cloud'"
+                  />
+                  Let the model call scripts as tools (local only)
+                </label>
+                <label class="flex items-center gap-2 text-xs">
+                  <input
+                    v-model="settings.net"
+                    type="checkbox"
+                    class="toggle toggle-sm"
+                    :disabled="settings.modelSource === 'cloud'"
+                  />
+                  Internet access (webSearch, webFetch; local only)
+                </label>
+                <div class="flex items-center gap-2 sm:col-span-2">
+                  <button
+                    class="btn btn-ghost btn-xs"
+                    type="button"
+                    title="Raise an alert the same way showAlert does"
+                    @click="sendTestAlert"
+                  >
+                    🔔 Send a test alert
+                  </button>
+                  <span class="text-[11px] opacity-60">
+                    the model calls showAlert on its own when you ask for an alert
+                  </span>
+                </div>
+                <label class="form-control sm:col-span-2">
+                  <span class="mb-1 text-xs opacity-70"
+                    >Custom system prompt (empty = generated with the script toolbox)</span
+                  >
+                  <textarea
+                    v-model="settings.systemPrompt"
+                    rows="3"
+                    class="textarea textarea-bordered textarea-sm font-mono"
+                  ></textarea>
+                </label>
+              </div>
+            </section>
+
+            <footer class="flex flex-wrap items-center gap-2 border-t border-base-300 pt-4">
               <button
                 class="btn btn-ghost btn-xs"
+                type="button"
                 :disabled="!activeChatId || busy"
                 title="Save this chat's settings to the server now"
                 data-testid="save-settings"
@@ -1503,13 +1709,31 @@ onMounted(async () => {
               <span class="text-[11px] opacity-60">
                 Settings apply to the next message and save automatically with this chat.
               </span>
-            </div>
+            </footer>
           </div>
         </div>
-      </section>
+        <form method="dialog" class="modal-backdrop">
+          <button type="submit" aria-label="Close chat settings">Close</button>
+        </form>
+      </dialog>
 
-      <section class="card border border-base-300 bg-base-200/70">
-        <div class="card-body gap-3 p-3 sm:p-4">
+      <section
+        class="card relative border border-base-300 bg-base-200/70"
+        data-testid="chat-conversation-box"
+      >
+        <button
+          class="btn btn-circle btn-ghost btn-sm absolute right-3 top-3 z-20"
+          type="button"
+          title="Chat settings"
+          aria-label="Open chat settings"
+          aria-haspopup="dialog"
+          aria-controls="chat-settings-modal"
+          data-testid="chat-settings-trigger"
+          @click="openSettings"
+        >
+          <span aria-hidden="true" class="text-lg">⚙</span>
+        </button>
+        <div class="card-body gap-3 p-3 pt-12 sm:p-4 sm:pt-12">
           <div ref="scroller" class="max-h-[52vh] min-h-[18rem] space-y-3 overflow-y-auto px-1">
             <div v-if="turns.length === 0" class="grid place-items-center gap-2 py-14 text-center">
               <p class="text-sm opacity-80">
@@ -1749,14 +1973,14 @@ onMounted(async () => {
                     >
                   </button>
                   <p v-if="provider.models.length === 0" class="px-2 py-1 text-[10px] opacity-55">
-                    No model IDs yet — test the provider or add IDs under Config.
+                    No model IDs yet — test the provider or add IDs under Models.
                   </p>
                 </template>
                 <p
                   v-if="cloudProviders.length === 0 && !cloudProvidersLoading"
                   class="px-2 py-1 text-[11px] opacity-60"
                 >
-                  No cloud models configured. Add a provider under Config → Cloud AI providers.
+                  No cloud models configured. Add a provider under Models → Cloud AI providers.
                 </p>
                 <p class="mt-2 border-t border-base-300 pt-2 text-[10px] opacity-55">
                   Selection is saved to this chat. Cloud chats send messages to the configured
