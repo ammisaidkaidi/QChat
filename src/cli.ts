@@ -59,6 +59,7 @@ Chat subcommands:
   ask "<message>"            One-shot question, streamed token by token
       --thinking               Show the model's reasoning block (on stderr)
       --no-tools               Disable script tool calls
+      --steps N                Tool steps one reply may take (default 6)
       --no-net                 Disable webSearch / webFetch for this turn
       --temp 0.4 --max 512     Sampling controls
   unload                     Free the model from memory
@@ -397,7 +398,7 @@ async function chatCommand(sub: string | undefined, rest: string[]): Promise<num
         .trim();
       if (!message) {
         process.stderr.write(
-          'error: usage: infagent chat ask "your question" [--thinking] [--no-tools]\n',
+          'error: usage: infagent chat ask "your question" [--thinking] [--no-tools] [--steps N]\n',
         );
         return 2;
       }
@@ -409,6 +410,7 @@ async function chatCommand(sub: string | undefined, rest: string[]): Promise<num
         net: !argv.includes('--no-net'),
         ...(flag('temp') ? { temperature: Number(flag('temp')) } : {}),
         ...(flag('max') ? { maxTokens: Number(flag('max')) } : {}),
+        ...(flag('steps') ? { maxToolIterations: Number(flag('steps')) } : {}),
       })) {
         switch (event.type) {
           case 'thinking':
@@ -416,6 +418,9 @@ async function chatCommand(sub: string | undefined, rest: string[]): Promise<num
             break;
           case 'token':
             process.stdout.write(event.text);
+            break;
+          case 'plan':
+            print(`\n📋 ${event.step ? `step ${event.step}: ` : ''}${event.text}`);
             break;
           case 'tool_call':
             print(`\n🛠 ${event.call.name}(${JSON.stringify(event.call.args)})`);

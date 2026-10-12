@@ -9,10 +9,23 @@ export interface ToolCallRequest {
 export type Envelope = {
     type: 'tool_call';
     calls: ToolCallRequest[];
+    plan?: string;
 } | {
     type: 'final';
     content: string;
 };
+/** How long the one-line plan of a step may be. */
+export declare const MAX_PLAN_CHARS = 240;
+/**
+ * How many tool steps one reply may take.
+ *
+ * A multi-step task — "list the files in these three folders and count them" —
+ * needs one step per folder plus the answer, so the old default of two cut the
+ * work in half. `INFAGENT_MAX_STEPS` tunes it; the request may override.
+ */
+export declare function stepBudget(requested?: number): number;
+/** Steps per reply when neither the request nor the environment say otherwise. */
+export declare const DEFAULT_STEPS = 6;
 export type ParseResult = {
     ok: true;
     envelope: Envelope;
@@ -21,7 +34,7 @@ export type ParseResult = {
     reason: string;
 };
 /** Literal examples, shared by the system prompt and the repair turn. */
-export declare const TOOL_CALL_EXAMPLE = "{\"type\":\"tool_call\",\"calls\":[{\"name\":\"listScripts\",\"arguments\":{}}]}";
+export declare const TOOL_CALL_EXAMPLE = "{\"type\":\"tool_call\",\"plan\":\"List the scripts first\",\"calls\":[{\"name\":\"listScripts\",\"arguments\":{}}]}";
 export declare const FINAL_EXAMPLE = "{\"type\":\"final\",\"content\":\"You have three scripts: hello, system_info, net_interfaces.\"}";
 /** The one rule that is about *results*, in the model's words. */
 export declare const RESULT_RULE: string;
@@ -34,6 +47,11 @@ export declare const RESULT_RULE: string;
 export declare function parseEnvelope(text: string, options?: {
     toolNames?: readonly string[];
 }): ParseResult;
+/**
+ * The grammar for a turn that must end in an answer (the step budget is spent).
+ * Only `final` is representable, so the model cannot open yet another step.
+ */
+export declare function finalOnlyGrammarSchema(): Record<string, unknown>;
 /**
  * Which protocol applies to this turn.
  *

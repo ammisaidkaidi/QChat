@@ -117,9 +117,13 @@ A reply is never free text with a call hidden inside it. The model emits exactly
 one JSON object and that object says what it is:
 
 ```json
-{"type":"tool_call","calls":[{"name":"listScripts","arguments":{}}]}
+{"type":"tool_call","plan":"List the scripts first","calls":[{"name":"listScripts","arguments":{}}]}
 {"type":"final","content":"You have three scripts: hello, disk, ping."}
 ```
+
+A step may carry up to four calls in `calls`, and `plan` (optional, at most 240
+characters) is the model's own one-liner for what the step is for. The console
+and the CLI show it as a 📋 line above the calls.
 
 The third shape is produced by the runtime, never by the model — after running
 the calls the engine injects it as a user turn:
@@ -163,6 +167,34 @@ three different things and are never rendered as one.
 Measure it instead of guessing: `node tools/eval-protocol.mjs` runs 12 read-only
 prompts and reports first-try validity, repairs, failed calls, stray calls and
 latency per pass (grammar on, grammar off, legacy).
+
+#### Many steps in one task
+
+One reply may take several tool steps: it calls, reads the results, calls again,
+and answers when the work is done. "List the files in these three folders and
+count them" is three `list_files` calls and then an answer — a reply that tried
+to do it in one call would have to invent the folders it never listed.
+
+- **Budget** — 6 steps by default, 1–12. `steps` in the chat header, `--steps N`
+  for `infagent chat ask`, or `INFAGENT_MAX_STEPS` for everything. Each step may
+  still carry up to four calls, so a reply can do a lot without a second
+  message. Steps used, like repairs, are a budget the model spends, not a limit
+  on the task: a request needing more is a follow-up message away.
+- **A plan it follows** — the system prompt asks for the plan of the task and
+  for one line per step; each result comes back with a running list of the calls
+  made so far and their numbers (`step 1 · list_files({"/tmp/a"}) → count: 3`),
+  so a later step merges earlier results instead of re-running them.
+- **The sum is computed here** — when the same tool was used more than once with
+  different arguments and every payload carries the same number (a folder
+  listing's `count`/`totals.files`), the runtime adds them up. An answer that
+  states a different total is replaced by the facts, one that leaves the total
+  out gets `Total across the 3 results: 13 files.` appended, and no total is
+  offered when a step failed or a listing was cut short — an undercount
+  presented as a total is exactly the kind of guess this project refuses.
+- **The last step is the answer's** — if the budget runs out while the model
+  still wants another call, one more turn is taken with a grammar that can only
+  produce `final`, so the user gets the answer to what was already done instead
+  of a dangling call.
 
 ### Models folder
 

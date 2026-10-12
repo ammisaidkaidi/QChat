@@ -25,8 +25,24 @@
 import process from 'node:process';
 /** How many correction turns a reply that did not parse is worth. */
 export const MAX_REPAIRS = 2;
+/** How long the one-line plan of a step may be. */
+export const MAX_PLAN_CHARS = 240;
+/**
+ * How many tool steps one reply may take.
+ *
+ * A multi-step task — "list the files in these three folders and count them" —
+ * needs one step per folder plus the answer, so the old default of two cut the
+ * work in half. `INFAGENT_MAX_STEPS` tunes it; the request may override.
+ */
+export function stepBudget(requested) {
+    const fromEnv = Number(process.env['INFAGENT_MAX_STEPS']);
+    const value = requested ?? (Number.isFinite(fromEnv) && fromEnv > 0 ? fromEnv : DEFAULT_STEPS);
+    return Math.max(1, Math.min(12, Math.round(value)));
+}
+/** Steps per reply when neither the request nor the environment say otherwise. */
+export const DEFAULT_STEPS = 6;
 /** Literal examples, shared by the system prompt and the repair turn. */
-export const TOOL_CALL_EXAMPLE = '{"type":"tool_call","calls":[{"name":"listScripts","arguments":{}}]}';
+export const TOOL_CALL_EXAMPLE = '{"type":"tool_call","plan":"List the scripts first","calls":[{"name":"listScripts","arguments":{}}]}';
 export const FINAL_EXAMPLE = '{"type":"final","content":"You have three scripts: hello, system_info, net_interfaces."}';
 /** The one rule that is about *results*, in the model's words. */
 export const RESULT_RULE = 'A {"type":"tool_result",…} object is written by InfAgent after it runs your call. ' +
@@ -101,7 +117,15 @@ export function parseEnvelope(text, options = {}) {
             }
             calls.push({ name, arguments: args ?? {} });
         }
-        return { ok: true, envelope: { type: 'tool_call', calls } };
+        const plan = parsed['plan'];
+        if (plan !== undefined && typeof plan !== 'string') {
+            return { ok: false, reason: '"plan" must be a string (or omitted)' };
+        }
+        const text = typeof plan === 'string' ? plan.trim().slice(0, MAX_PLAN_CHARS) : '';
+        return {
+            ok: true,
+            envelope: { type: 'tool_call', calls, ...(text.length > 0 ? { plan: text } : {}) },
+        };
     }
     if (type === 'final') {
         const content = parsed['content'];
@@ -116,6 +140,19 @@ export function parseEnvelope(text, options = {}) {
     return {
         ok: false,
         reason: `"type" must be "tool_call" or "final", not ${JSON.stringify(type)}`,
+    };
+}
+/**
+ * The grammar for a turn that must end in an answer (the step budget is spent).
+ * Only `final` is representable, so the model cannot open yet another step.
+ */
+export function finalOnlyGrammarSchema() {
+    return {
+        type: 'object',
+        properties: {
+            type: { const: 'final' },
+            content: { type: 'string' },
+        },
     };
 }
 /**
@@ -149,6 +186,10 @@ export function envelopeGrammarSchema(toolNames) {
                 type: 'object',
                 properties: {
                     type: { const: 'tool_call' },
+                    // The model states what this step is for; it may be empty when the
+                    // call is obvious. Required in the schema because this grammar
+                    // implementation treats every listed property as mandatory.
+                    plan: { type: 'string' },
                     calls: {
                         type: 'array',
                         minItems: 1,

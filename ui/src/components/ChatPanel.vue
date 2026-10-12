@@ -50,6 +50,8 @@ const settings = reactive({
   /** Let the model search the internet and read pages. */
   net: true,
   systemPrompt: '',
+  /** Tool steps a single reply may take (several calls + results + answer). */
+  maxSteps: 6,
 });
 
 const stateLabel = computed(() => {
@@ -333,6 +335,11 @@ function applyEvent(turn: ChatTurn, event: ChatEvent): void {
       // The engine decided the partial reply was unusable and is retrying.
       turn.text = '';
       turn.thinking = '';
+      turn.plans = [];
+      break;
+    case 'plan':
+      // The model's own one-liner for what this step is for.
+      (turn.plans ??= []).push({ text: event.text, step: event.step });
       break;
     case 'tool_call':
       turn.calls.push({ ...event.call });
@@ -415,6 +422,7 @@ async function send(): Promise<void> {
     tools: settings.tools,
     net: settings.net,
     systemPrompt: settings.systemPrompt,
+    maxToolIterations: settings.maxSteps,
     onEvent: (event) => {
       applyEvent(assistant, event);
       void scrollToBottom();
@@ -492,6 +500,7 @@ function promptPreview(): string {
     `context : ${config.value.contextSize} tokens · threads ${config.value.threads}`,
     `scripts : ${config.value.scriptCount} exposed as tools`,
     `thinking: ${settings.thinking ? 'on' : 'off (default — a 0.6B model is much faster without it)'}`,
+    `steps: ${settings.maxSteps} (tool calls → results → more calls, then the answer)`,
     '',
     'The model runs entirely on this machine through llama.cpp.',
     `Model settings: ${status.value?.settingsFile ?? '—'}`,
@@ -571,6 +580,23 @@ onMounted(async () => {
                 🧠 {{ style.name }}
               </option>
             </select>
+
+            <label
+              class="flex items-center gap-1 text-[11px] text-base-content/70"
+              title="Tool steps one reply may take: several calls, their results, then the answer"
+            >
+              steps
+              <input
+                v-model.number="settings.maxSteps"
+                class="input input-bordered input-xs w-14 font-mono"
+                type="number"
+                min="1"
+                max="12"
+                step="1"
+                :disabled="busy"
+                aria-label="Max steps"
+              />
+            </label>
 
             <span
               class="badge badge-sm gap-1"
@@ -786,6 +812,15 @@ onMounted(async () => {
 
               <p v-if="turn.text" class="whitespace-pre-wrap">{{ turn.text }}</p>
               <span v-else-if="turn.streaming" class="loading loading-dots loading-sm" />
+
+              <ol
+                v-if="turn.plans && turn.plans.length > 0"
+                class="mt-1 space-y-0.5 text-[11px] text-base-content/60"
+              >
+                <li v-for="(plan, index) in turn.plans" :key="index" class="truncate">
+                  📋 {{ plan.step ? `step ${plan.step} ` : '' }}{{ plan.text }}
+                </li>
+              </ol>
 
               <div
                 v-for="(call, index) in turn.calls"

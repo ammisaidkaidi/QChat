@@ -20,12 +20,32 @@ const text = (events: ChatEvent[]): string =>
     .join('');
 
 describe('parseEnvelope', () => {
-  it('reads a tool call', () => {
+  it('reads a tool call, plan and all', () => {
     const result = parseEnvelope(TOOL_CALL_EXAMPLE, { toolNames: TOOLS });
     expect(result).toEqual({
       ok: true,
-      envelope: { type: 'tool_call', calls: [{ name: 'listScripts', arguments: {} }] },
+      envelope: {
+        type: 'tool_call',
+        plan: 'List the scripts first',
+        calls: [{ name: 'listScripts', arguments: {} }],
+      },
     });
+  });
+
+  it('accepts a tool call with no plan — the field is optional', () => {
+    const result = parseEnvelope('{"type":"tool_call","calls":[{"name":"listScripts"}]}', {
+      toolNames: TOOLS,
+    });
+    expect(result.ok).toBe(true);
+    expect(result.ok && result.envelope.type === 'tool_call' && result.envelope.plan).toBeFalsy();
+  });
+
+  it('rejects a plan that is not a string', () => {
+    const result = parseEnvelope('{"type":"tool_call","plan":7,"calls":[{"name":"listScripts"}]}', {
+      toolNames: TOOLS,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.ok ? '' : result.reason).toContain('"plan" must be a string');
   });
 
   it('reads several calls and keeps their arguments', () => {

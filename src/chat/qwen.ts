@@ -35,14 +35,18 @@ import { DEFAULT_MODELS_DIR, ModelStore } from './modelStore.js';
 import type { ModelRecord, ModelSettings } from './modelStore.js';
 import { SystemPromptStore } from './prompts.js';
 import {
+  type MergedFact,
   asksAboutToolbox,
   buildSystemPrompt,
+  finalAnswerPrompt,
   formatToolResult,
   guardToolAnswer,
+  progressPrompt,
   readableResult,
   stripJsonBlobs,
   toolResultPrompt,
   toolboxNames,
+  unusedRequestPaths,
 } from './prompt.js';
 import type { ToolOutcome } from './prompt.js';
 import {
@@ -51,10 +55,12 @@ import {
   TOOL_CALL_EXAMPLE,
   envelopeGrammarSchema,
   envelopeRepairPrompt,
+  finalOnlyGrammarSchema,
   grammarEnabled,
   parseEnvelope,
   resolveProtocolMode,
   resultEnvelope,
+  stepBudget,
 } from './protocol.js';
 import type { ParseResult, ProtocolMode } from './protocol.js';
 import { OutputSplitter } from './splitter.js';
@@ -609,6 +615,8 @@ export class QwenEngine {
       const toolNames = useTools
         ? toolboxNames({ records: this.registry.list(), net, mcp: mcpTools })
         : [];
+      /** Steps this reply may take: several calls, results, more calls, answer. */
+      const maxSteps = stepBudget(request.maxToolIterations);
 
       const systemPrompt =
         request.systemPrompt?.trim() ||
@@ -620,6 +628,7 @@ export class QwenEngine {
             thinking,
             style: model.style,
             protocol: protocolMode,
+            maxSteps,
             styleGuide,
             // Tool declarations are a per-turn cost. At ~3.2 characters per
             // token this leaves most of a small window to the conversation.
@@ -672,21 +681,53 @@ export class QwenEngine {
        * The ratio is a deliberate overshoot (~3.2 characters per token) so the
        * estimate errs on the safe side.
        */
+      /** Tokens a reply must be able to spend before the window is "full". */
+      const MIN_REPLY_TOKENS = 320;
+
       const tokenBudget = (prompt: string): number => {
+        const history = session.getChatHistory();
         const chars =
-          session
-            .getChatHistory()
-            .reduce((sum: number, item: unknown) => sum + historyChars(item), 0) +
+          history.reduce((sum: number, item: unknown) => sum + historyChars(item), 0) +
           prompt.length +
           256;
         const room = model.contextSize - Math.ceil(chars / 3.2) - 96;
-        return Math.max(64, Math.min(requestedMaxTokens, room));
+        return Math.max(MIN_REPLY_TOKENS, Math.min(requestedMaxTokens, room));
+      };
+
+      /**
+       * Keep the whole turn inside the window.
+       *
+       * A reply that has only a few dozen tokens left is cut off mid-JSON, which
+       * wastes the turn and the repair that follows. Dropping the oldest turns
+       * (the newest are the ones the task needs) buys the reply its room back;
+       * the tool results of this reply stay in the prompt regardless.
+       */
+      const fitHistory = (prompt: string): void => {
+        const cost = (items: unknown[]): number =>
+          items.reduce((sum: number, item: unknown) => sum + historyChars(item), 0);
+        const limit = model.contextSize * 3.2;
+        const items = session.getChatHistory();
+        const fixed = prompt.length + MIN_REPLY_TOKENS * 3.2 + 512;
+        if (cost(items) + fixed <= limit || items.length <= 2) return;
+        for (let drop = 2; drop < items.length - 1; drop += 2) {
+          const kept = items.slice(drop);
+          if (cost(kept) + fixed <= limit || kept.length <= 1) {
+            if (process.env['INFAGENT_CHAT_DEBUG'] === '1') {
+              process.stderr.write(`[chat] history: dropped the oldest ${drop} item(s)\n`);
+            }
+            session.setChatHistory(kept as typeof items);
+            return;
+          }
+        }
+        session.setChatHistory(items.slice(-1) as typeof items);
       };
       const splitter = new OutputSplitter();
       const channel = new EventChannel<ChatEvent>();
       /** Visible assistant text for the whole turn (thinking and tool blocks excluded). */
       let visibleText = '';
       let lastTool: ToolOutcome | null = null;
+      /** Every call of this reply, so results of several steps can be merged. */
+      const facts: MergedFact[] = [];
       /** Correction turns spent in this reply (telemetry, shown in the stats). */
       let repairs = 0;
 
@@ -724,15 +765,26 @@ export class QwenEngine {
       const grammar = strict ? await grammarFor() : null;
 
       /** Generate, forwarding splitter events as they arrive; return raw text. */
-      const runGeneration = async function* (prompt: string): AsyncGenerator<ChatEvent, string> {
+      const runGeneration = async function* (
+        prompt: string,
+        override?: LlamaGrammar | null,
+      ): AsyncGenerator<ChatEvent, string> {
         let raw = '';
         // One decoder per generation: every generation is a fresh envelope.
         const protocolStream = strict ? new ProtocolStream() : null;
+        fitHistory(prompt);
+        const budget = tokenBudget(prompt);
+        if (process.env['INFAGENT_CHAT_DEBUG'] === '1') {
+          process.stderr.write(
+            `[chat] budget: ${budget} tokens (window ${model.contextSize}, prompt ${prompt.length} chars)\n`,
+          );
+        }
+        const activeGrammar = override ?? grammar;
         const work = session
           .prompt(prompt, {
-            maxTokens: tokenBudget(prompt),
+            maxTokens: budget,
             temperature,
-            ...(grammar ? { grammar } : {}),
+            ...(activeGrammar ? { grammar: activeGrammar } : {}),
             ...(signal ? { signal, stopOnAbortSignal: true } : {}),
             onToken: (tokens: Token[]) => {
               totalTokens += tokens.length;
@@ -797,11 +849,12 @@ export class QwenEngine {
        */
       const generate = async function* (
         text: string,
+        override?: LlamaGrammar | null,
       ): AsyncGenerator<
         ChatEvent,
         { combined: string; parsed: ParseResult | null; calls: ChatToolCall[]; answer: string }
       > {
-        let combined = yield* runGeneration(text);
+        let combined = yield* runGeneration(text, override);
         let parsed = strict ? parseEnvelope(combined, { toolNames }) : null;
         let spent = 0;
 
@@ -813,7 +866,7 @@ export class QwenEngine {
           }
           yield { type: 'reset' };
           visibleText = '';
-          combined = yield* runGeneration(envelopeRepairPrompt(parsed.reason));
+          combined = yield* runGeneration(envelopeRepairPrompt(parsed.reason), override);
           parsed = strict ? parseEnvelope(combined, { toolNames }) : null;
         }
 
@@ -872,15 +925,25 @@ export class QwenEngine {
       }
 
       let iteration = 0;
-      const maxIterations = Math.min(request.maxToolIterations ?? 2, 4);
+      /** Every call this reply already made, so a later step can merge results. */
+      const progress: { step: number; call: string; result: unknown }[] = [];
+
+      /** The plan the reply carried for the calls that are about to run. */
+      const planOf = (current: typeof pass): string =>
+        current.parsed?.ok && current.parsed.envelope.type === 'tool_call'
+          ? (current.parsed.envelope.plan ?? '')
+          : '';
       /** Results already produced this turn, so a repeated call is not re-run. */
       const memo = new Map<
         string,
         { rendered: string; outcome: { ok: boolean; result: unknown } }
       >();
 
-      while (calls.length > 0 && iteration < maxIterations) {
+      while (calls.length > 0 && iteration < maxSteps) {
         iteration += 1;
+        // The model's own words for what this step is for.
+        const plan = planOf(pass);
+        if (plan) yield { type: 'plan', text: plan, step: iteration };
         const results: string[] = [];
         /** Ordinary outcomes, so the injected `tool_result` carries real values. */
         const outcomes: Outcome[] = [];
@@ -921,6 +984,17 @@ export class QwenEngine {
             result: dispatched.ok === true ? dispatched.result : (dispatched.error ?? 'failed'),
           };
           memo.set(signature, { rendered, outcome });
+          progress.push({
+            step: iteration,
+            call: `${call.name}(${JSON.stringify(call.args)})`,
+            result: outcome.result,
+          });
+          facts.push({
+            tool: call.name,
+            args: JSON.stringify(call.args ?? {}),
+            ok: outcome.ok,
+            result: outcome.result,
+          });
           // The prompt gets the readable view (names first), not a nested dump.
           results.push(
             `${call.name} → ${dispatched.ok === true ? readableResult(dispatched.result) : rendered}`,
@@ -942,9 +1016,45 @@ export class QwenEngine {
             )
           : undefined;
         pass = yield* generate(
-          toolResultPrompt(results, lastUser.content, envelope ? { envelope } : {}),
+          toolResultPrompt(results, lastUser.content, {
+            ...(envelope ? { envelope } : {}),
+            progress: progressPrompt(progress),
+            stepsLeft: Math.max(0, maxSteps - iteration),
+            // The user's own paths, minus the ones a call has already used: a
+            // small model stops after the first folder unless it is told.
+            remaining: unusedRequestPaths(
+              lastUser.content,
+              facts.map((fact) => fact.args),
+            ),
+          }),
         );
         calls = pass.calls.filter((call) => !memo.has(`${call.name}:${JSON.stringify(call.args)}`));
+      }
+
+      if (calls.length > 0) {
+        // The model asked for more work than the reply may do. Rather than
+        // leaving a dangling call, take one answer-only turn with the grammar
+        // that makes another call impossible, so the user gets what the results
+        // already say.
+        yield {
+          type: 'plan',
+          text: `Step limit (${maxSteps}) reached — answering with the results so far.`,
+          step: maxSteps + 1,
+        };
+        let answerGrammar: LlamaGrammar | null = null;
+        if (strict && grammarEnabled()) {
+          try {
+            answerGrammar = await loaded.llama.createGrammarForJsonSchema(
+              finalOnlyGrammarSchema() as never,
+            );
+          } catch {
+            answerGrammar = null;
+          }
+        }
+        pass = yield* generate(
+          finalAnswerPrompt(lastUser.content, progressPrompt(progress)),
+          answerGrammar,
+        );
       }
 
       for (const event of splitter.flush()) yield event;
@@ -953,7 +1063,10 @@ export class QwenEngine {
       // A reply that ignores the payload gets the facts appended; one that
       // contradicts it ("there are no scripts" over a six-script list, or a
       // silent failure) is replaced by them.
-      const guard = guardToolAnswer(stripJsonBlobs(visibleText).trim(), lastTool);
+      const guard = guardToolAnswer(stripJsonBlobs(visibleText).trim(), lastTool, {
+        facts,
+        question: lastUser.content,
+      });
       if (guard.kind === 'append') {
         yield { type: 'token', text: `${visibleText.trim() ? '\n\n' : ''}${guard.text}` };
       } else if (guard.kind === 'replace') {

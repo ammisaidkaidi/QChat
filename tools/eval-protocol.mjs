@@ -28,7 +28,7 @@
  * Nothing here writes to the repository, the weights folder or the settings
  * files: every prompt is read-only (list, read, describe, search, fetch, alert).
  *
- * Options: --model <id>  --limit <n>  --passes a,b  --offline  --verbose  --json
+ * Options: --model <id>  --limit <n>  --steps <n>  --passes a,b  --offline  --verbose  --json
  */
 import { existsSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -47,6 +47,8 @@ const flag = (name, fallback = undefined) => {
 
 const modelId = typeof flag('model') === 'string' ? flag('model') : undefined;
 const limit = Number(flag('limit', 12));
+/** Tool steps a single reply may take; 2 keeps the eval quick. */
+const steps = Number(flag('steps', 2));
 const offline = Boolean(flag('offline', false));
 const verbose = Boolean(flag('verbose', false));
 const asJson = Boolean(flag('json', false));
@@ -141,7 +143,7 @@ async function runPrompt(text, index) {
       messages: [{ role: 'user', content: text }],
       tools: true,
       net: !offline,
-      maxToolIterations: 2,
+      maxToolIterations: steps,
     })) {
       if (event.type === 'token') answer += event.text;
       else if (event.type === 'tool_call') calls.push({ name: event.call.name, ok: null });
@@ -166,7 +168,9 @@ async function runPrompt(text, index) {
 }
 
 console.log(`model: ${current.modelId} (${current.modelName})`);
-console.log(`prompts: ${Math.min(PROMPTS.length, Number.isFinite(limit) ? limit : 12)}`);
+console.log(
+  `prompts: ${Math.min(PROMPTS.length, Number.isFinite(limit) ? limit : 12)} · steps: ${steps}`,
+);
 console.log('');
 
 const results = [];

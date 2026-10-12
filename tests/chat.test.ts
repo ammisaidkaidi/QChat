@@ -415,9 +415,7 @@ describe('strict-JSON protocol', () => {
       protocol: 'strict-json',
     });
     expect(prompt).toContain('exactly one JSON object');
-    expect(prompt).toContain(
-      '{"type":"tool_call","calls":[{"name":"listScripts","arguments":{}}]}',
-    );
+    expect(prompt).toContain('{"type":"tool_call","plan":"List the scripts first"');
     expect(prompt).toContain('{"type":"final","content":"');
     expect(prompt).toContain('written by InfAgent after it runs your call');
     // The trained shape of Hammer2.1 / xLAM is replaced, not repeated.

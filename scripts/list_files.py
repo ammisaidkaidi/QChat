@@ -11,6 +11,7 @@
   Call it with JSON arguments: { "path": <string>, "pattern": <string>, "recursive": <boolean>, "limit": <number> }.
   It prints a single JSON envelope on stdout: { "ok": true, "result": { "path", "count", "truncated", "totals", "entries": [...] } }.
   Each entry is { name, relative, path, type, size_bytes, size, modified, extension }; `totals` sums the returned entries and counts extensions.
+  `filtered_out` counts the entries a `pattern` (or `dirs: false`) kept out, so count 0 with scanned > 0 is a filtered listing, not an empty folder.
   On failure it prints { "ok": false, "error": "..." } and exits non-zero — an unreadable folder is not an empty one, so read `error` before retrying.
   Never guess a different name: the script is registered as "list_files".
 """
@@ -69,6 +70,9 @@ def run(args=None):
     args = args or {}
     raw_path = str(args.get("path") or ".")
     pattern = str(args.get("pattern") or "").strip()
+    # Entries a filter kept out of the listing. Zero of thirteen scanned files is
+    # not an empty folder, and the difference has to survive into the envelope.
+    filtered_out = 0
     recursive = bool(args.get("recursive") or False)
     include_hidden = bool(args.get("hidden") or False)
     include_dirs = args.get("dirs") is not False
@@ -98,7 +102,7 @@ def run(args=None):
         return fnmatch.fnmatch(name, pattern) or fnmatch.fnmatch(name.lower(), pattern.lower())
 
     def walk(directory, level):
-        nonlocal scanned, unreadable_folders, matched_bytes
+        nonlocal scanned, unreadable_folders, matched_bytes, filtered_out
         try:
             children = sorted(os.scandir(directory), key=lambda item: item.name.lower())
         except OSError:
@@ -120,11 +124,14 @@ def run(args=None):
                 # still walked into so a nested match is not missed.
                 if include_dirs and matches(entry.name):
                     entries.append(describe(entry, root))
+                elif include_dirs:
+                    filtered_out += 1
                 if recursive and (max_depth is None or level + 1 < max_depth):
                     walk(entry.path, level + 1)
                 continue
 
             if not matches(entry.name):
+                filtered_out += 1
                 continue
 
             record = describe(entry, root)
@@ -156,6 +163,7 @@ def run(args=None):
         "sort": order,
         "count": len(visible),
         "scanned": scanned,
+        "filtered_out": filtered_out,
         "unreadable_folders": unreadable_folders,
         "truncated": truncated,
         "totals": {

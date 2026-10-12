@@ -37,6 +37,13 @@ export declare const TOOL_PROTOCOL: string;
  * for a 0.6B model.
  */
 export declare const ENVELOPE_SPEC: string[];
+/**
+ * How the agent should work through a task that needs more than one call.
+ *
+ * The step budget is stated because a small model will otherwise try to finish a
+ * three-folder request in a single call and answer from nothing.
+ */
+export declare function multiStepSpec(maxSteps: number): string[];
 export interface SystemPromptOptions {
     records: readonly ScriptRecord[];
     tools: boolean;
@@ -49,6 +56,8 @@ export interface SystemPromptOptions {
      * pre-protocol wording.
      */
     protocol?: ProtocolMode;
+    /** Tool steps allowed in one reply, stated in the prompt. Defaults to 6. */
+    maxSteps?: number;
     identity?: string;
     /** Internet capabilities (webSearch/webFetch) are available. */
     net?: boolean;
@@ -83,6 +92,8 @@ export declare function toolboxListing(records: readonly ScriptRecord[]): string
 export declare function formatToolResult(result: unknown): string;
 /** Human-readable one-liner used when the model returns nothing usable. */
 export declare function fallbackAnswer(toolName: string, result: unknown): string;
+/** Entries a filter kept out of a listing (`filtered_out`), 0 when unknown. */
+export declare function filteredCount(result: unknown): number;
 /**
  * Does the user ask about the toolbox itself ("which scripts do you have?")?
  *
@@ -100,6 +111,10 @@ export declare function stripJsonBlobs(text: string): string;
  */
 export declare function toolResultPrompt(results: readonly string[], userQuestion: string, options?: {
     envelope?: string;
+    progress?: string;
+    stepsLeft?: number;
+    /** Paths of the request no call has covered yet, if any. */
+    remaining?: readonly string[];
 }): string;
 /**
  * Every function name the system prompt lists, in the order it lists them.
@@ -139,6 +154,8 @@ export declare function answerClaimsEmpty(answer: string): boolean;
 /** The error text of a failed outcome, or `null` when the call succeeded. */
 export declare function outcomeError(outcome: ToolOutcome): string | null;
 /** The number the reply states about a list ("three scripts"), if it states one. */
+/** Every count the reply states, in the order they appear ("4 files", "two rows"). */
+export declare function statedCounts(answer: string): number[];
 export declare function statedCount(answer: string): number | null;
 export declare function answerStatesWrongCount(answer: string, count: number): boolean;
 /**
@@ -151,6 +168,37 @@ export declare function answerEnumerates(answer: string): boolean;
 export declare function answerMentionsError(answer: string, error: string): boolean;
 /** What the model should be told after a tool ran: the facts, one readable line. */
 export declare function readableResult(result: unknown, limit?: number): string;
+/**
+ * One line that keeps the *numbers* of a result: what a later step needs in
+ * order to add results together ("count: 3", "files: 3", "12 items: …").
+ *
+ * `readableResult` is for the model to read the payload it just received; this
+ * is for the running list of everything received so far, which must stay short.
+ */
+export declare function compactResult(result: unknown, limit?: number): string;
+/**
+ * The progress block of a multi-step turn: every call already made, with the
+ * numbers it produced, so the model can merge results it received several steps
+ * ago instead of re-running the same call.
+ */
+export declare function progressPrompt(entries: readonly {
+    step: number;
+    call: string;
+    result: unknown;
+}[], options?: {
+    limit?: number;
+}): string;
+/**
+ * Paths the request names that no call has used yet.
+ *
+ * A small model lists the first folder it was given and then answers as if the
+ * task were done. The paths here are the user's own words — nothing is invented
+ * — so the next prompt can say which of them are still untouched and the reply
+ * finishes the three folders it was asked about instead of one.
+ */
+export declare function unusedRequestPaths(question: string, usedArguments: readonly string[]): string[];
+/** The last turn of a reply whose step budget ran out: answer with what we have. */
+export declare function finalAnswerPrompt(userQuestion: string, progress: string): string;
 /**
  * The concrete strings inside a tool result: name fields, scalar values and
  * short strings. They are what a faithful answer is expected to mention.
@@ -185,6 +233,48 @@ export type GuardAction = {
  * payload: an empty claim over a non-empty list, or a silent failure, is
  * corrected by the runtime, which is the only authority on what a tool returned.
  */
-export declare function guardToolAnswer(answer: string, outcome: ToolOutcome | null): GuardAction;
+/** One tool call of a reply, kept so the results of several steps can be added up. */
+export interface MergedFact {
+    /** Tool name, e.g. `list_files`. */
+    tool: string;
+    /** Arguments as text: the same folder listed twice must count once. */
+    args: string;
+    ok: boolean;
+    result: unknown;
+}
+/**
+ * Add up the results of a reply's steps when that is plainly what the user
+ * asked for: the same tool used more than once with different arguments, every
+ * payload carrying the same number (a folder listing's `count`) and every step
+ * having been complete. The sum is
+ * computed here — the runtime — so a multi-step answer states a real total
+ * instead of a guessed one.
+ */
+export declare function mergedTotal(facts: readonly MergedFact[]): {
+    tool: string;
+    key: string;
+    total: number;
+    parts: number;
+} | null;
+/** The sentence the runtime adds when a total is computable. */
+export declare function totalLine(merged: {
+    key: string;
+    total: number;
+    parts: number;
+}): string;
+/** The numbers a reply states, digits and simple number words alike. */
+export declare function numbersIn(text: string): number[];
+/** The user asked for a count or a total. */
+export declare function wantsTotal(text: string): boolean;
+/** The reply presents a total of its own. */
+export declare function claimsTotal(text: string): boolean;
+/** Extra context for the guard when a reply ran several tool steps. */
+export interface GuardOptions {
+    /** Every call of the reply, in order. */
+    facts?: readonly MergedFact[];
+    /** The user's question, to know whether a total was expected. */
+    question?: string;
+}
+export declare function guardToolAnswer(answer: string, outcome: ToolOutcome | null, options?: GuardOptions): GuardAction;
 export {};
 //# sourceMappingURL=prompt.d.ts.map

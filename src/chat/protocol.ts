@@ -37,13 +37,33 @@ export interface ToolCallRequest {
 }
 
 export type Envelope =
-  { type: 'tool_call'; calls: ToolCallRequest[] } | { type: 'final'; content: string };
+  | { type: 'tool_call'; calls: ToolCallRequest[]; plan?: string }
+  | { type: 'final'; content: string };
+
+/** How long the one-line plan of a step may be. */
+export const MAX_PLAN_CHARS = 240;
+
+/**
+ * How many tool steps one reply may take.
+ *
+ * A multi-step task — "list the files in these three folders and count them" —
+ * needs one step per folder plus the answer, so the old default of two cut the
+ * work in half. `INFAGENT_MAX_STEPS` tunes it; the request may override.
+ */
+export function stepBudget(requested?: number): number {
+  const fromEnv = Number(process.env['INFAGENT_MAX_STEPS']);
+  const value = requested ?? (Number.isFinite(fromEnv) && fromEnv > 0 ? fromEnv : DEFAULT_STEPS);
+  return Math.max(1, Math.min(12, Math.round(value)));
+}
+
+/** Steps per reply when neither the request nor the environment say otherwise. */
+export const DEFAULT_STEPS = 6;
 
 export type ParseResult = { ok: true; envelope: Envelope } | { ok: false; reason: string };
 
 /** Literal examples, shared by the system prompt and the repair turn. */
 export const TOOL_CALL_EXAMPLE =
-  '{"type":"tool_call","calls":[{"name":"listScripts","arguments":{}}]}';
+  '{"type":"tool_call","plan":"List the scripts first","calls":[{"name":"listScripts","arguments":{}}]}';
 export const FINAL_EXAMPLE =
   '{"type":"final","content":"You have three scripts: hello, system_info, net_interfaces."}';
 
@@ -129,7 +149,15 @@ export function parseEnvelope(
       }
       calls.push({ name, arguments: (args as Record<string, unknown> | undefined) ?? {} });
     }
-    return { ok: true, envelope: { type: 'tool_call', calls } };
+    const plan = parsed['plan'];
+    if (plan !== undefined && typeof plan !== 'string') {
+      return { ok: false, reason: '"plan" must be a string (or omitted)' };
+    }
+    const text = typeof plan === 'string' ? plan.trim().slice(0, MAX_PLAN_CHARS) : '';
+    return {
+      ok: true,
+      envelope: { type: 'tool_call', calls, ...(text.length > 0 ? { plan: text } : {}) },
+    };
   }
 
   if (type === 'final') {
@@ -146,6 +174,20 @@ export function parseEnvelope(
   return {
     ok: false,
     reason: `"type" must be "tool_call" or "final", not ${JSON.stringify(type)}`,
+  };
+}
+
+/**
+ * The grammar for a turn that must end in an answer (the step budget is spent).
+ * Only `final` is representable, so the model cannot open yet another step.
+ */
+export function finalOnlyGrammarSchema(): Record<string, unknown> {
+  return {
+    type: 'object',
+    properties: {
+      type: { const: 'final' },
+      content: { type: 'string' },
+    },
   };
 }
 
@@ -181,6 +223,10 @@ export function envelopeGrammarSchema(toolNames: readonly string[]): Record<stri
         type: 'object',
         properties: {
           type: { const: 'tool_call' },
+          // The model states what this step is for; it may be empty when the
+          // call is obvious. Required in the schema because this grammar
+          // implementation treats every listed property as mandatory.
+          plan: { type: 'string' },
           calls: {
             type: 'array',
             minItems: 1,

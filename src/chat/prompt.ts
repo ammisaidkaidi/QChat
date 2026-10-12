@@ -176,15 +176,33 @@ const CALL_FORMAT: Record<ModelStyle, string[]> = {
 export const ENVELOPE_SPEC = [
   'Reply with exactly one JSON object and nothing else — no prose, no code fence, no second object.',
   '',
-  'To call one or more functions, use the "tool_call" object:',
+  'To call one or more functions, use the "tool_call" object — "plan" is one short line saying what this step is for:',
   TOOL_CALL_EXAMPLE,
   '',
   'To answer the user, use the "final" object and put the whole answer in "content":',
   FINAL_EXAMPLE,
   '',
-  'Use only the function names listed above, spelled exactly, and give every argument the function expects.',
+  'Use only the function names listed above, spelled exactly, and give the required arguments of that function.',
+  'Give only the arguments the task needs: an optional argument you were not given is better left out than guessed, and never add a filter the user did not ask for.',
+  'You may call up to four functions in one step, and you may keep calling after each result.',
   RESULT_RULE,
 ];
+
+/**
+ * How the agent should work through a task that needs more than one call.
+ *
+ * The step budget is stated because a small model will otherwise try to finish a
+ * three-folder request in a single call and answer from nothing.
+ */
+export function multiStepSpec(maxSteps: number): string[] {
+  return [
+    '# Steps',
+    `Work in steps: at most ${maxSteps} steps per reply. Call up to four functions, read their results, then the next ones, and answer when the work is done.`,
+    'Counting the files of three folders: one list_files step per folder, then add the three counts.',
+    'Example — the user gives /tmp/a, /tmp/b and /tmp/c: step 1 calls list_files with {"path":"/tmp/a"}, step 2 the same for /tmp/b, step 3 for /tmp/c, and the answer adds the three counts. One folder per call, exactly the arguments the user gave, and no pattern or filter of your own.',
+    'A total is computed from the results you were given, never invented; what could not be read is said, not guessed.',
+  ];
+}
 
 export interface SystemPromptOptions {
   records: readonly ScriptRecord[];
@@ -198,6 +216,8 @@ export interface SystemPromptOptions {
    * pre-protocol wording.
    */
   protocol?: ProtocolMode;
+  /** Tool steps allowed in one reply, stated in the prompt. Defaults to 6. */
+  maxSteps?: number;
   identity?: string;
   /** Internet capabilities (webSearch/webFetch) are available. */
   net?: boolean;
@@ -435,6 +455,7 @@ export function buildSystemPrompt(options: SystemPromptOptions): string {
 
     parts.push('', ...(options.protocol === 'strict-json' ? ENVELOPE_SPEC : CALL_FORMAT[style]));
     parts.push('', TOOL_PROTOCOL);
+    parts.push('', ...multiStepSpec(Math.max(1, options.maxSteps ?? 6)));
     if (net) {
       parts.push(
         '',
@@ -549,7 +570,20 @@ export function fallbackAnswer(toolName: string, result: unknown): string {
   }
 
   const flat = flatten(value).split('\n').filter(Boolean).slice(0, 4).join(' · ');
-  return `${toolName} → ${flat || 'done'}`;
+  const filtered = filteredCount(value);
+  const note =
+    filtered > 0
+      ? ` (${filtered} of the ${String((value as Record<string, unknown>)['scanned'] ?? '?')} entries were kept out by the filter)`
+      : '';
+  return `${toolName} → ${flat || 'done'}${note}`;
+}
+
+/** Entries a filter kept out of a listing (`filtered_out`), 0 when unknown. */
+export function filteredCount(result: unknown): number {
+  const value = unwrapEnvelope(result);
+  if (typeof value !== 'object' || value === null) return 0;
+  const filtered = (value as Record<string, unknown>)['filtered_out'];
+  return typeof filtered === 'number' && Number.isFinite(filtered) && filtered > 0 ? filtered : 0;
 }
 
 /**
@@ -607,7 +641,13 @@ export function stripJsonBlobs(text: string): string {
 export function toolResultPrompt(
   results: readonly string[],
   userQuestion: string,
-  options: { envelope?: string } = {},
+  options: {
+    envelope?: string;
+    progress?: string;
+    stepsLeft?: number;
+    /** Paths of the request no call has covered yet, if any. */
+    remaining?: readonly string[];
+  } = {},
 ): string {
   // The question is repeated *after* the payload so a small model does not
   // anchor on an earlier turn of the conversation.
@@ -619,15 +659,29 @@ export function toolResultPrompt(
     ...(envelope
       ? results.map((result) => `- ${result}`)
       : results.map((result) => `<tool_response>\n${result}\n</tool_response>`)),
+    ...(options.progress ? ['', options.progress] : []),
+    ...(options.remaining && options.remaining.length > 0
+      ? [
+          '',
+          `Paths in the request that no call has used yet: ${options.remaining.join(', ')}`,
+          'The task is not finished until each of them has been covered — call the tool for the ones left before answering.',
+        ]
+      : []),
     '',
     `User question: ${userQuestion}`,
     '',
     envelope
       ? [
-          'Answer that question from the tool output above.',
-          'If it listed items, name them; if it listed none, say that it is empty.',
+          'Continue the task from the tool output above.',
+          `If it is not finished, call the next functions now ("tool_call") — ${
+            options.stepsLeft === undefined
+              ? 'you may keep working for several steps.'
+              : `${options.stepsLeft} step(s) left in this reply.`
+          }`,
+          'If it is finished, reply with the "final" object and include any total or count you computed from the results.',
+          'If a list came back, name the items; if it came back empty, say that it is empty.',
           'Never say a tool returned nothing — and never say it failed — unless the output above says so.',
-          'Do not repeat the tool JSON and do not call a tool again: reply with the "final" object.',
+          'Do not repeat the tool JSON.',
         ].join('\n')
       : 'Using only the tool output above, answer that user question in one short sentence of plain language.',
     envelope
@@ -817,14 +871,20 @@ const NUMBER_WORDS: Record<string, number> = {
 };
 
 /** The number the reply states about a list ("three scripts"), if it states one. */
+/** Every count the reply states, in the order they appear ("4 files", "two rows"). */
+export function statedCounts(answer: string): number[] {
+  const found: number[] = [];
+  const pattern =
+    /\b(\d{1,3}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+(scripts?|tools?|files?|items?|results?|records?|entries|rows?|matches)\b/g;
+  for (const match of answer.toLowerCase().matchAll(pattern)) {
+    const value = NUMBER_WORDS[match[1] ?? ''] ?? Number(match[1]);
+    if (Number.isFinite(value)) found.push(value);
+  }
+  return found;
+}
+
 export function statedCount(answer: string): number | null {
-  const match =
-    /\b(\d{1,3}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+(scripts?|tools?|files?|items?|results?|records?|entries|rows?|matches)\b/.exec(
-      answer.toLowerCase(),
-    );
-  if (!match) return null;
-  const value = NUMBER_WORDS[match[1] ?? ''] ?? Number(match[1]);
-  return Number.isFinite(value) ? value : null;
+  return statedCounts(answer)[0] ?? null;
 }
 
 export function answerStatesWrongCount(answer: string, count: number): boolean {
@@ -875,6 +935,126 @@ export function readableResult(result: unknown, limit = 8): string {
   }
   const flat = flatten(value).split('\n').filter(Boolean).slice(0, 6).join('; ');
   return flat;
+}
+
+/**
+ * One line that keeps the *numbers* of a result: what a later step needs in
+ * order to add results together ("count: 3", "files: 3", "12 items: …").
+ *
+ * `readableResult` is for the model to read the payload it just received; this
+ * is for the running list of everything received so far, which must stay short.
+ */
+export function compactResult(result: unknown, limit = 6): string {
+  const value = unwrapEnvelope(result);
+  if (Array.isArray(value)) {
+    const names = identifyingValues(value);
+    return names.length > 0
+      ? `${value.length} items: ${names.slice(0, limit).join(', ')}`
+      : `${value.length} items`;
+  }
+  if (typeof value !== 'object' || value === null) return String(value ?? 'none');
+
+  const parts: string[] = [];
+  const walk = (object: Record<string, unknown>, prefix: string): void => {
+    for (const [key, item] of Object.entries(object)) {
+      if (item === null || ['string', 'number', 'boolean'].includes(typeof item)) {
+        const text = String(item);
+        if (text.length <= 60) parts.push(`${prefix}${key}: ${text}`);
+        continue;
+      }
+      if (Array.isArray(item)) {
+        parts.push(`${prefix}${key}: ${item.length} item(s)`);
+        continue;
+      }
+      if (typeof item === 'object') walk(item as Record<string, unknown>, `${key}.`);
+    }
+  };
+  walk(value as Record<string, unknown>, '');
+
+  // The numbers a later step needs come first: a folder listing must keep its
+  // `count` and `totals` even when the payload has many other fields.
+  const rank = (part: string): number => {
+    const key = (part.split(':')[0] ?? '').trim().split('.').pop() ?? '';
+    const index = COMPACT_PRIORITY.indexOf(key);
+    return index === -1 ? COMPACT_PRIORITY.length : index;
+  };
+  const ordered = parts
+    .map((part, index) => ({ part, index }))
+    .sort((a, b) => rank(a.part) - rank(b.part) || a.index - b.index)
+    .map((entry) => entry.part);
+  return ordered.slice(0, limit).join(' · ');
+}
+
+/** Keys of a result that matter most when several steps are added up. */
+const COMPACT_PRIORITY = [
+  'ok',
+  'count',
+  'files',
+  'filtered_out',
+  'total',
+  'totals',
+  'size_bytes',
+  'path',
+  'name',
+  'relative',
+  'entries',
+  'items',
+  'status',
+  'n',
+  'size',
+];
+
+/**
+ * The progress block of a multi-step turn: every call already made, with the
+ * numbers it produced, so the model can merge results it received several steps
+ * ago instead of re-running the same call.
+ */
+export function progressPrompt(
+  entries: readonly { step: number; call: string; result: unknown }[],
+  options: { limit?: number } = {},
+): string {
+  const limit = options.limit ?? 10;
+  const shown = entries.slice(-limit);
+  if (shown.length === 0) return '';
+  const lines = shown.map(
+    (entry) => `step ${entry.step} · ${entry.call} → ${trimText(compactResult(entry.result), 220)}`,
+  );
+  const omitted = entries.length - shown.length;
+  return [
+    'Progress so far:',
+    ...(omitted > 0 ? [`(the first ${omitted} step(s) are in the conversation above)`] : []),
+    ...lines,
+  ].join('\n');
+}
+
+/**
+ * Paths the request names that no call has used yet.
+ *
+ * A small model lists the first folder it was given and then answers as if the
+ * task were done. The paths here are the user's own words — nothing is invented
+ * — so the next prompt can say which of them are still untouched and the reply
+ * finishes the three folders it was asked about instead of one.
+ */
+export function unusedRequestPaths(question: string, usedArguments: readonly string[]): string[] {
+  const found = new Set<string>();
+  // POSIX paths, Windows paths, and quoted paths inside the request.
+  for (const match of question.matchAll(/(?:[A-Za-z]:[\\/]|\/)[^\s,;"']+/g)) {
+    const path = match[0].replace(/[.,;:!?]+$/, '');
+    if (path.length > 1) found.add(path);
+  }
+  return [...found].filter((path) => !usedArguments.some((args) => args.includes(path)));
+}
+
+/** The last turn of a reply whose step budget ran out: answer with what we have. */
+export function finalAnswerPrompt(userQuestion: string, progress: string): string {
+  return [
+    ...(progress ? [progress, ''] : []),
+    `User question: ${userQuestion}`,
+    '',
+    'The step limit for this reply is reached, so no further tool call is possible.',
+    'Using the results above (and the conversation), answer that question now with the single "final" object.',
+    'If a total was asked for, compute it from those results and state the number.',
+  ].join('\n');
 }
 
 /**
@@ -946,15 +1126,204 @@ export type GuardAction = { kind: 'none' } | { kind: 'append' | 'replace'; text:
  * payload: an empty claim over a non-empty list, or a silent failure, is
  * corrected by the runtime, which is the only authority on what a tool returned.
  */
-export function guardToolAnswer(answer: string, outcome: ToolOutcome | null): GuardAction {
+/** One tool call of a reply, kept so the results of several steps can be added up. */
+export interface MergedFact {
+  /** Tool name, e.g. `list_files`. */
+  tool: string;
+  /** Arguments as text: the same folder listed twice must count once. */
+  args: string;
+  ok: boolean;
+  result: unknown;
+}
+
+/** The numbers a multi-step task is usually counting. */
+const COUNT_KEYS = ['totals.files', 'files', 'count', 'total', 'items'];
+
+/** What to call the summed number in a sentence. */
+const COUNT_LABELS: Record<string, string> = {
+  'totals.files': 'files',
+  files: 'files',
+  count: 'items',
+  total: 'total',
+  items: 'items',
+};
+
+/** Read `a.b` out of a payload; arrays count as their length. */
+function readNumber(payload: unknown, path: string): number | null {
+  let value: unknown = payload;
+  for (const part of path.split('.')) {
+    if (typeof value !== 'object' || value === null) return null;
+    value = (value as Record<string, unknown>)[part];
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (Array.isArray(value)) return value.length;
+  return null;
+}
+
+/**
+ * A listing that was cut short, or that a filter kept entries out of, is not a
+ * whole count: adding such numbers up produces a total that is quietly too low.
+ */
+function isIncomplete(result: unknown): boolean {
+  const payload = unwrapEnvelope(result);
+  if (typeof payload !== 'object' || payload === null) return false;
+  const record = payload as Record<string, unknown>;
+  const filtered = record['filtered_out'];
+  return (
+    record['truncated'] === true ||
+    (typeof filtered === 'number' && Number.isFinite(filtered) && filtered > 0)
+  );
+}
+
+/**
+ * Add up the results of a reply's steps when that is plainly what the user
+ * asked for: the same tool used more than once with different arguments, every
+ * payload carrying the same number (a folder listing's `count`) and every step
+ * having been complete. The sum is
+ * computed here — the runtime — so a multi-step answer states a real total
+ * instead of a guessed one.
+ */
+export function mergedTotal(
+  facts: readonly MergedFact[],
+): { tool: string; key: string; total: number; parts: number } | null {
+  // A failure, a cut-short listing or a filtered one would make the sum an
+  // undercount, and a total that silently misses entries is worse than none.
+  if (facts.some((fact) => !fact.ok || isIncomplete(fact.result))) return null;
+  // What the payload is *about* is its own `path`/`name` when it has one: the
+  // same folder listed twice with two different argument objects is one folder,
+  // and counting it twice produced a total that was quietly too high.
+  const identity = (fact: MergedFact): string => {
+    const payload = unwrapEnvelope(fact.result);
+    if (typeof payload === 'object' && payload !== null) {
+      const record = payload as Record<string, unknown>;
+      const label = record['path'] ?? record['name'] ?? record['id'];
+      if (typeof label === 'string' && label.length > 0) return label;
+    }
+    return `args:${fact.args}`;
+  };
+  const groups = new Map<string, Map<string, unknown>>();
+  for (const fact of facts) {
+    const seen = groups.get(fact.tool) ?? new Map<string, unknown>();
+    const key = identity(fact);
+    if (!seen.has(key)) seen.set(key, fact.result);
+    groups.set(fact.tool, seen);
+  }
+  for (const [tool, byArgs] of groups) {
+    if (byArgs.size < 2) continue;
+    const payloads = [...byArgs.values()].map((result) => unwrapEnvelope(result));
+    const key = COUNT_KEYS.find((candidate) =>
+      payloads.every((payload) => readNumber(payload, candidate) !== null),
+    );
+    if (key === undefined) continue;
+    const parts = payloads.length;
+    const total = payloads.reduce<number>(
+      (sum, payload) => sum + (readNumber(payload, key) ?? 0),
+      0,
+    );
+    return { tool, key, total, parts };
+  }
+  return null;
+}
+
+/** The sentence the runtime adds when a total is computable. */
+export function totalLine(merged: { key: string; total: number; parts: number }): string {
+  const label = COUNT_LABELS[merged.key] ?? merged.key;
+  return `Total across the ${merged.parts} results: ${merged.total} ${label}.`;
+}
+
+/** The numbers a reply states, digits and simple number words alike. */
+export function numbersIn(text: string): number[] {
+  const found: number[] = [];
+  for (const match of text.matchAll(/\d[\d,._]*/g)) {
+    const value = Number(match[0].replace(/[,._]/g, ''));
+    if (Number.isFinite(value)) found.push(value);
+  }
+  const words: Record<string, number> = {
+    one: 1,
+    two: 2,
+    three: 3,
+    four: 4,
+    five: 5,
+    six: 6,
+    seven: 7,
+    eight: 8,
+    nine: 9,
+    ten: 10,
+    eleven: 11,
+    twelve: 12,
+    thirteen: 13,
+    fourteen: 14,
+    fifteen: 15,
+    sixteen: 16,
+    seventeen: 17,
+    eighteen: 18,
+    nineteen: 19,
+    twenty: 20,
+    thirty: 30,
+    forty: 40,
+    fifty: 50,
+    sixty: 60,
+    seventy: 70,
+    eighty: 80,
+    ninety: 90,
+    hundred: 100,
+  };
+  for (const [word, value] of Object.entries(words)) {
+    if (new RegExp(`\\b${word}\\b`, 'i').test(text)) found.push(value);
+  }
+  return found;
+}
+
+/** The user asked for a count or a total. */
+export function wantsTotal(text: string): boolean {
+  return /\b(how many|how much|total|count|sum|number of|combien|nombre|somme)\b/i.test(text);
+}
+
+/** The reply presents a total of its own. */
+export function claimsTotal(text: string): boolean {
+  return /\b(total|totals|altogether|in all|overall|sum|grand total|en tout)\b/i.test(text);
+}
+
+/** Extra context for the guard when a reply ran several tool steps. */
+export interface GuardOptions {
+  /** Every call of the reply, in order. */
+  facts?: readonly MergedFact[];
+  /** The user's question, to know whether a total was expected. */
+  question?: string;
+}
+
+export function guardToolAnswer(
+  answer: string,
+  outcome: ToolOutcome | null,
+  options: GuardOptions = {},
+): GuardAction {
   if (!outcome) return { kind: 'none' };
 
   const text = answer.trim();
-  const facts = fallbackAnswer(outcome.name, {
+  const base = fallbackAnswer(outcome.name, {
     ok: outcome.ok,
     ...(outcome.result === undefined ? {} : { result: outcome.result }),
     ...(outcome.error === undefined ? {} : { error: outcome.error }),
   });
+  // A reply may have run several steps. Its results are then several payloads,
+  // so what counts as "the list" or "the count" is no longer one of them: the
+  // runtime adds the numbers up where they plainly add up, and the rules below
+  // apply to all of them instead of only the last.
+  const steps = options.facts ?? [];
+  const multi = steps.length > 1;
+  const merged = multi ? mergedTotal(steps) : null;
+  const total = merged ? totalLine(merged) : '';
+  // The computed total belongs with the facts: it is what a replaced answer is
+  // replaced by.
+  const facts = total ? `${base} ${total}` : base;
+  const failureLines = multi
+    ? steps
+        .filter((fact) => !fact.ok)
+        .map((fact) => `${fact.tool} → failed: ${String(fact.result ?? 'failed')}`)
+    : [];
+  const hiddenFailure =
+    steps.some((fact) => !fact.ok && !answerMentionsError(text, String(fact.result ?? 'failed'))) &&
+    failureLines.length > 0;
 
   // A failure is never an empty result: say what went wrong, in any case.
   if (!outcome.ok) {
@@ -966,36 +1335,76 @@ export function guardToolAnswer(answer: string, outcome: ToolOutcome | null): Gu
     return { kind: 'none' };
   }
 
-  // An empty payload: the only truthful answer is that there is nothing.
-  if (resultIsEmpty(outcome.result)) {
+  // An empty payload, one step: the only truthful answer is that there is nothing.
+  if (!multi && resultIsEmpty(outcome.result)) {
     if (text.length === 0) return { kind: 'replace', text: facts };
     // The model may have phrased the emptiness differently; do not contradict it.
     return { kind: 'none' };
   }
 
-  // Non-empty payload: a reply that says there is nothing is false.
-  if (answerClaimsEmpty(text)) return { kind: 'replace', text: facts };
+  // The reply may only say there is nothing when every step came back empty.
+  const anyNonEmpty = multi
+    ? steps.some((fact) => fact.ok && !resultIsEmpty(fact.result))
+    : !resultIsEmpty(outcome.result);
+  if (answerClaimsEmpty(text) && anyNonEmpty) return { kind: 'replace', text: facts };
 
-  // A list of named items the reply counts wrongly ("three scripts" over six)
-  // is as misleading as one it denies entirely.
-  const items = identifyingValues(outcome.result);
-  const stated = statedCount(text);
-  if (items.length > 1 && stated !== null && stated !== items.length) {
-    return { kind: 'replace', text: facts };
+  // A step that failed and is not mentioned anywhere in the answer.
+  if (text.length > 0 && hiddenFailure) {
+    return { kind: 'append', text: failureLines.join('\n') };
   }
 
-  // A small list of named items: an enumerating sentence that names some of
-  // them and stops is incomplete, exactly like a wrong count.
-  if (items.length > 1 && items.length <= 8 && answerEnumerates(text)) {
-    const named = items.filter((name) => text.toLowerCase().includes(name.toLowerCase())).length;
-    if (named > 0 && named < items.length) return { kind: 'replace', text: facts };
+  if (!multi) {
+    // A list of named items the reply counts wrongly ("three scripts" over six)
+    // is as misleading as one it denies entirely.
+    const items = identifyingValues(outcome.result);
+    const stated = statedCount(text);
+    if (items.length > 1 && stated !== null && stated !== items.length) {
+      return { kind: 'replace', text: facts };
+    }
+
+    // A small list of named items: an enumerating sentence that names some of
+    // them and stops is incomplete, exactly like a wrong count.
+    if (items.length > 1 && items.length <= 8 && answerEnumerates(text)) {
+      const named = items.filter((name) => text.toLowerCase().includes(name.toLowerCase())).length;
+      if (named > 0 && named < items.length) return { kind: 'replace', text: facts };
+    }
+  } else if (merged) {
+    // Several steps: an answer that presents a total of its own must present
+    // the one the results add up to. Anything else is a wrong number the user
+    // would have no way to check, so the facts (total included) replace it.
+    const summed = /\b(total|altogether|in all|overall|grand total|en tout)\b/i.test(text);
+    if (summed && !numbersIn(text).includes(merged.total)) {
+      return { kind: 'replace', text: facts };
+    }
   }
 
   // Nothing usable came back (an empty reply, or the echoed JSON that
   // `stripJsonBlobs` already removed): the facts stand on their own.
   if (text.length === 0) return { kind: 'append', text: facts };
 
+  if (multi) {
+    // Several steps: a reply that never states the computed total (or states a
+    // different one) gets the real total appended, without touching its words.
+    if (merged && !numbersIn(text).includes(merged.total)) {
+      const expected =
+        claimsTotal(text) || (options.question !== undefined && wantsTotal(options.question));
+      if (expected) return { kind: 'append', text: total };
+    }
+    return { kind: 'none' };
+  }
+
+  // A filtered listing: a reply that reports its numbers without a word about
+  // the filter is reporting an empty folder that is not empty. One that names
+  // the filter has read the payload — there is nothing to correct.
+  const filtered = filteredCount(outcome.result);
+  if (filtered > 0) {
+    const named = /filter|pattern|scanned|excluded|matched|no files? match/i.test(text);
+    return named ? { kind: 'none' } : { kind: 'replace', text: facts };
+  }
+
   // The right count is a use of the payload even when no name is repeated.
+  const items = identifyingValues(outcome.result);
+  const stated = statedCount(text);
   if (stated !== null && stated === items.length) return { kind: 'none' };
 
   // A reply that ignored the payload entirely gets the facts underneath it.

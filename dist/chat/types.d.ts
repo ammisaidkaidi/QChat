@@ -42,6 +42,16 @@ export type ChatEvent = {
     type: 'tool_result';
     call: ChatToolCall;
 }
+/**
+ * What the model says the current step of a multi-step task is for. It comes
+ * from the `plan` field of a `tool_call` envelope; `step` counts the steps of
+ * this reply from 1.
+ */
+ | {
+    type: 'plan';
+    text: string;
+    step?: number;
+}
 /** The model (or anything else) raised a user-facing alert. */
  | {
     type: 'alert';
@@ -71,7 +81,11 @@ export interface ChatRequest {
     tools?: boolean;
     /** Replace the generated system prompt (the script toolbox listing). */
     systemPrompt?: string;
-    /** Extra turns of tool calls allowed before the model must answer. */
+    /**
+     * Tool steps this reply may take, 1–12 (default 6, `INFAGENT_MAX_STEPS`).
+     * One step may call up to four functions; each step's results come back and
+     * the model may call more before it answers.
+     */
     maxToolIterations?: number;
     /**
      * System-prompt template for this turn. Omit to use the one selected in the

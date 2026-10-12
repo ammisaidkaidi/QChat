@@ -155,6 +155,8 @@ export interface ChatTurn {
   text: string;
   thinking: string;
   calls: ChatToolCall[];
+  /** The plan lines of a multi-step turn, in order. */
+  plans?: { text: string; step?: number }[];
   stats?: {
     totalTokens: number;
     tokensPerSecond: number;
@@ -281,6 +283,8 @@ export type ChatEvent =
   | { type: 'reset' }
   | { type: 'tool_call'; call: ChatToolCall }
   | { type: 'tool_result'; call: ChatToolCall }
+  /** What the model says the current step is for (`plan` of a tool_call). */
+  | { type: 'plan'; text: string; step?: number }
   /** A user-facing alert was raised (showAlert, the CLI or the API). */
   | { type: 'alert'; alert: AlertRecord }
   | {

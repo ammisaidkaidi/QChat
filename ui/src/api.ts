@@ -162,6 +162,8 @@ interface ChatStreamOptions {
   /** Allow webSearch/webFetch for this turn. */
   net?: boolean;
   systemPrompt?: string;
+  /** Tool steps allowed in one reply (1–12). */
+  maxToolIterations?: number;
   onEvent: (event: ChatEvent) => void;
   onError: (message: string) => void;
   onClose: () => void;
@@ -188,6 +190,9 @@ export function streamChat(options: ChatStreamOptions): ChatStreamHandle {
           ...(options.tools === undefined ? {} : { tools: options.tools }),
           ...(options.net === undefined ? {} : { net: options.net }),
           ...(options.systemPrompt ? { systemPrompt: options.systemPrompt } : {}),
+          ...(options.maxToolIterations === undefined
+            ? {}
+            : { maxToolIterations: options.maxToolIterations }),
         }),
       });
 
