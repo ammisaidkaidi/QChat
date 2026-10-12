@@ -7,6 +7,7 @@
  * the model is told to prefer a script over answering from memory.
  */
 import type { ModelStyle } from './modelStore.js';
+import type { ProtocolMode } from './protocol.js';
 import type { ScriptRecord } from '../scripts/types.js';
 export declare const IDENTITY: string;
 /** Collapse whitespace and cut at a word boundary, never mid-word. */
@@ -28,12 +29,26 @@ interface FunctionSchema {
 export declare function scriptFunctionSchema(record: ScriptRecord): FunctionSchema;
 export declare function toolSchemas(records: readonly ScriptRecord[]): FunctionSchema[];
 export declare const TOOL_PROTOCOL: string;
+/**
+ * The strict protocol, as the model reads it.
+ *
+ * One object per reply, and its `type` decides what the reply *is* — the only
+ * wording that keeps "the model asked for a tool" and "a tool answered" apart
+ * for a 0.6B model.
+ */
+export declare const ENVELOPE_SPEC: string[];
 export interface SystemPromptOptions {
     records: readonly ScriptRecord[];
     tools: boolean;
     thinking: boolean;
     /** Prompting convention of the active model. Defaults to `qwen3`. */
     style?: ModelStyle;
+    /**
+     * Tool-call protocol. `strict-json` (the default) states the envelope
+     * contract; `native` keeps the model's own trained shape; `legacy` is the
+     * pre-protocol wording.
+     */
+    protocol?: ProtocolMode;
     identity?: string;
     /** Internet capabilities (webSearch/webFetch) are available. */
     net?: boolean;
@@ -83,7 +98,26 @@ export declare function stripJsonBlobs(text: string): string;
  * The user's question is repeated *after* the payload on purpose: a small model
  * otherwise anchors on an earlier turn of the conversation.
  */
-export declare function toolResultPrompt(results: readonly string[], userQuestion: string): string;
+export declare function toolResultPrompt(results: readonly string[], userQuestion: string, options?: {
+    envelope?: string;
+}): string;
+/**
+ * Every function name the system prompt lists, in the order it lists them.
+ *
+ * The engine builds the JSON-schema grammar from this list, so the grammar and
+ * the prompt can never disagree about which tools exist — `tests/chat.test.ts`
+ * fails if they drift apart.
+ */
+export declare function toolboxNames(options: {
+    records: readonly ScriptRecord[];
+    net?: boolean;
+    mcp?: readonly {
+        server: string;
+        name: string;
+        description: string;
+        inputSchema?: Record<string, unknown>;
+    }[];
+}): string[];
 /**
  * The concrete strings inside a tool result: name fields, scalar values and
  * short strings. They are what a faithful answer is expected to mention.

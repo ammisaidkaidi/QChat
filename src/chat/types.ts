@@ -35,7 +35,14 @@ export type ChatEvent =
   | { type: 'tool_result'; call: ChatToolCall }
   /** The model (or anything else) raised a user-facing alert. */
   | { type: 'alert'; alert: Alert }
-  | { type: 'stats'; totalTokens: number; tokensPerSecond: number; durationMs: number }
+  | {
+      type: 'stats';
+      totalTokens: number;
+      tokensPerSecond: number;
+      durationMs: number;
+      /** Protocol correction turns spent on this reply (strict-JSON mode only). */
+      repairs?: number;
+    }
   | { type: 'done' }
   | { type: 'error'; message: string };
 

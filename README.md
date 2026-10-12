@@ -111,6 +111,52 @@ infagent chat ask "…" [--thinking] [--no-tools] [--temp 0.4] [--max 512]
 infagent chat unload              # free ~1 GB of RAM now
 ```
 
+### Tool protocol — one JSON object per reply
+
+A reply is never free text with a call hidden inside it. The model emits exactly
+one JSON object and that object says what it is:
+
+```json
+{"type":"tool_call","calls":[{"name":"listScripts","arguments":{}}]}
+{"type":"final","content":"You have three scripts: hello, disk, ping."}
+```
+
+The third shape is produced by the runtime, never by the model — after running
+the calls the engine injects it as a user turn:
+
+```json
+{"type":"tool_result","calls":[{"name":"listScripts","ok":true,"result":[…]}]}
+```
+
+So "the model asked for a tool" and "a tool answered" are told apart by one
+field, not by pattern-matching prose, and a model cannot invent tool output.
+
+The format is held by three layers:
+
+1. **Grammar** — `llama.createGrammarForJsonSchema()` (node-llama-cpp, already a
+   dependency) constrains the whole completion, with `name` limited to the tools
+   actually offered this turn. Malformed JSON is not unlikely, it is
+   unrepresentable. Turn it off with `INFAGENT_TOOL_GRAMMAR=0`.
+2. **Prompt** — the envelope contract and both examples are stated in the system
+   prompt (`ENVELOPE_SPEC`), and tool results arrive as the `tool_result` object
+   with the instruction to answer with `final`.
+3. **Parse, then repair** — `parseEnvelope()` rejects prose, fences, unknown
+   types, calls to tools that were not offered and any model-written
+   `tool_result`, each with a reason. The engine spends at most two correction
+   turns on a reply that failed, then falls back to the lenient parser so a
+   stubborn model still works. The number of repairs appears next to the
+   token/latency line of that reply.
+
+Per model: `toolProtocol` in `models/<id>.settings.json` — `strict-json`
+(default) or `native`, which keeps a fine-tuned model's own call shape
+(`Hammer2.1`, `xLAM`) in the prompt while results still arrive as the envelope.
+Globally: `INFAGENT_TOOL_PROTOCOL=legacy` restores the pre-protocol wording for
+every model, and `INFAGENT_TOOL_PROTOCOL=native`/`strict-json` force one mode.
+
+Measure it instead of guessing: `node tools/eval-protocol.mjs` runs 12 read-only
+prompts and reports first-try validity, repairs, failed calls, stray calls and
+latency per pass (grammar on, grammar off, legacy).
+
 ### Models folder
 
 ```

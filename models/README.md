@@ -72,6 +72,33 @@ tool calls are best-effort and chat is the main use. `Qwen2.5-0.5B`,
 `SmolLM2-360M`, `LFM2.5-350M`, `Gemma 3 1B` and `Llama 3.2 1B` have little or no
 tool-calling training at all.
 
+### Tool protocol
+
+Every reply is one JSON object that names its own kind — the model never writes a
+tool *result*:
+
+```json
+{"type":"tool_call","calls":[{"name":"listScripts","arguments":{}}]}
+{"type":"final","content":"You have three scripts: hello, disk, ping."}
+```
+
+After the engine runs the calls it injects the third shape itself, as a user turn:
+`{"type":"tool_result","calls":[{"name":"listScripts","ok":true,"result":[…]}]}`. A
+reply that is not one of the model's two shapes is rejected with a precise reason
+and one correction turn is spent; after two the lenient parser salvages a call
+from the text instead of failing the turn. With the grammar on (default) the
+envelope is forced token by token, so malformed JSON cannot be generated.
+
+`strict-json` is the default for every model. `toolProtocol: "native"` keeps a
+model's own trained call shape in the prompt (`xlam`-style bare array) while the
+*results* still arrive as the engine-written envelope — it is set for `Hammer2.1`
+and both `xLAM` entries, which were fine-tuned to answer with nothing but that
+array. `tools/eval-protocol.mjs` measures first-try validity, repairs, unknown-tool
+attempts and latency per model, grammar on and off, so the choice is made on
+numbers rather than taste. The environment overrides everything:
+`INFAGENT_TOOL_PROTOCOL=legacy` restores the pre-protocol wording for every model
+and `INFAGENT_TOOL_GRAMMAR=0` turns the grammar off while keeping the contract.
+
 ### Licences
 
 The catalogue mixes permissive and restricted weights — check before shipping:
@@ -110,6 +137,7 @@ llama.cpp, so they are deliberately absent:
 | `temperature`, `maxTokens`, `thinking` | sampling defaults for this model |
 | `style` | `qwen3` (default) or `xlam` — the prompting and tool-call convention |
 | `chatWrapper` | `chatml` (default), `qwen`, or `auto` |
+| `toolProtocol` | `strict-json` (default) or `native` — see *Tool protocol* below |
 | `agentPrompt` | extra system-prompt text for this model |
 
 Environment variables win over the settings file when set:

@@ -51,6 +51,8 @@ export type ChatEvent = {
     totalTokens: number;
     tokensPerSecond: number;
     durationMs: number;
+    /** Protocol correction turns spent on this reply (strict-JSON mode only). */
+    repairs?: number;
 } | {
     type: 'done';
 } | {

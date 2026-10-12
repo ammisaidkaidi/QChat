@@ -1,3 +1,4 @@
+import { FINAL_EXAMPLE, RESULT_RULE, TOOL_CALL_EXAMPLE } from './protocol.js';
 export const IDENTITY = [
     'You are InfAgent, a concise on-device assistant running fully offline (llama.cpp, CPU only).',
     'Answer in the user’s language and keep replies to one or two sentences.',
@@ -131,6 +132,25 @@ const CALL_FORMAT = {
         '</tool_call>',
     ],
 };
+/**
+ * The strict protocol, as the model reads it.
+ *
+ * One object per reply, and its `type` decides what the reply *is* — the only
+ * wording that keeps "the model asked for a tool" and "a tool answered" apart
+ * for a 0.6B model.
+ */
+export const ENVELOPE_SPEC = [
+    'Reply with exactly one JSON object and nothing else — no prose, no code fence, no second object.',
+    '',
+    'To call one or more functions, use the "tool_call" object:',
+    TOOL_CALL_EXAMPLE,
+    '',
+    'To answer the user, use the "final" object and put the whole answer in "content":',
+    FINAL_EXAMPLE,
+    '',
+    'Use only the function names listed above, spelled exactly, and give every argument the function expects.',
+    RESULT_RULE,
+];
 /** The internet tools, offered only when internet access is on. */
 const NET_TOOLS = [
     {
@@ -293,7 +313,7 @@ export function buildSystemPrompt(options) {
         if (overflow.length > 0) {
             parts.push('', 'These tools exist too — call them the same way, with the arguments their name implies:', overflow.join(', '));
         }
-        parts.push('', ...CALL_FORMAT[style]);
+        parts.push('', ...(options.protocol === 'strict-json' ? ENVELOPE_SPEC : CALL_FORMAT[style]));
         parts.push('', TOOL_PROTOCOL);
         if (net) {
             parts.push('', 'webSearch and webFetch reach the internet; use them instead of guessing about current events.');
@@ -424,18 +444,46 @@ export function stripJsonBlobs(text) {
  * The user's question is repeated *after* the payload on purpose: a small model
  * otherwise anchors on an earlier turn of the conversation.
  */
-export function toolResultPrompt(results, userQuestion) {
-    // Qwen3 expects tool output inside a user turn as <tool_response> blocks.
+export function toolResultPrompt(results, userQuestion, options = {}) {
     // The question is repeated *after* the payload so a small model does not
     // anchor on an earlier turn of the conversation.
+    const envelope = options.envelope;
     return [
-        ...results.map((result) => `<tool_response>\n${result}\n</tool_response>`),
+        // Under the strict protocol the payload is a machine object the model can
+        // tell apart from its own call; otherwise it is Qwen3's <tool_response>.
+        ...(envelope
+            ? [envelope]
+            : results.map((result) => `<tool_response>\n${result}\n</tool_response>`)),
         '',
         `User question: ${userQuestion}`,
         '',
         'Using only the tool output above, answer that user question in one short sentence of plain language.',
-        'Do not repeat the JSON, do not describe the tool call, and do not emit another <tool_call> block.',
+        envelope
+            ? 'Do not repeat the tool JSON and do not call a tool again: reply with the "final" object.'
+            : 'Do not repeat the JSON, do not describe the tool call, and do not emit another <tool_call> block.',
     ].join('\n');
+}
+/**
+ * Every function name the system prompt lists, in the order it lists them.
+ *
+ * The engine builds the JSON-schema grammar from this list, so the grammar and
+ * the prompt can never disagree about which tools exist — `tests/chat.test.ts`
+ * fails if they drift apart.
+ */
+export function toolboxNames(options) {
+    const seen = new Set();
+    const names = [
+        ...toolSchemas(options.records),
+        ...ALWAYS_ON_TOOLS,
+        ...(options.net ? NET_TOOLS : []),
+        ...(options.mcp ?? []).map((tool) => mcpFunctionSchema(tool.server, tool)),
+    ].filter((schema) => {
+        if (seen.has(schema.name))
+            return false;
+        seen.add(schema.name);
+        return true;
+    });
+    return names.map((schema) => schema.name);
 }
 /** Unwrap the `{ok, result}` envelope a script run returns. */
 function unwrapEnvelope(result) {

@@ -155,7 +155,12 @@ export interface ChatTurn {
   text: string;
   thinking: string;
   calls: ChatToolCall[];
-  stats?: { totalTokens: number; tokensPerSecond: number; durationMs: number };
+  stats?: {
+    totalTokens: number;
+    tokensPerSecond: number;
+    durationMs: number;
+    repairs?: number;
+  };
   error?: string;
   streaming?: boolean;
 }
@@ -278,7 +283,13 @@ export type ChatEvent =
   | { type: 'tool_result'; call: ChatToolCall }
   /** A user-facing alert was raised (showAlert, the CLI or the API). */
   | { type: 'alert'; alert: AlertRecord }
-  | { type: 'stats'; totalTokens: number; tokensPerSecond: number; durationMs: number }
+  | {
+      type: 'stats';
+      totalTokens: number;
+      tokensPerSecond: number;
+      durationMs: number;
+      repairs?: number;
+    }
   | { type: 'done' }
   | { type: 'error'; message: string };
 

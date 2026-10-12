@@ -353,6 +353,7 @@ function applyEvent(turn: ChatTurn, event: ChatEvent): void {
       turn.stats = {
         totalTokens: event.totalTokens,
         tokensPerSecond: event.tokensPerSecond,
+        repairs: event.repairs,
         durationMs: event.durationMs,
       };
       break;
@@ -824,6 +825,9 @@ onMounted(async () => {
               <span v-if="turn.stats" class="opacity-80">
                 {{ turn.stats.totalTokens }} tok · {{ turn.stats.tokensPerSecond }} tok/s ·
                 {{ (turn.stats.durationMs / 1000).toFixed(1) }}s
+                <template v-if="turn.stats.repairs">
+                  · {{ turn.stats.repairs }} {{ turn.stats.repairs === 1 ? 'repair' : 'repairs' }}
+                </template>
               </span>
               <button
                 v-if="turn.text.trim()"

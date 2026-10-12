@@ -17,6 +17,7 @@
   "maxTokens": 512,
   "thinking": false,
   "style": "xlam",
+  "toolProtocol": "native",
   "chatWrapper": "chatml",
   "agentPrompt": ""
 }

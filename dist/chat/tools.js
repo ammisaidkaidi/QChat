@@ -100,6 +100,14 @@ export function extractToolCalls(text, options = {}) {
         let record = asRecord(candidate);
         if (!record)
             return;
+        // The strict-JSON envelope, salvaged: a model that wrapped
+        // `{"type":"tool_call","calls":[…]}` in prose or a fence has already failed
+        // the parser, and the calls inside it are still the ones it meant.
+        if (typeof record['type'] === 'string' && Array.isArray(record['calls'])) {
+            for (const entry of record['calls'])
+                consider(entry);
+            return;
+        }
         // Qwen3 sometimes emits `{"listScripts": {}}` — or `{"list_scripts": […]}`
         // with the answer already inside — instead of the documented
         // `{"name": …, "arguments": …}` shape. Only real tool names qualify, so a

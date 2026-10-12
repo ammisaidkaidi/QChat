@@ -3,12 +3,19 @@ import { describe, expect, it } from 'vitest';
 import { OutputSplitter, stripThinking } from '../src/chat/splitter.js';
 import { dispatchTool, extractToolCalls } from '../src/chat/tools.js';
 import {
+  grammarEnabled,
+  parseEnvelope,
+  resolveProtocolMode,
+  resultEnvelope,
+} from '../src/chat/protocol.js';
+import {
   answerUsesResult,
   asksAboutToolbox,
   buildSystemPrompt,
   fallbackAnswer,
   formatToolResult,
   toolResultPrompt,
+  toolboxNames,
 } from '../src/chat/prompt.js';
 import { ScriptRegistry } from '../src/scripts/registry.js';
 import type { ChatEvent } from '../src/chat/types.js';
@@ -221,9 +228,7 @@ describe('chat prompt styles', () => {
     expect(prompt).toContain('These tools exist too');
     expect(prompt).toMatch(/fake__tool_39/);
     // Declarations stay valid JSON with the schema the server declared.
-    const declaration = prompt
-      .split('\n')
-      .find((line) => line.includes('fake__tool_0"'));
+    const declaration = prompt.split('\n').find((line) => line.includes('fake__tool_0"'));
     expect(declaration).toBeDefined();
     const parsed = JSON.parse(declaration ?? '{}');
     expect(parsed.function.parameters.properties.path.type).toBe('string');
@@ -395,5 +400,116 @@ describe('chat prompt', () => {
 
   it('exposes the registry for wiring (smoke)', () => {
     expect(registry.list()).toEqual([]);
+  });
+});
+
+describe('strict-JSON protocol', () => {
+  const registry = new ScriptRegistry({ root: '/tmp/infagent-protocol-wiring' });
+
+  it('states the envelope contract instead of the per-model tags', () => {
+    const prompt = buildSystemPrompt({
+      records: [],
+      tools: true,
+      thinking: false,
+      style: 'xlam',
+      protocol: 'strict-json',
+    });
+    expect(prompt).toContain('exactly one JSON object');
+    expect(prompt).toContain(
+      '{"type":"tool_call","calls":[{"name":"listScripts","arguments":{}}]}',
+    );
+    expect(prompt).toContain('{"type":"final","content":"');
+    expect(prompt).toContain('written by InfAgent after it runs your call');
+    // The trained shape of Hammer2.1 / xLAM is replaced, not repeated.
+    expect(prompt).not.toContain('single JSON array');
+  });
+
+  it('keeps the trained shape when the model is set to `native`', () => {
+    const prompt = buildSystemPrompt({
+      records: [],
+      tools: true,
+      thinking: false,
+      style: 'xlam',
+      protocol: 'native',
+    });
+    expect(prompt).toContain('single JSON array');
+    expect(prompt).not.toContain('exactly one JSON object');
+  });
+
+  it('offers the grammar exactly the tools the prompt lists', () => {
+    const mcp = [
+      { server: 'fake', name: 'echo', description: 'Echo.', inputSchema: { type: 'object' } },
+    ];
+    const options = {
+      records: registry.list(),
+      net: true,
+      mcp,
+    } as const;
+    const names = toolboxNames(options);
+    const prompt = buildSystemPrompt({
+      ...options,
+      tools: true,
+      thinking: false,
+      toolBudget: 20000,
+    });
+    const listed = prompt
+      .split('\n')
+      .filter((line) => line.startsWith('{"type":"function"'))
+      .map((line) => JSON.parse(line).function.name as string);
+    expect(listed).toEqual(names);
+    expect(names).toContain('listScripts');
+    expect(names).toContain('webSearch');
+    expect(names).toContain('fake__echo');
+  });
+
+  it('injects the tool result as an engine-written object', () => {
+    const envelope = resultEnvelope([{ name: 'listScripts', ok: true, result: [{ name: 'hi' }] }]);
+    const prompt = toolResultPrompt(['listScripts → 1 script'], 'which scripts?', { envelope });
+    expect(prompt).not.toContain('<tool_response>');
+    expect(JSON.parse(prompt.split('\n')[0] ?? '{}')).toEqual({
+      type: 'tool_result',
+      calls: [{ name: 'listScripts', ok: true, result: [{ name: 'hi' }] }],
+    });
+    // The model must not try to answer with a result envelope of its own.
+    expect(prompt).toContain('reply with the "final" object');
+  });
+
+  it('salvages an envelope a model wrapped in prose', () => {
+    const { calls } = extractToolCalls(
+      'Sure!\n```json\n{"type":"tool_call","calls":[{"name":"listScripts","arguments":{}}]}\n```',
+    );
+    expect(calls).toEqual([{ name: 'listScripts', args: {} }]);
+  });
+
+  it('reads the model’s protocol setting, with the environment as the escape hatch', () => {
+    const previous = process.env['INFAGENT_TOOL_PROTOCOL'];
+    try {
+      delete process.env['INFAGENT_TOOL_PROTOCOL'];
+      expect(resolveProtocolMode(undefined)).toBe('strict-json');
+      expect(resolveProtocolMode('native')).toBe('native');
+
+      process.env['INFAGENT_TOOL_PROTOCOL'] = 'legacy';
+      expect(resolveProtocolMode('native')).toBe('legacy');
+      expect(resolveProtocolMode('strict-json')).toBe('legacy');
+
+      process.env['INFAGENT_TOOL_PROTOCOL'] = 'nonsense';
+      expect(resolveProtocolMode('native')).toBe('native');
+
+      delete process.env['INFAGENT_TOOL_PROTOCOL'];
+      process.env['INFAGENT_TOOL_GRAMMAR'] = '0';
+      expect(grammarEnabled()).toBe(false);
+      delete process.env['INFAGENT_TOOL_GRAMMAR'];
+      expect(grammarEnabled()).toBe(true);
+    } finally {
+      if (previous === undefined) delete process.env['INFAGENT_TOOL_PROTOCOL'];
+      else process.env['INFAGENT_TOOL_PROTOCOL'] = previous;
+      delete process.env['INFAGENT_TOOL_GRAMMAR'];
+    }
+  });
+
+  it('treats a model-written tool_result as a protocol error', () => {
+    const result = parseEnvelope('{"type":"tool_result","calls":[]}', { toolNames: ['x'] });
+    expect(result.ok).toBe(false);
+    expect(result.ok ? '' : result.reason).toContain('tool_result');
   });
 });

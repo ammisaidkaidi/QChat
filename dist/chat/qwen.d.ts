@@ -112,6 +112,11 @@ export declare class QwenEngine {
      * the switch costs nothing but a lazy reload on the next message.
      */
     useModel(id: string): Promise<ModelRecord>;
+    /**
+     * Forget the current conversation and start the next turn from the system
+     * prompt alone. The model stays loaded; only the chat history goes.
+     */
+    resetSession(): void;
     isLoaded(): boolean;
     isBusy(): boolean;
     /**

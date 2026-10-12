@@ -7,6 +7,8 @@
  * the model is told to prefer a script over answering from memory.
  */
 import type { ModelStyle } from './modelStore.js';
+import { FINAL_EXAMPLE, RESULT_RULE, TOOL_CALL_EXAMPLE } from './protocol.js';
+import type { ProtocolMode } from './protocol.js';
 import type { ScriptRecord } from '../scripts/types.js';
 
 export const IDENTITY = [
@@ -164,12 +166,38 @@ const CALL_FORMAT: Record<ModelStyle, string[]> = {
   ],
 };
 
+/**
+ * The strict protocol, as the model reads it.
+ *
+ * One object per reply, and its `type` decides what the reply *is* — the only
+ * wording that keeps "the model asked for a tool" and "a tool answered" apart
+ * for a 0.6B model.
+ */
+export const ENVELOPE_SPEC = [
+  'Reply with exactly one JSON object and nothing else — no prose, no code fence, no second object.',
+  '',
+  'To call one or more functions, use the "tool_call" object:',
+  TOOL_CALL_EXAMPLE,
+  '',
+  'To answer the user, use the "final" object and put the whole answer in "content":',
+  FINAL_EXAMPLE,
+  '',
+  'Use only the function names listed above, spelled exactly, and give every argument the function expects.',
+  RESULT_RULE,
+];
+
 export interface SystemPromptOptions {
   records: readonly ScriptRecord[];
   tools: boolean;
   thinking: boolean;
   /** Prompting convention of the active model. Defaults to `qwen3`. */
   style?: ModelStyle;
+  /**
+   * Tool-call protocol. `strict-json` (the default) states the envelope
+   * contract; `native` keeps the model's own trained shape; `legacy` is the
+   * pre-protocol wording.
+   */
+  protocol?: ProtocolMode;
   identity?: string;
   /** Internet capabilities (webSearch/webFetch) are available. */
   net?: boolean;
@@ -405,7 +433,7 @@ export function buildSystemPrompt(options: SystemPromptOptions): string {
       );
     }
 
-    parts.push('', ...CALL_FORMAT[style]);
+    parts.push('', ...(options.protocol === 'strict-json' ? ENVELOPE_SPEC : CALL_FORMAT[style]));
     parts.push('', TOOL_PROTOCOL);
     if (net) {
       parts.push(
@@ -563,18 +591,59 @@ export function stripJsonBlobs(text: string): string {
  * The user's question is repeated *after* the payload on purpose: a small model
  * otherwise anchors on an earlier turn of the conversation.
  */
-export function toolResultPrompt(results: readonly string[], userQuestion: string): string {
-  // Qwen3 expects tool output inside a user turn as <tool_response> blocks.
+export function toolResultPrompt(
+  results: readonly string[],
+  userQuestion: string,
+  options: { envelope?: string } = {},
+): string {
   // The question is repeated *after* the payload so a small model does not
   // anchor on an earlier turn of the conversation.
+  const envelope = options.envelope;
   return [
-    ...results.map((result) => `<tool_response>\n${result}\n</tool_response>`),
+    // Under the strict protocol the payload is a machine object the model can
+    // tell apart from its own call; otherwise it is Qwen3's <tool_response>.
+    ...(envelope
+      ? [envelope]
+      : results.map((result) => `<tool_response>\n${result}\n</tool_response>`)),
     '',
     `User question: ${userQuestion}`,
     '',
     'Using only the tool output above, answer that user question in one short sentence of plain language.',
-    'Do not repeat the JSON, do not describe the tool call, and do not emit another <tool_call> block.',
+    envelope
+      ? 'Do not repeat the tool JSON and do not call a tool again: reply with the "final" object.'
+      : 'Do not repeat the JSON, do not describe the tool call, and do not emit another <tool_call> block.',
   ].join('\n');
+}
+
+/**
+ * Every function name the system prompt lists, in the order it lists them.
+ *
+ * The engine builds the JSON-schema grammar from this list, so the grammar and
+ * the prompt can never disagree about which tools exist — `tests/chat.test.ts`
+ * fails if they drift apart.
+ */
+export function toolboxNames(options: {
+  records: readonly ScriptRecord[];
+  net?: boolean;
+  mcp?: readonly {
+    server: string;
+    name: string;
+    description: string;
+    inputSchema?: Record<string, unknown>;
+  }[];
+}): string[] {
+  const seen = new Set<string>();
+  const names = [
+    ...toolSchemas(options.records),
+    ...ALWAYS_ON_TOOLS,
+    ...(options.net ? NET_TOOLS : []),
+    ...(options.mcp ?? []).map((tool) => mcpFunctionSchema(tool.server, tool)),
+  ].filter((schema) => {
+    if (seen.has(schema.name)) return false;
+    seen.add(schema.name);
+    return true;
+  });
+  return names.map((schema) => schema.name);
 }
 
 /** Unwrap the `{ok, result}` envelope a script run returns. */

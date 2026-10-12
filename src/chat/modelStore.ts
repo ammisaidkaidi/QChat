@@ -21,6 +21,8 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSy
 import { homedir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import process from 'node:process';
+
+import type { ProtocolMode } from './protocol.js';
 import { fileURLToPath } from 'node:url';
 
 export const MODEL_SETTINGS_VERSION = 'infagent-model/v1';
@@ -75,6 +77,13 @@ export interface ModelSettings {
   chatWrapper?: 'chatml' | 'qwen' | 'auto';
   /** Prompting / tool-call convention. Defaults to `qwen3`. */
   style?: ModelStyle;
+  /**
+   * Tool-call protocol for this model. `strict-json` (the default) makes the
+   * model answer with one JSON envelope per turn; `native` keeps the shape the
+   * model was fine-tuned on (the bare array Hammer2.1 / xLAM emit); `legacy`
+   * is the pre-protocol wording. `INFAGENT_TOOL_PROTOCOL` overrides all models.
+   */
+  toolProtocol?: ProtocolMode;
   /** Extra system-prompt text prepended for this model. */
   agentPrompt?: string;
 }
@@ -120,6 +129,7 @@ const DEFAULTS = {
   thinking: false,
   chatWrapper: 'chatml' as const,
   style: 'qwen3' as const,
+  toolProtocol: 'strict-json' as const,
 };
 
 /** `Qwen3-0.6B-Q4_K_M.gguf` → `Qwen3-0.6B-Q4_K_M` (underscores carry meaning). */
@@ -332,6 +342,7 @@ export class ModelStore {
     thinking: boolean;
     chatWrapper: NonNullable<ModelSettings['chatWrapper']>;
     style: ModelStyle;
+    toolProtocol: ProtocolMode;
     agentPrompt: string;
   } {
     const record = this.active();
@@ -356,6 +367,7 @@ export class ModelStore {
       thinking: settings?.thinking ?? DEFAULTS.thinking,
       chatWrapper: settings?.chatWrapper ?? DEFAULTS.chatWrapper,
       style: settings?.style ?? DEFAULTS.style,
+      toolProtocol: settings?.toolProtocol ?? DEFAULTS.toolProtocol,
       agentPrompt: settings?.agentPrompt?.trim() ?? '',
     };
   }

@@ -40,6 +40,7 @@ const DEFAULTS = {
     thinking: false,
     chatWrapper: 'chatml',
     style: 'qwen3',
+    toolProtocol: 'strict-json',
 };
 /** `Qwen3-0.6B-Q4_K_M.gguf` → `Qwen3-0.6B-Q4_K_M` (underscores carry meaning). */
 function modelStem(file) {
@@ -230,6 +231,7 @@ export class ModelStore {
             thinking: settings?.thinking ?? DEFAULTS.thinking,
             chatWrapper: settings?.chatWrapper ?? DEFAULTS.chatWrapper,
             style: settings?.style ?? DEFAULTS.style,
+            toolProtocol: settings?.toolProtocol ?? DEFAULTS.toolProtocol,
             agentPrompt: settings?.agentPrompt?.trim() ?? '',
         };
     }

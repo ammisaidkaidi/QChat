@@ -20,6 +20,7 @@ import type {
   LlamaChatSession,
   LlamaContext,
   LlamaContextSequence,
+  LlamaGrammar,
   LlamaModel,
   Token,
 } from 'node-llama-cpp';
@@ -41,7 +42,20 @@ import {
   formatToolResult,
   stripJsonBlobs,
   toolResultPrompt,
+  toolboxNames,
 } from './prompt.js';
+import {
+  MAX_REPAIRS,
+  ProtocolStream,
+  TOOL_CALL_EXAMPLE,
+  envelopeGrammarSchema,
+  envelopeRepairPrompt,
+  grammarEnabled,
+  parseEnvelope,
+  resolveProtocolMode,
+  resultEnvelope,
+} from './protocol.js';
+import type { ParseResult, ProtocolMode } from './protocol.js';
 import { OutputSplitter } from './splitter.js';
 import { dispatchTool, extractToolCalls } from './tools.js';
 import type {
@@ -79,6 +93,9 @@ export const DEFAULT_MODEL: ModelSettings = {
 
 export { DEFAULT_MODELS_DIR, ModelStore };
 export type { ModelCatalogue, ModelRecord, ModelSettings } from './modelStore.js';
+
+/** One dispatched tool call, as the injected `tool_result` should show it. */
+type Outcome = { name?: string; ok: boolean; result: unknown };
 
 export class ChatError extends Error {
   public readonly code: 'busy' | 'unavailable' | 'not_ready' | 'download' | 'aborted';
@@ -344,6 +361,14 @@ export class QwenEngine {
     return record;
   }
 
+  /**
+   * Forget the current conversation and start the next turn from the system
+   * prompt alone. The model stays loaded; only the chat history goes.
+   */
+  public resetSession(): void {
+    this.sessionCache = null;
+  }
+
   public isLoaded(): boolean {
     return this.loaded !== null;
   }
@@ -550,6 +575,15 @@ export class QwenEngine {
       };
 
       const useTools = request.tools !== false && this.allowRun;
+      /**
+       * Which tool protocol applies. `strict-json` (default) is one JSON
+       * envelope per reply; `native` keeps the model's own trained call shape;
+       * `legacy` restores the pre-protocol wording. See `protocol.ts`.
+       */
+      const protocolMode: ProtocolMode = useTools
+        ? resolveProtocolMode(model.toolProtocol)
+        : 'legacy';
+      const strict = protocolMode === 'strict-json';
       const thinking = request.thinking ?? defaults.thinking;
       // Internet access is a per-request switch so the interface can turn it off.
       const net = request.net ?? netEnabled();
@@ -567,6 +601,14 @@ export class QwenEngine {
         request.promptTemplate !== undefined
           ? request.promptTemplate.trim()
           : (this.prompts?.activePrompt() ?? '');
+      /**
+       * The toolbox as the grammar and the parser see it — built from the same
+       * sources as the prompt listing (`toolboxNames` mirrors it exactly).
+       */
+      const toolNames = useTools
+        ? toolboxNames({ records: this.registry.list(), net, mcp: mcpTools })
+        : [];
+
       const systemPrompt =
         request.systemPrompt?.trim() ||
         [
@@ -576,6 +618,7 @@ export class QwenEngine {
             tools: useTools,
             thinking,
             style: model.style,
+            protocol: protocolMode,
             styleGuide,
             // Tool declarations are a per-turn cost. At ~3.2 characters per
             // token this leaves most of a small window to the conversation.
@@ -643,22 +686,73 @@ export class QwenEngine {
       /** Visible assistant text for the whole turn (thinking and tool blocks excluded). */
       let visibleText = '';
       let lastTool: { name: string; result: unknown } | null = null;
+      /** Correction turns spent in this reply (telemetry, shown in the stats). */
+      let repairs = 0;
+
+      /**
+       * The constrained-decoding grammar, built once per toolbox.
+       *
+       * With it on, a reply that is not one of the two envelopes — or that calls
+       * a tool that was not offered — cannot be generated at all. It is a
+       * best-effort optimisation: if llama.cpp refuses the schema, the parser
+       * and the repair turn still hold the contract.
+       */
+      let cachedGrammar: LlamaGrammar | null = null;
+      let cachedGrammarKey = '';
+      const grammarFor = async (): Promise<LlamaGrammar | null> => {
+        if (!strict || !grammarEnabled() || toolNames.length === 0) return null;
+        const key = toolNames.join('\u0000');
+        if (cachedGrammar && cachedGrammarKey === key) return cachedGrammar;
+        try {
+          cachedGrammar = await loaded.llama.createGrammarForJsonSchema(
+            envelopeGrammarSchema(toolNames) as never,
+          );
+          cachedGrammarKey = key;
+          return cachedGrammar;
+        } catch (error) {
+          if (process.env['INFAGENT_CHAT_DEBUG'] === '1') {
+            process.stderr.write(
+              `[chat] grammar unavailable, falling back to the parser: ${
+                error instanceof Error ? error.message : String(error)
+              }\n`,
+            );
+          }
+          return null;
+        }
+      };
+      const grammar = strict ? await grammarFor() : null;
 
       /** Generate, forwarding splitter events as they arrive; return raw text. */
       const runGeneration = async function* (prompt: string): AsyncGenerator<ChatEvent, string> {
         let raw = '';
-        const work = session.prompt(prompt, {
-          maxTokens: tokenBudget(prompt),
-          temperature,
-          ...(signal ? { signal, stopOnAbortSignal: true } : {}),
-          onToken: (tokens: Token[]) => {
-            totalTokens += tokens.length;
-          },
-          onTextChunk: (chunk: string) => {
-            raw += chunk;
-            for (const event of splitter.push(chunk)) channel.push(event);
-          },
-        });
+        // One decoder per generation: every generation is a fresh envelope.
+        const protocolStream = strict ? new ProtocolStream() : null;
+        const work = session
+          .prompt(prompt, {
+            maxTokens: tokenBudget(prompt),
+            temperature,
+            ...(grammar ? { grammar } : {}),
+            ...(signal ? { signal, stopOnAbortSignal: true } : {}),
+            onToken: (tokens: Token[]) => {
+              totalTokens += tokens.length;
+            },
+            onTextChunk: (chunk: string) => {
+              raw += chunk;
+              if (protocolStream) {
+                for (const event of protocolStream.push(chunk)) channel.push(event);
+                return;
+              }
+              for (const event of splitter.push(chunk)) channel.push(event);
+            },
+          })
+          // The flush runs inside the promise, so the events it releases are
+          // drained before the caller sees the generation finish.
+          .then((value: string) => {
+            if (protocolStream) {
+              for (const event of protocolStream.flush()) channel.push(event);
+            }
+            return value;
+          });
 
         for await (const event of channel.drain(work)) {
           if (event.type === 'token') visibleText += event.text;
@@ -674,21 +768,71 @@ export class QwenEngine {
       };
 
       const knownScripts = this.registry.list().map((record) => record.meta.name);
-      const readCalls = (text: string): ChatToolCall[] =>
+      /** The lenient parser: the salvage path and the `native` convention. */
+      const lenientCalls = (text: string): ChatToolCall[] =>
         useTools ? extractToolCalls(text, { knownScripts }).calls : [];
 
-      let combined = yield* runGeneration(prompt);
-      let calls = readCalls(combined);
+      /** Calls the envelope carries, when it is a `tool_call`. */
+      const envelopeCalls = (result: ParseResult | null): ChatToolCall[] =>
+        result?.ok && result.envelope.type === 'tool_call'
+          ? result.envelope.calls.map((call) => ({ name: call.name, args: call.arguments }))
+          : [];
+
+      /**
+       * Calls for a finished reply: the envelope decides. A reply that is not
+       * an envelope at all is read by the lenient parser instead, so a model
+       * that ignores the contract still gets its calls executed.
+       */
+      const readCalls = (text: string, result: ParseResult | null): ChatToolCall[] => {
+        if (!useTools) return [];
+        return result?.ok ? envelopeCalls(result) : lenientCalls(text);
+      };
+
+      /**
+       * Generate one reply and hold it to the protocol.
+       *
+       * A reply that does not parse costs one correction turn — at most
+       * `MAX_REPAIRS` of them, each carrying the exact reason it was rejected.
+       */
+      const generate = async function* (
+        text: string,
+      ): AsyncGenerator<
+        ChatEvent,
+        { combined: string; parsed: ParseResult | null; calls: ChatToolCall[]; answer: string }
+      > {
+        let combined = yield* runGeneration(text);
+        let parsed = strict ? parseEnvelope(combined, { toolNames }) : null;
+        let spent = 0;
+
+        while (strict && parsed && !parsed.ok && spent < MAX_REPAIRS) {
+          spent += 1;
+          repairs += 1;
+          if (process.env['INFAGENT_CHAT_DEBUG'] === '1') {
+            process.stderr.write(`[chat] protocol repair ${spent}: ${parsed.reason}\n`);
+          }
+          yield { type: 'reset' };
+          visibleText = '';
+          combined = yield* runGeneration(envelopeRepairPrompt(parsed.reason));
+          parsed = strict ? parseEnvelope(combined, { toolNames }) : null;
+        }
+
+        const answer =
+          parsed?.ok && parsed.envelope.type === 'final' ? parsed.envelope.content : '';
+        return { combined, parsed, calls: readCalls(combined, parsed), answer };
+      };
+
+      let pass = yield* generate(prompt);
+      let calls = pass.calls;
 
       // A 0.6B model occasionally returns a completely empty completion. One
       // silent retry is far cheaper for the user than a blank bubble.
-      if (!visibleText.trim() && calls.length === 0) {
+      if (!visibleText.trim() && calls.length === 0 && !pass.answer) {
         if (process.env['INFAGENT_CHAT_DEBUG'] === '1')
           process.stderr.write('[chat] empty reply, retrying\n');
         yield { type: 'reset' };
         visibleText = '';
-        combined = yield* runGeneration(prompt);
-        calls = readCalls(combined);
+        pass = yield* generate(prompt);
+        calls = pass.calls;
       }
 
       // Questions about the toolbox itself are answerable only from the
@@ -700,11 +844,13 @@ export class QwenEngine {
           process.stderr.write('[chat] toolbox question without a call, retrying\n');
         yield { type: 'reset' };
         visibleText = '';
-        combined = yield* runGeneration(
+        pass = yield* generate(
           `${prompt}\n\nCall the listScripts function now. Reply with exactly this and nothing else:\n` +
-            '<tool_call>\n{"name": "listScripts", "arguments": {}}\n</tool_call>',
+            (strict
+              ? TOOL_CALL_EXAMPLE
+              : '<tool_call>\n{"name": "listScripts", "arguments": {}}\n</tool_call>'),
         );
-        calls = readCalls(combined);
+        calls = pass.calls;
       }
 
       // The model answered a toolbox question twice without calling the tool.
@@ -716,20 +862,34 @@ export class QwenEngine {
         calls = [{ name: 'listScripts', args: {} }];
       }
 
+      // The envelope's `content` is the answer; what streamed can differ after
+      // a repair, so the parsed text is what the user is left with.
+      if (strict && pass.answer && stripJsonBlobs(visibleText).trim() !== pass.answer.trim()) {
+        yield { type: 'reset' };
+        visibleText = pass.answer;
+        yield { type: 'token', text: pass.answer };
+      }
+
       let iteration = 0;
       const maxIterations = Math.min(request.maxToolIterations ?? 2, 4);
       /** Results already produced this turn, so a repeated call is not re-run. */
-      const memo = new Map<string, string>();
+      const memo = new Map<
+        string,
+        { rendered: string; outcome: { ok: boolean; result: unknown } }
+      >();
 
       while (calls.length > 0 && iteration < maxIterations) {
         iteration += 1;
         const results: string[] = [];
+        /** Ordinary outcomes, so the injected `tool_result` carries real values. */
+        const outcomes: Outcome[] = [];
 
         for (const call of calls) {
           const signature = `${call.name}:${JSON.stringify(call.args)}`;
           const cached = memo.get(signature);
           if (cached !== undefined) {
             results.push(`${call.name} → ${cached}`);
+            outcomes.push({ ...cached.outcome, name: call.name });
             continue;
           }
 
@@ -752,14 +912,33 @@ export class QwenEngine {
           const rendered = dispatched.ok
             ? formatToolResult(dispatched.result)
             : `ERROR: ${dispatched.error ?? 'failed'}`;
-          memo.set(signature, rendered);
+          const outcome: Outcome = {
+            name: call.name,
+            ok: dispatched.ok === true,
+            result: dispatched.ok === true ? dispatched.result : (dispatched.error ?? 'failed'),
+          };
+          memo.set(signature, { rendered, outcome });
           results.push(`${call.name} → ${rendered}`);
         }
 
-        combined = yield* runGeneration(toolResultPrompt(results, lastUser.content));
-        calls = readCalls(combined).filter(
-          (call) => !memo.has(`${call.name}:${JSON.stringify(call.args)}`),
+        // The runtime — not the model — says what the tools answered, and the
+        // payload is a `tool_result` object the model can only read.
+        const envelope = strict
+          ? resultEnvelope(
+              calls.map((call, index) => {
+                const outcome = outcomes[index];
+                return {
+                  name: call.name,
+                  ok: outcome?.ok ?? false,
+                  result: outcome?.result ?? null,
+                };
+              }),
+            )
+          : undefined;
+        pass = yield* generate(
+          toolResultPrompt(results, lastUser.content, envelope ? { envelope } : {}),
         );
+        calls = pass.calls.filter((call) => !memo.has(`${call.name}:${JSON.stringify(call.args)}`));
       }
 
       for (const event of splitter.flush()) yield event;
@@ -790,6 +969,7 @@ export class QwenEngine {
         tokensPerSecond:
           durationMs > 0 ? Number(((totalTokens / durationMs) * 1000).toFixed(1)) : 0,
         durationMs,
+        ...(repairs > 0 ? { repairs } : {}),
       };
       // Alerts raised after the last tool result still reach the caller.
       for (const alert of pendingAlerts.splice(0)) yield { type: 'alert', alert };
