@@ -1124,6 +1124,28 @@ export function salientValues(result: unknown, limit = 12): string[] {
 }
 
 /**
+ * Is the reply nothing but the protocol talking — an echoed envelope, a stray
+ * `{'type': 'listSkills', 'arguments': {}}`, the JSON the model was shown?
+ *
+ * Such a reply carries no answer; the facts are put in its place rather than
+ * shown to the user as if the model had spoken. A sentence that survives the
+ * removal of JSON blobs, tool names and protocol keywords is a real reply.
+ */
+export function isToolNoise(answer: string): boolean {
+  const text = stripJsonBlobs(answer).trim();
+  if (text.length === 0) return true;
+  const left = text
+    .replace(/[`'"]/g, '')
+    .replace(/\b[a-z]+(?:[A-Z]\w*)+\b/g, '') // listSkills, webSearch, list_files…
+    .replace(
+      /\b(type|tool_call|tool_result|final|content|calls?|arguments?|plan|ok|result|name)\b/gi,
+      '',
+    )
+    .replace(/[\s{}[\]():,.;!?|/\\-]+/g, '');
+  return left.length === 0;
+}
+
+/**
  * Did the model's reply actually use the tool result?
  *
  * A 0.6B model sometimes answers "I have several scripts available." even after
@@ -1399,9 +1421,12 @@ export function guardToolAnswer(
       return { kind: 'replace', text: facts };
     }
 
-    // A small list of named items: an enumerating sentence that names some of
-    // them and stops is incomplete, exactly like a wrong count.
-    if (items.length > 1 && items.length <= 8 && answerEnumerates(text)) {
+    // A list of named items: an enumerating sentence that names some of them and
+    // stops is incomplete, exactly like a wrong count — and the cap is gone,
+    // because "the skills you have are: a, b, c" over twelve reads as the whole
+    // library whether it is the third name or the ninth that was dropped. The
+    // facts line always states how many items there really are.
+    if (items.length > 1 && answerEnumerates(text)) {
       const named = items.filter((name) => text.toLowerCase().includes(name.toLowerCase())).length;
       if (named > 0 && named < items.length) return { kind: 'replace', text: facts };
     }
@@ -1415,13 +1440,33 @@ export function guardToolAnswer(
     }
   }
 
+  // The reply is the protocol talking (an echoed envelope, a stray JSON blob),
+  // not an answer: the facts stand in its place.
+  if (text.length > 0 && isToolNoise(text)) return { kind: 'replace', text: facts };
+
   // Nothing usable came back (an empty reply, or the echoed JSON that
   // `stripJsonBlobs` already removed): the facts stand on their own.
   if (text.length === 0) return { kind: 'append', text: facts };
 
   if (multi) {
-    // Several steps: a reply that never states the computed total (or states a
-    // different one) gets the real total appended, without touching its words.
+    // Several steps: a reply that repeats no name and no number from any payload
+    // did not read them — the facts of the last step (and the total) go under it.
+    // A number counts as evidence here: "3 files, 4 files and 6 files" is a
+    // faithful summary even though it never repeats a path.
+    const stated = new Set(numbersIn(text));
+    const used = steps.some((fact) => {
+      if (!fact.ok) return false;
+      if (answerUsesResult(text, fact.result)) return true;
+      const payload = unwrapEnvelope(fact.result);
+      return COUNT_KEYS.some((key) => {
+        const value = readNumber(payload, key);
+        return value !== null && stated.has(value);
+      });
+    });
+    if (!used) return { kind: 'append', text: facts };
+
+    // A reply that never states the computed total (or states a different one)
+    // gets the real total appended, without touching its words.
     if (merged && !numbersIn(text).includes(merged.total)) {
       const expected =
         claimsTotal(text) || (options.question !== undefined && wantsTotal(options.question));

@@ -337,6 +337,22 @@ describe('the guard over several steps', () => {
     expect(guard).toEqual({ kind: 'append', text: 'list_files → failed: folder not found' });
   });
 
+  it('appends the facts when a multi-step reply used none of the results', () => {
+    const facts = listed([3, 4, 6]);
+    const guard = guardToolAnswer('I have listed the folders for you.', last(facts), {
+      facts,
+      question,
+    });
+    expect(guard.kind).toBe('append');
+    expect(guard.kind === 'append' && guard.text).toContain('13 files');
+  });
+
+  it('reads a faithful summary that repeats only the numbers', () => {
+    const facts = listed([3, 4, 6]);
+    const answer = 'Folder 1: 3 files. Folder 2: 4 files. Folder 3: 6 files. 13 in total.';
+    expect(guardToolAnswer(answer, last(facts), { facts, question })).toEqual({ kind: 'none' });
+  });
+
   it('stays quiet when the answer already mentions the failure', () => {
     const facts = listed([3, 6]);
     facts.splice(1, 0, {

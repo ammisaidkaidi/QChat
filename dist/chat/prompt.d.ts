@@ -215,6 +215,15 @@ export declare function finalAnswerPrompt(userQuestion: string, progress: string
  */
 export declare function salientValues(result: unknown, limit?: number): string[];
 /**
+ * Is the reply nothing but the protocol talking — an echoed envelope, a stray
+ * `{'type': 'listSkills', 'arguments': {}}`, the JSON the model was shown?
+ *
+ * Such a reply carries no answer; the facts are put in its place rather than
+ * shown to the user as if the model had spoken. A sentence that survives the
+ * removal of JSON blobs, tool names and protocol keywords is a real reply.
+ */
+export declare function isToolNoise(answer: string): boolean;
+/**
  * Did the model's reply actually use the tool result?
  *
  * A 0.6B model sometimes answers "I have several scripts available." even after

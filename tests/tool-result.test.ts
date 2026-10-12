@@ -26,6 +26,7 @@ import {
   answerUsesResult,
   fallbackAnswer,
   guardToolAnswer,
+  isToolNoise,
   identifyingValues,
   readableResult,
   resultIsEmpty,
@@ -397,5 +398,55 @@ describe('a stated count of skills', () => {
         result: skills,
       }).kind,
     ).toBe('none');
+  });
+});
+
+describe('a partial enumeration of a long list', () => {
+  const skills = Array.from({ length: 12 }, (_, index) => ({ name: `skill-${index + 1}` }));
+
+  it('is replaced by the facts, however many items there are', () => {
+    const guard = guardToolAnswer(
+      'The skills you have are: skill-1, skill-2, skill-3, skill-4, skill-5, and skill-6.',
+      { name: 'listSkills', ok: true, result: skills },
+    );
+    expect(guard.kind).toBe('replace');
+    expect(guard.kind === 'replace' && guard.text).toContain('12 items');
+  });
+
+  it('lets a full enumeration stand', () => {
+    const answer = `The skills you have are: ${skills.map((skill) => skill.name).join(', ')}.`;
+    expect(guardToolAnswer(answer, { name: 'listSkills', ok: true, result: skills }).kind).toBe(
+      'none',
+    );
+  });
+});
+
+describe('a reply that echoes the protocol', () => {
+  const skills = { name: 'listSkills', ok: true, result: [{ name: 'disk-hygiene' }] };
+
+  it('is recognised as noise whatever the quotes and nesting', () => {
+    for (const echo of [
+      "{'type': 'listSkills', 'arguments': {}}",
+      '{"type":"tool_call","calls":[{"name":"listSkills","arguments":{}}]}',
+      '  ',
+    ]) {
+      expect(isToolNoise(echo), echo).toBe(true);
+    }
+  });
+
+  it('lets a real sentence through', () => {
+    for (const sentence of [
+      'You have 12 skills: disk-hygiene, folder-inventory.',
+      'The call to listSkills returned 12 items.',
+      'No skills were found.',
+    ]) {
+      expect(isToolNoise(sentence), sentence).toBe(false);
+    }
+  });
+
+  it('is replaced by the facts, never shown as the answer', () => {
+    const guard = guardToolAnswer("{'type': 'listSkills', 'arguments': {}}", skills);
+    expect(guard.kind).toBe('replace');
+    expect(guard.kind === 'replace' && guard.text).toContain('disk-hygiene');
   });
 });
