@@ -26,18 +26,27 @@ import type {
 
 type Tab = 'chat' | 'models' | 'scripts' | 'skills' | 'toolbox' | 'mcp' | 'prompts' | 'config';
 
-const TABS: { id: Tab; label: string }[] = [
-  { id: 'chat', label: '💬 Chat' },
-  { id: 'models', label: '🧠 Models' },
-  { id: 'scripts', label: '🧩 Scripts' },
-  { id: 'skills', label: '📚 Skills' },
-  { id: 'toolbox', label: '🧰 Toolbox' },
-  { id: 'mcp', label: '🔌 MCP' },
-  { id: 'prompts', label: '🧠 Prompts' },
-  { id: 'config', label: '⚙️ Config' },
+const TABS: { id: Tab; icon: string; label: string }[] = [
+  { id: 'chat', icon: '💬', label: 'Chat' },
+  { id: 'models', icon: '🧠', label: 'Models' },
+  { id: 'scripts', icon: '🧩', label: 'Scripts' },
+  { id: 'skills', icon: '📚', label: 'Skills' },
+  { id: 'toolbox', icon: '🧰', label: 'Toolbox' },
+  { id: 'mcp', icon: '🔌', label: 'MCP' },
+  { id: 'prompts', icon: '🧠', label: 'Prompts' },
+  { id: 'config', icon: '⚙️', label: 'Config' },
 ];
 
 const TAB_KEY = 'infagent.tab';
+const NAV_COLLAPSED_KEY = 'infagent.nav.collapsed.v1';
+
+function readNavCollapsed(): boolean {
+  try {
+    return localStorage.getItem(NAV_COLLAPSED_KEY) === 'true';
+  } catch {
+    return false;
+  }
+}
 const storedTab = ((): Tab => {
   try {
     const value = localStorage.getItem(TAB_KEY);
@@ -48,6 +57,14 @@ const storedTab = ((): Tab => {
   }
 })();
 const tab = ref<Tab>(storedTab);
+const navCollapsed = ref(readNavCollapsed());
+watch(navCollapsed, (collapsed) => {
+  try {
+    localStorage.setItem(NAV_COLLAPSED_KEY, String(collapsed));
+  } catch {
+    /* the navigation still works when browser storage is unavailable */
+  }
+});
 watch(tab, (value) => {
   try {
     localStorage.setItem(TAB_KEY, value);
@@ -164,21 +181,6 @@ onMounted(async () => {
           </div>
         </div>
 
-        <!-- Eight tabs do not fit a phone: the row wraps instead of hiding. -->
-        <div class="tabs tabs-boxed tabs-sm max-w-full flex-wrap justify-center">
-          <button
-            v-for="entry in TABS"
-            :key="entry.id"
-            class="tab"
-            :class="{ 'tab-active': tab === entry.id }"
-            role="tab"
-            :aria-selected="tab === entry.id"
-            @click="tab = entry.id"
-          >
-            {{ entry.label }}
-          </button>
-        </div>
-
         <div class="hidden items-center gap-2 sm:flex">
           <span v-if="health" class="badge badge-ghost badge-sm font-mono">{{
             health.version
@@ -211,72 +213,120 @@ onMounted(async () => {
       </div>
     </header>
 
-    <main
-      v-if="tab === 'scripts'"
-      class="mx-auto grid max-w-7xl gap-4 p-3 sm:p-4 lg:grid-cols-[22rem_1fr]"
-    >
-      <ScriptsPanel
-        :scripts="scripts"
-        :stats="stats"
-        :selected="selectedName"
-        :loading="loading"
-        @select="select"
-        @create="createOpen = true"
-        @remove="removeScript"
-      />
+    <div class="flex min-h-[calc(100vh-4rem)] items-stretch">
+      <div class="min-w-0 flex-1">
+        <main
+          v-if="tab === 'scripts'"
+          class="mx-auto grid max-w-7xl gap-4 p-3 sm:p-4 lg:grid-cols-[22rem_1fr]"
+        >
+          <ScriptsPanel
+            :scripts="scripts"
+            :stats="stats"
+            :selected="selectedName"
+            :loading="loading"
+            @select="select"
+            @create="createOpen = true"
+            @remove="removeScript"
+          />
 
-      <div class="min-w-0 space-y-4">
-        <ScriptDetail
-          :script="selected"
-          :allow-run="allowRun"
-          @notify="notify"
-          @changed="loadScripts({ keepSelection: true })"
-        />
-        <ToolConsole
-          :tools="tools"
-          :system-prompt="systemPrompt"
-          @notify="notify"
-          @changed="loadScripts({ keepSelection: true })"
-        />
+          <div class="min-w-0 space-y-4">
+            <ScriptDetail
+              :script="selected"
+              :allow-run="allowRun"
+              @notify="notify"
+              @changed="loadScripts({ keepSelection: true })"
+            />
+            <ToolConsole
+              :tools="tools"
+              :system-prompt="systemPrompt"
+              @notify="notify"
+              @changed="loadScripts({ keepSelection: true })"
+            />
+          </div>
+        </main>
+
+        <main v-else-if="tab === 'skills'" class="mx-auto max-w-7xl p-3 sm:p-4">
+          <SkillsPanel @notify="notify" />
+        </main>
+
+        <main v-else-if="tab === 'toolbox'" class="mx-auto max-w-7xl p-3 sm:p-4">
+          <ToolboxPanel @notify="notify" />
+        </main>
+
+        <main v-else-if="tab === 'mcp'" class="mx-auto max-w-7xl p-3 sm:p-4">
+          <McpPanel @notify="notify" />
+        </main>
+
+        <main v-else-if="tab === 'prompts'" class="mx-auto max-w-7xl p-3 sm:p-4">
+          <PromptsPanel @notify="notify" />
+        </main>
+
+        <main v-else-if="tab === 'models'" class="mx-auto max-w-7xl space-y-4 p-3 sm:p-4">
+          <LocalModelsPanel @notify="notify" />
+          <CloudProvidersPanel @notify="notify" />
+        </main>
+
+        <main v-else-if="tab === 'config'" class="mx-auto max-w-7xl p-3 sm:p-4">
+          <EnvPanel @notify="notify" />
+        </main>
+
+        <main v-else class="mx-auto max-w-7xl p-3 sm:p-4">
+          <ChatPanel @notify="notify" />
+        </main>
+
+        <footer
+          v-if="tab === 'scripts' && stats"
+          class="mx-auto max-w-7xl px-4 pb-8 text-center text-[11px] opacity-50"
+        >
+          {{ stats.count }} scripts · {{ stats.byLanguage.js }} js · {{ stats.byLanguage.py }} py ·
+          folder {{ stats.root }}
+        </footer>
       </div>
-    </main>
 
-    <main v-else-if="tab === 'skills'" class="mx-auto max-w-7xl p-3 sm:p-4">
-      <SkillsPanel @notify="notify" />
-    </main>
+      <aside
+        class="sticky top-16 z-30 flex h-[calc(100vh-4rem)] shrink-0 flex-col border-l border-base-300 bg-base-200/70 transition-[width] duration-200"
+        :class="navCollapsed ? 'w-14 lg:w-16' : 'w-14 lg:w-56'"
+        data-testid="right-navigation"
+      >
+        <div class="hidden p-2 lg:block">
+          <button
+            class="btn btn-ghost btn-sm w-full gap-2"
+            :class="navCollapsed ? 'justify-center px-0' : 'justify-between'"
+            type="button"
+            :aria-expanded="!navCollapsed"
+            :aria-label="navCollapsed ? 'Expand navigation' : 'Collapse navigation'"
+            :title="navCollapsed ? 'Expand navigation' : 'Collapse navigation'"
+            data-testid="navigation-toggle"
+            @click="navCollapsed = !navCollapsed"
+          >
+            <span class="text-xs">{{ navCollapsed ? '⇤' : '⇥' }}</span>
+            <span v-if="!navCollapsed" class="text-xs">Collapse</span>
+          </button>
+        </div>
 
-    <main v-else-if="tab === 'toolbox'" class="mx-auto max-w-7xl p-3 sm:p-4">
-      <ToolboxPanel @notify="notify" />
-    </main>
-
-    <main v-else-if="tab === 'mcp'" class="mx-auto max-w-7xl p-3 sm:p-4">
-      <McpPanel @notify="notify" />
-    </main>
-
-    <main v-else-if="tab === 'prompts'" class="mx-auto max-w-7xl p-3 sm:p-4">
-      <PromptsPanel @notify="notify" />
-    </main>
-
-    <main v-else-if="tab === 'models'" class="mx-auto max-w-7xl space-y-4 p-3 sm:p-4">
-      <LocalModelsPanel @notify="notify" />
-      <CloudProvidersPanel @notify="notify" />
-    </main>
-
-    <main v-else-if="tab === 'config'" class="mx-auto max-w-7xl p-3 sm:p-4">
-      <EnvPanel @notify="notify" />
-    </main>
-
-    <main v-else class="mx-auto max-w-7xl p-3 sm:p-4">
-      <ChatPanel @notify="notify" />
-    </main>
-
-    <footer
-      v-if="tab === 'scripts' && stats"
-      class="mx-auto max-w-7xl px-4 pb-8 text-center text-[11px] opacity-50"
-    >
-      {{ stats.count }} scripts · {{ stats.byLanguage.js }} js · {{ stats.byLanguage.py }} py ·
-      folder {{ stats.root }}
-    </footer>
+        <nav class="flex-1 space-y-1 overflow-y-auto px-2 pb-3" aria-label="Main navigation">
+          <button
+            v-for="entry in TABS"
+            :key="entry.id"
+            class="btn btn-sm w-full min-w-0 gap-2"
+            :class="[
+              tab === entry.id ? 'btn-primary' : 'btn-ghost',
+              navCollapsed ? 'justify-center px-0' : 'justify-center px-0 lg:justify-start lg:px-2',
+            ]"
+            :title="entry.label"
+            :aria-label="entry.label"
+            :aria-current="tab === entry.id ? 'page' : undefined"
+            :data-testid="`nav-${entry.id}`"
+            @click="tab = entry.id"
+          >
+            <span aria-hidden="true" class="shrink-0">{{ entry.icon }}</span>
+            <span v-if="!navCollapsed" class="hidden truncate text-xs lg:inline">{{
+              entry.label
+            }}</span>
+          </button>
+        </nav>
+      </aside>
+    </div>
 
     <CreateScriptModal v-model:open="createOpen" @created="onCreated" @notify="notify" />
 

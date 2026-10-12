@@ -676,8 +676,9 @@ infagent config | run <task> | --version
 
 `ui/` is a small console that follows the same design language as the API:
 
-Eight tabs in the header: **Chat**, **Models**, **Scripts**, **Skills**, **Toolbox**,
-**MCP**, **Prompts** and **Config**.
+Eight tabs live in a vertical right-side navigation rail: **Chat**, **Models**,
+**Scripts**, **Skills**, **Toolbox**, **MCP**, **Prompts** and **Config**. The rail
+expands to show labels or collapses to icons.
 
 - **Chat** — per-chat local or cloud conversation: composer model picker over
   downloaded local models and configured cloud providers, local download button
@@ -688,8 +689,9 @@ Eight tabs in the header: **Chat**, **Models**, **Scripts**, **Skills**, **Toolb
   **MCP-server picker** beside the message box, **`/`-completion over the
   skills** (filter as you type, ⏎ to pick, Esc to drop the `/word`; the picked
   skills attach to that message and their steps are loaded), a server-backed
-  **SQLite history menu** on the right (search, switch, create or delete chats;
-  full tool cards survive reloads), and per-chat settings including the model,
+  **SQLite history panel** beside the conversation (search, switch, create or
+  delete chats; full tool cards survive reloads; show/hide state is remembered),
+  and per-chat settings including the model,
   prompt style and 🔧 MCP choices, saved automatically
 - **Models** — local model catalogue, weight downloads, engine status and explicit
   new-chat default management alongside cloud providers, API-key management,
