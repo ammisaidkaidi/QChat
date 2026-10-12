@@ -27,6 +27,9 @@ import {
   fallbackAnswer,
   guardToolAnswer,
   isToolNoise,
+  numbersInPayload,
+  outcomeError,
+  producedNumbers,
   identifyingValues,
   readableResult,
   resultIsEmpty,
@@ -397,6 +400,94 @@ describe('a stated count of skills', () => {
         ok: true,
         result: skills,
       }).kind,
+    ).toBe('none');
+  });
+});
+
+describe('numbers the tool never produced', () => {
+  /** What `code__run_python` hands back after a successful run. */
+  const ran = (stdout: string) => ({
+    server: 'code',
+    tool: 'run_python',
+    ok: true,
+    language: 'python',
+    exit_code: 0,
+    stdout,
+    stderr: '',
+  });
+
+  it('finds the numbers inside a payload, JSON strings included', () => {
+    expect(numbersInPayload(ran('4.5\n'))).toContain(4.5);
+    expect(numbersInPayload({ server: 'code', output: '{"stdout":"1024\n"}' })).toContain(1024);
+    expect(numbersInPayload({ total: 12, nested: { free: 3 } })).toEqual([12, 3]);
+  });
+
+  it('replaces an answer that states a different number', () => {
+    for (const [answer, stdout] of [
+      ['The code executed successfully and returned a value. The result is 3.5.', '4.5\n'],
+      ['210', '1024\n'],
+      ['The mean is 2.15.', '4.5\n'],
+    ] as const) {
+      const guard = guardToolAnswer(answer, {
+        name: 'code__run_python',
+        ok: true,
+        result: ran(stdout),
+      });
+      expect(guard.kind, answer).toBe('replace');
+      expect(guard.kind === 'replace' && guard.text).toContain(stdout.trim());
+    }
+  });
+
+  it('leaves a listing alone when the model answered from its own knowledge', () => {
+    // The model called the wrong tool (a disk report) and then answered the
+    // question anyway. The report produced no value, so the reply is not a
+    // contradiction of it.
+    const report = {
+      volumes: [
+        { mount: '/', total_gb: 24.39, free_gb: 18.29 },
+        { mount: '/home', total_gb: 24.39, free_gb: 18.29 },
+      ],
+    };
+    expect(producedNumbers(report)).toEqual([]);
+    const reply = 'The mean of the numbers 3, 4, 5, and 6 is 4.5.';
+    const guard = guardToolAnswer(reply, { name: 'disk_report', ok: true, result: report });
+    // The reply is not thrown away as a wrong answer: the tool produced no value
+    // for it to be wrong about. The facts are added beside it — the treatment
+    // any reply that names nothing from the payload gets.
+    expect(guard.kind).toBe('append');
+    expect(guard.kind === 'append' && guard.text).toContain('disk_report');
+  });
+
+  it('reports a run that exited non-zero as a failure, with its message', () => {
+    // The MCP call itself succeeded, so `ok` on the outcome is true; the
+    // payload is what says the program crashed. That is never a normal result
+    // and never an empty one.
+    const crashed = {
+      server: 'code',
+      tool: 'run_javascript',
+      ok: false,
+      language: 'javascript',
+      exit_code: 1,
+      stdout: '',
+      stderr: 'ReferenceError: print is not defined\n    at snippet.mjs:1:1',
+    };
+    const outcome = { name: 'code__run_javascript', ok: true, result: crashed };
+    expect(outcomeError(outcome)).toContain('ReferenceError');
+    const facts = fallbackAnswer('code__run_javascript', crashed);
+    expect(facts).toMatch(/failed:/);
+    expect(facts).toContain('ReferenceError');
+    expect(facts).not.toContain('language');
+
+    // And the reply that states a value anyway is replaced by that failure.
+    const guard = guardToolAnswer('The result of the calculation is 10.5.', outcome);
+    expect(guard.kind).toBe('replace');
+    expect(guard.kind === 'replace' && guard.text).toMatch(/failed:/);
+  });
+
+  it('lets the right number stand, whatever else the reply says', () => {
+    const answer = 'The snippet ran in the sandbox and printed 4.5 — the mean of the four numbers.';
+    expect(
+      guardToolAnswer(answer, { name: 'code__run_python', ok: true, result: ran('4.5\n') }).kind,
     ).toBe('none');
   });
 });

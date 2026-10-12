@@ -12,7 +12,11 @@ export const IDENTITY = [
 const TOOL_DESCRIPTION_LIMIT = 110;
 const PARAM_DESCRIPTION_LIMIT = 60;
 /** Characters of tool declarations the prompt may spend. Set by the engine. */
-const DEFAULT_TOOL_BUDGET = 5000;
+// Characters of full tool declarations. The system prompt has to fit the
+// model's window along with a reply, and a 0.6B model at 2048 tokens fails the
+// whole generation ("failed to compress chat history") when this block grows
+// past ~5 kB. What does not fit is still listed by name and arguments.
+const DEFAULT_TOOL_BUDGET = 3000;
 /** Collapse whitespace and cut at a word boundary, never mid-word. */
 export function trimText(text, limit) {
     const flat = String(text ?? '')
@@ -24,6 +28,24 @@ export function trimText(text, limit) {
     const cut = head.lastIndexOf(' ');
     const body = (cut > limit * 0.6 ? head.slice(0, cut) : head).replace(/[.,;:]$/, '');
     return `${body}…`;
+}
+/**
+ * `name(required, optional?)` — what a tool looks like once its full declaration
+ * has been dropped for budget.
+ *
+ * A bare name is not enough: the code sandbox's `run_python` takes `code`, and
+ * a model that only ever saw the name calls it with `{}` and gets an argument
+ * error. Argument names cost a few characters and remove that round trip; the
+ * types do not, so they stay out of this line.
+ */
+function compactSignature(schema) {
+    const required = schema.parameters.required ?? [];
+    // Required arguments only: they are the ones whose absence fails the call.
+    // Optional ones are named when the tool has no required argument at all, so
+    // that a call has something to go on.
+    const names = required.length > 0 ? required : Object.keys(schema.parameters.properties);
+    const shown = names.slice(0, 3).map((name) => `${name}${required.includes(name) ? '' : '?'}`);
+    return `${schema.name}(${shown.join(', ')})`;
 }
 /**
  * Qwen3 was trained on OpenAI-style tool objects, and its chat template dumps
@@ -268,7 +290,7 @@ function mcpFunctionSchema(server, tool) {
     };
 }
 export function buildSystemPrompt(options) {
-    const { records, tools, thinking, style = 'qwen3', identity = IDENTITY, net = false, skills, mcp = [], styleGuide, } = options;
+    const { records, tools, thinking, style = 'qwen3', identity = IDENTITY, net = false, skills, mcp = [], mcpServers, styleGuide, } = options;
     const parts = [identity];
     if (styleGuide?.trim()) {
         // One template, one heading, no preamble: a 0.6B model copies the last
@@ -285,34 +307,41 @@ export function buildSystemPrompt(options) {
     if (tools) {
         // Nothing is declared twice: an MCP server may re-expose a script that is
         // already in the toolbox.
-        const seen = new Set();
-        const wanted = [
-            ...toolSchemas(records),
-            ...ALWAYS_ON_TOOLS,
-            ...(net ? NET_TOOLS : []),
-            ...mcp.map((tool) => mcpFunctionSchema(tool.server, tool)),
-        ].filter((schema) => {
-            if (seen.has(schema.name))
-                return false;
-            seen.add(schema.name);
-            return true;
-        });
-        // Spend the budget in priority order (the agent's own tools first, then the
-        // MCP servers) and keep the overflow as bare names: the model may still call
-        // a tool it only knows the name of, it just does not get a description.
+        const groups = toolGroups({ records, net, mcp });
+        // The budget is spent a tool at a time, taking one from each group in turn.
+        // Declaring them group by group instead let one long group — a toolbox of a
+        // dozen scripts, or a server with a dozen tools — crowd out the rest, and
+        // the tools a small model then picks are the ones it can read about.
+        // Whatever the budget cannot hold is still listed by name and arguments.
         const budget = options.toolBudget ?? DEFAULT_TOOL_BUDGET;
+        const declared = new Set();
+        let spent = 0;
+        const deepest = Math.max(0, ...groups.map((group) => group.length));
+        // Smallest group first inside each round: a long group (a dozen scripts)
+        // would otherwise swallow the budget before a short one (three tools on the
+        // code server) got its second declaration in.
+        const queue = [...groups].sort((a, b) => a.length - b.length);
+        for (let round = 0; round < deepest; round += 1) {
+            for (const group of queue) {
+                const schema = group[round];
+                if (!schema)
+                    continue;
+                const line = JSON.stringify(asNativeTool(trimmed(schema)));
+                if (declared.size === 0 || spent + line.length <= budget) {
+                    declared.add(schema.name);
+                    spent += line.length;
+                }
+            }
+        }
+        // Emitted in the declared order, so the block reads the way the servers are
+        // organised, and the grammar (which walks the same groups) matches it.
         const signatures = [];
         const overflow = [];
-        let spent = 0;
-        for (const schema of wanted) {
-            const line = JSON.stringify(asNativeTool(trimmed(schema)));
-            if (signatures.length === 0 || spent + line.length <= budget) {
-                signatures.push(line);
-                spent += line.length;
-            }
-            else {
-                overflow.push(schema.name);
-            }
+        for (const schema of groups.flat()) {
+            if (declared.has(schema.name))
+                signatures.push(JSON.stringify(asNativeTool(trimmed(schema))));
+            else
+                overflow.push(compactSignature(schema));
         }
         parts.push('', '# Tools', '', 'You may call one or more functions to assist with the user query.', '');
         if (style === 'qwen3' || style === 'plain') {
@@ -328,7 +357,7 @@ export function buildSystemPrompt(options) {
                 '[BEGIN OF AVAILABLE_TOOLS] and [END OF AVAILABLE_TOOLS] markers:', '[BEGIN OF AVAILABLE_TOOLS]', ...signatures, '[END OF AVAILABLE_TOOLS]');
         }
         if (overflow.length > 0) {
-            parts.push('', 'These tools exist too — call them the same way, with the arguments their name implies:', overflow.join(', '));
+            parts.push('', 'These tools exist too — call them the same way, with the arguments shown:', overflow.join(', '));
         }
         parts.push('', ...(options.protocol === 'strict-json' ? ENVELOPE_SPEC : CALL_FORMAT[style]));
         parts.push('', TOOL_PROTOCOL);
@@ -340,7 +369,13 @@ export function buildSystemPrompt(options) {
         if (skills)
             parts.push('', '# Skills', skills, 'Call readSkill before following a skill.');
         if (mcp.length > 0) {
-            parts.push('', `MCP tools are prefixed with their server (${[...new Set(mcp.map((tool) => tool.server))].join(', ')}).`);
+            const used = [...new Set(mcp.map((tool) => tool.server))];
+            const described = used.map((server) => {
+                const entry = (mcpServers ?? []).find((item) => item.name === server);
+                const summary = entry?.description?.trim();
+                return summary ? `${server} — ${trimText(summary, 110)}` : server;
+            });
+            parts.push('', `MCP servers: ${described.join('; ')}. Call their tools as <server>__<tool>.`);
         }
         if (records.length === 0) {
             parts.push('', 'No scripts are installed yet; offer to create one with createScript.');
@@ -401,13 +436,30 @@ function flatten(value, depth = 0) {
 /** Human-readable one-liner used when the model returns nothing usable. */
 export function fallbackAnswer(toolName, result) {
     let value = result;
-    if (typeof value === 'object' && value !== null && 'ok' in value) {
-        const envelope = value;
+    if (isEnvelope(result)) {
+        const envelope = result;
         // A failed call is reported as a failure — never as an empty list.
         if (envelope.ok === false) {
             return `${toolName} → failed: ${trimText(String(envelope.error ?? 'failed'), 160)}`;
         }
         value = envelope.result;
+    }
+    // What a tool *produced* (a program's output, a message) is the answer; the
+    // addressing around it (server, tool, exit code) is not.
+    if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+        const record = value;
+        const failed = record['ok'] === false ||
+            record['success'] === false ||
+            (typeof record['exit_code'] === 'number' && record['exit_code'] !== 0);
+        const produced = ['stdout', 'output', 'text', 'content', 'message', 'answer'].find((key) => typeof record[key] === 'string' && record[key].trim().length > 0);
+        if (failed) {
+            return `${toolName} → failed: ${producedFailure(record) || trimText(flatten(value), 200)}`;
+        }
+        if (produced) {
+            const body = trimText(String(record[produced]), 400);
+            const stderr = typeof record['stderr'] === 'string' ? record['stderr'].trim() : '';
+            return `${toolName} → ${body}${stderr ? ` · stderr: ${trimText(stderr, 200)}` : ''}`;
+        }
     }
     // The authoritative empty: say so in the tool's own vocabulary.
     if (resultIsEmpty(value))
@@ -416,7 +468,10 @@ export function fallbackAnswer(toolName, result) {
     if (Array.isArray(value) &&
         value.length > 0 &&
         value.every((item) => typeof item === 'object' && item !== null)) {
-        const shown = value.slice(0, 6);
+        // Twelve names fit in a reply line: the libraries the assistant owns
+        // (scripts, skills) are listed whole, and only a genuinely long listing is
+        // shortened — with its length stated in front.
+        const shown = value.slice(0, 12);
         const items = shown
             .map((item) => {
             const record = item;
@@ -428,9 +483,9 @@ export function fallbackAnswer(toolName, result) {
         })
             .filter(Boolean);
         if (items.length > 0) {
-            // A list longer than what fits says how long it is — six names out of
-            // twelve must never read as the whole library.
-            const more = value.length > shown.length ? `${value.length} items: ` : '';
+            // A list longer than what fits says how long it is: the first names must
+            // never read as the whole library.
+            const more = value.length > 1 ? `${value.length} items: ` : '';
             return `${toolName}: ${more}${items.join('; ')}${value.length > shown.length ? '…' : ''}`;
         }
     }
@@ -567,25 +622,53 @@ export function toolResultPrompt(results, userQuestion, options = {}) {
  * fails if they drift apart.
  */
 export function toolboxNames(options) {
+    return toolGroups(options)
+        .flat()
+        .map((schema) => schema.name);
+}
+/**
+ * The tool declarations, grouped by where they come from: the agent's own
+ * scripts, its management tools, the always-on ones, and one group per MCP
+ * server. The order inside a group is the order it declares; the order between
+ * them is the order they are walked when spending the declaration budget.
+ */
+function toolGroups(options) {
     const seen = new Set();
-    const names = [
-        ...toolSchemas(options.records),
-        ...ALWAYS_ON_TOOLS,
-        ...(options.net ? NET_TOOLS : []),
-        ...(options.mcp ?? []).map((tool) => mcpFunctionSchema(tool.server, tool)),
-    ].filter((schema) => {
+    return [
+        toolSchemas(options.records),
+        ALWAYS_ON_TOOLS,
+        ...(options.net ? [NET_TOOLS] : []),
+        ...[...new Set((options.mcp ?? []).map((tool) => tool.server))].map((server) => (options.mcp ?? [])
+            .filter((tool) => tool.server === server)
+            .map((tool) => mcpFunctionSchema(server, tool))),
+    ].map((schemas) => schemas.filter((schema) => {
         if (seen.has(schema.name))
             return false;
         seen.add(schema.name);
         return true;
-    });
-    return names.map((schema) => schema.name);
+    }));
 }
 /** Unwrap the `{ok, result}` envelope a script run returns. */
+/**
+ * Is this a script envelope (`{ok, result}` / `{ok:false, error}`) rather than
+ * just a payload that happens to have an `ok` field?
+ *
+ * The code sandbox answers with `ok`, `stdout`, `exit_code` — its own result.
+ * Unwrapping that threw the output away and reported "no … found" for a run
+ * that had plainly worked.
+ */
+function isEnvelope(result) {
+    if (typeof result !== 'object' || result === null || !('ok' in result))
+        return false;
+    const record = result;
+    if (record.ok === false)
+        return typeof record.error === 'string' || 'error' in record;
+    return 'result' in record;
+}
 function unwrapEnvelope(result) {
-    if (typeof result === 'object' && result !== null && 'ok' in result) {
+    if (isEnvelope(result)) {
         const envelope = result;
-        return envelope.ok ? envelope.result : { error: envelope.error ?? 'failed' };
+        return envelope.ok === false ? { error: envelope.error ?? 'failed' } : envelope.result;
     }
     return result;
 }
@@ -684,13 +767,38 @@ export function answerClaimsEmpty(answer) {
 }
 /** The error text of a failed outcome, or `null` when the call succeeded. */
 export function outcomeError(outcome) {
-    if (outcome.ok)
+    if (outcome.ok) {
+        // The call went through, but the payload can still report a failure — a
+        // sandboxed program that exited non-zero, a server that answered `ok: false`.
+        // That is an execution error like any other, never a normal result.
+        const payload = unwrapEnvelope(outcome.result);
+        if (typeof payload === 'object' && payload !== null && !Array.isArray(payload)) {
+            const record = payload;
+            if (record['ok'] === false || record['success'] === false) {
+                const message = producedFailure(record);
+                return message || 'failed';
+            }
+            const code = record['exit_code'];
+            if (typeof code === 'number' && Number.isFinite(code) && code !== 0) {
+                return producedFailure(record) || `exited with ${String(code)}`;
+            }
+        }
         return null;
+    }
     const text = String(outcome.error ?? '').trim();
     if (text)
         return text;
     const value = outcome.result;
     return typeof value === 'string' && value.trim() ? value.trim() : 'failed';
+}
+/** The message a payload gives for its own failure: its stderr, its error. */
+function producedFailure(record) {
+    for (const key of ['error', 'stderr', 'message']) {
+        const field = record[key];
+        if (typeof field === 'string' && field.trim())
+            return trimText(field.trim(), 200);
+    }
+    return '';
 }
 /**
  * Does the reply state a count that the payload contradicts?
@@ -918,6 +1026,90 @@ export function salientValues(result, limit = 12) {
     return [...new Set(found)];
 }
 /**
+ * Every number the payload carries, including inside JSON stored in a string
+ * field (`stdout` of a code run, a nested `output`).
+ *
+ * A reply that answers with a number the tool never produced is inventing, and
+ * that is the one thing this project never publishes.
+ */
+export function numbersInPayload(result, limit = 32) {
+    const found = [];
+    const visit = (value, depth) => {
+        if (found.length >= limit || depth > 4)
+            return;
+        if (typeof value === 'number' && Number.isFinite(value)) {
+            found.push(value);
+            return;
+        }
+        if (typeof value === 'string') {
+            const text = value.trim();
+            if (text.length > 2000)
+                return;
+            if (text.startsWith('{') || text.startsWith('[')) {
+                try {
+                    visit(JSON.parse(text), depth + 1);
+                    return;
+                }
+                catch {
+                    /* not JSON after all: fall through to the digits */
+                }
+            }
+            for (const match of text.matchAll(/-?\d+(?:[.,]\d+)?/g)) {
+                const parsed = Number(match[0].replace(',', '.'));
+                if (Number.isFinite(parsed))
+                    found.push(parsed);
+                if (found.length >= limit)
+                    return;
+            }
+            return;
+        }
+        if (Array.isArray(value)) {
+            // A long list is a catalogue, not an output: its counts are judged by the
+            // count rules, not by matching every number in it.
+            if (value.length > 8)
+                return;
+            for (const item of value)
+                visit(item, depth + 1);
+            return;
+        }
+        if (typeof value === 'object' && value !== null) {
+            for (const item of Object.values(value))
+                visit(item, depth + 1);
+        }
+    };
+    visit(unwrapEnvelope(result), 0);
+    return [...new Set(found)];
+}
+/**
+ * The numbers a tool *produced*: a program's stdout, a value the call answered
+ * with — as opposed to the numbers scattered across a listing it returned.
+ *
+ * `run_python` printing `4.5` is a produced value and a reply of "3.5" is then
+ * a wrong answer. A disk report full of free-space figures has produced
+ * nothing: a model that answered a question from its own knowledge after
+ * calling the wrong tool has not contradicted the tool.
+ */
+export function producedNumbers(result, limit = 16) {
+    const value = unwrapEnvelope(result);
+    if (typeof value === 'number' && Number.isFinite(value))
+        return [value];
+    if (typeof value === 'string')
+        return numbersIn(value).slice(0, limit);
+    if (typeof value !== 'object' || value === null || Array.isArray(value))
+        return [];
+    const record = value;
+    const found = [];
+    for (const key of ['stdout', 'output', 'text', 'content', 'message', 'answer', 'value']) {
+        const field = record[key];
+        if (typeof field === 'number' && Number.isFinite(field))
+            found.push(field);
+        else if (typeof field === 'string' && field.trim().length > 0 && field.length <= 200) {
+            found.push(...numbersIn(field));
+        }
+    }
+    return [...new Set(found)].slice(0, limit);
+}
+/**
  * Is the reply nothing but the protocol talking — an echoed envelope, a stray
  * `{'type': 'listSkills', 'arguments': {}}`, the JSON the model was shown?
  *
@@ -948,9 +1140,19 @@ export function answerUsesResult(answer, result) {
     const lower = answer.toLowerCase();
     // A list of records is judged on the values that identify its items.
     const identifiers = identifyingValues(result);
-    if (identifiers.length > 0) {
-        return identifiers.some((value) => lower.includes(value.toLowerCase()));
+    const identified = identifiers.some((value) => lower.includes(value.toLowerCase()));
+    // A number the payload produced — a program's stdout, a count — is evidence
+    // that the reply is about this result. Trivial digits (0, 1) are not: they
+    // turn up in every sentence ("the first one") and in metadata like exit codes.
+    const numbers = numbersInPayload(result).filter((value) => value !== 0 && value !== 1);
+    if (identified ||
+        (numbers.length > 0 && numbers.some((value) => numbersIn(answer).includes(value)))) {
+        return true;
     }
+    // A list of records is judged on the values that identify its items: naming
+    // none of them means the reply is not about this result.
+    if (identifiers.length > 0)
+        return false;
     const values = salientValues(result).filter((value) => Number.isNaN(Number(value)) && !NON_EVIDENCE.has(value.toLowerCase().trim()));
     if (values.length === 0)
         return true;
@@ -1049,7 +1251,15 @@ export function totalLine(merged) {
 export function numbersIn(text) {
     const found = [];
     for (const match of text.matchAll(/\d[\d,._]*/g)) {
-        const value = Number(match[0].replace(/[,._]/g, ''));
+        // "4.5" is four and a half, "1,234" is one thousand two hundred and
+        // thirty-four. Stripping every separator turned the first into 45.
+        // A sentence-ending full stop is punctuation, not a decimal point.
+        const raw = match[0].replace(/[._]+$/, '');
+        if (raw.length === 0)
+            continue;
+        const grouped = /^\d{1,3}(?:[.,]\d{3})+$/.test(raw);
+        const normalized = grouped ? raw.replace(/[,_.]/g, '') : raw.replace(/[,_]/g, '');
+        const value = Number(normalized);
         if (Number.isFinite(value))
             found.push(value);
     }
@@ -1124,17 +1334,26 @@ export function guardToolAnswer(answer, outcome, options = {}) {
         : [];
     const hiddenFailure = steps.some((fact) => !fact.ok && !answerMentionsError(text, String(fact.result ?? 'failed'))) &&
         failureLines.length > 0;
-    // A failure is never an empty result: say what went wrong, in any case.
-    if (!outcome.ok) {
-        const error = outcomeError(outcome);
+    // A failure is never an empty result: say what went wrong, in any case. The
+    // call itself may have succeeded while the payload reports a failure — a
+    // sandboxed program that exited non-zero — so this asks the outcome, not the
+    // transport.
+    const error = outcomeError(outcome);
+    if (error) {
         if (text.length === 0)
             return { kind: 'replace', text: facts };
         // "you have no scripts" over a failed call is false in the same way: replace.
         if (answerClaimsEmpty(text))
             return { kind: 'replace', text: facts };
-        if (error && !answerMentionsError(text, error))
-            return { kind: 'append', text: facts };
-        return { kind: 'none' };
+        if (answerMentionsError(text, error))
+            return { kind: 'none' };
+        // A call that failed has no result to quote. A reply that states a number of
+        // its own — one the error message does not contain — is answering with a
+        // value the tool never produced.
+        const invented = numbersIn(text).filter((value) => !numbersIn(error).includes(value));
+        if (invented.length > 0)
+            return { kind: 'replace', text: facts };
+        return { kind: 'append', text: facts };
     }
     // An empty payload, one step: the only truthful answer is that there is nothing.
     if (!multi && resultIsEmpty(outcome.result)) {
@@ -1152,6 +1371,17 @@ export function guardToolAnswer(answer, outcome, options = {}) {
     // A step that failed and is not mentioned anywhere in the answer.
     if (text.length > 0 && hiddenFailure) {
         return { kind: 'append', text: failureLines.join('\n') };
+    }
+    // The payload carries numbers and the reply states different ones: it is
+    // answering with a value the tool never produced. ("The result is 3.5" over a
+    // stdout of 4.5 is not a paraphrase, it is a wrong answer — and the user has
+    // no way to check it.)
+    const produced = producedNumbers(outcome.result);
+    const saidNumbers = numbersIn(text);
+    if (produced.length > 0 &&
+        saidNumbers.length > 0 &&
+        !saidNumbers.some((value) => produced.includes(value))) {
+        return { kind: 'replace', text: facts };
     }
     if (!multi) {
         // A list of named items the reply counts wrongly ("three scripts" over six)

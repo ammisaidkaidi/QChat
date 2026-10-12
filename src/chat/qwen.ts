@@ -11,7 +11,7 @@
  *    request gets a `busy` error rather than silently queueing.
  *  - The model is unloaded after an idle period so a small box stays healthy.
  */
-import { existsSync, statSync } from 'node:fs';
+import { existsSync, statSync, writeFileSync } from 'node:fs';
 import { basename } from 'node:path';
 import process from 'node:process';
 
@@ -89,7 +89,10 @@ export const DEFAULT_MODEL: ModelSettings = {
     repo: 'unsloth/Qwen3-0.6B-GGUF',
     url: 'https://huggingface.co/unsloth/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-Q4_K_M.gguf',
   },
-  contextSize: 2048,
+  // 4096, like every other model in the catalogue: the system prompt carries
+  // the tool declarations, the skills and the JSON protocol (~2.7k tokens), and
+  // a 2048-token window has no room for it and a reply.
+  contextSize: 4096,
   threads: 2,
   temperature: 0.4,
   maxTokens: 512,
@@ -142,6 +145,32 @@ interface Loaded {
   context: LlamaContext;
   sequence: LlamaContextSequence;
   chatWrapper: unknown;
+}
+
+/**
+ * The conversation turns a chat session actually holds.
+ *
+ * `node-llama-cpp` keeps the system prompt and every prompt the engine injected
+ * (tool results, repair instructions) in the same list, so only user and model
+ * entries are conversation — and the model's entry is its `response` parts.
+ */
+export function chatTurnsOf(history: readonly unknown[]): ChatMessage[] {
+  const turns: ChatMessage[] = [];
+  for (const item of history) {
+    const record = item as { type?: unknown; text?: unknown; response?: unknown };
+    if (record.type === 'user' && typeof record.text === 'string') {
+      turns.push({ role: 'user', content: record.text });
+    } else if (record.type === 'model') {
+      const parts = Array.isArray(record.response) ? record.response : [];
+      turns.push({ role: 'assistant', content: parts.join('') });
+    }
+  }
+  return turns;
+}
+
+/** Are these the same conversation, turn for turn? */
+export function sameTurns(a: readonly ChatMessage[], b: readonly ChatMessage[]): boolean {
+  return a.length === b.length && a.every((turn, index) => turn.content === b[index]?.content);
 }
 
 /**
@@ -601,6 +630,13 @@ export class QwenEngine {
             inputSchema: tool.inputSchema,
           }))
         : [];
+      /** The same servers, with the purpose `mcp.json` gives each one. */
+      const mcpServers = this.mcp
+        ? this.mcp
+            .list()
+            .filter((server) => server.enabled)
+            .map((server) => ({ name: server.name, description: server.description }))
+        : [];
       // The style guide is the user's choice: an explicit `promptTemplate` on the
       // request wins, otherwise the template selected in the console applies.
       const styleGuide =
@@ -630,11 +666,13 @@ export class QwenEngine {
             maxSteps,
             styleGuide,
             // Tool declarations are a per-turn cost. At ~3.2 characters per
-            // token this leaves most of a small window to the conversation.
-            toolBudget: Math.max(1800, Math.min(7000, Math.round(model.contextSize * 1.35))),
+            // token this leaves most of the window to the conversation — the
+            // reply, the tool results, and the steps after them.
+            toolBudget: Math.max(1800, Math.min(7000, Math.round(model.contextSize * 1.15))),
             net: useTools && net,
             skills: this.skills.listing(),
             mcp: useTools ? mcpTools : [],
+            mcpServers: useTools ? mcpServers : [],
           }),
         ]
           .filter(Boolean)
@@ -654,6 +692,10 @@ export class QwenEngine {
           `[chat] system ${systemPrompt.length} chars · history [${rendered}] · tools=${useTools}\n` +
             `[chat] system head: ${systemPrompt.slice(0, 160).replace(/\n/g, '⏎')}\n`,
         );
+        // The exact prompt as the model receives it: sizing a prompt against
+        // the model's window is guesswork without it.
+        const dump = process.env['INFAGENT_CHAT_DEBUG_DUMP'];
+        if (dump) writeFileSync(dump, systemPrompt, 'utf8');
       }
       // Qwen3 spends 150-250 tokens on a reasoning block before answering, so the
       // budget must cover thinking *and* the reply, or the visible answer is cut off.
@@ -1106,6 +1148,13 @@ export class QwenEngine {
   /**
    * Reuse the warm session when the incoming history continues the one it holds,
    * otherwise rebuild it (and drop the stale one). Keeps multi-turn chat fast.
+   *
+   * The cached session is handed back only when the turns *it actually holds*
+   * are the ones the request says came before it. A fingerprint of the request
+   * alone was not enough: two requests that both claim no history (a fresh
+   * question from the API or the CLI) hashed the same, so the second one was
+   * answered inside the first one's conversation — the model continued its own
+   * previous reply instead of reading the new question.
    */
   private async sessionFor(
     loaded: Loaded,
@@ -1113,7 +1162,18 @@ export class QwenEngine {
     priorTurns: readonly ChatMessage[],
   ): Promise<LlamaChatSession> {
     const fingerprint = JSON.stringify([systemPrompt, priorTurns]);
-    if (this.sessionCache?.fingerprint === fingerprint) return this.sessionCache.session;
+    const cached = this.sessionCache;
+    if (cached?.fingerprint === fingerprint) {
+      const held = chatTurnsOf(cached.session.getChatHistory());
+      // The engine injects tool turns and the `/no_think` suffix, so the held
+      // turns are usually a superset: only an exact match is a continuation.
+      if (sameTurns(held, priorTurns)) return cached.session;
+      if (process.env['INFAGENT_CHAT_DEBUG'] === '1') {
+        process.stderr.write(
+          `[chat] session rebuilt: it held ${held.length} turn(s), the request declares ${priorTurns.length}\n`,
+        );
+      }
+    }
 
     const session = await this.createSession(loaded, systemPrompt, priorTurns);
     this.sessionCache = { fingerprint, session };

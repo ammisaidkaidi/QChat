@@ -80,6 +80,16 @@ export interface SystemPromptOptions {
         description: string;
         inputSchema?: Record<string, unknown>;
     }[];
+    /**
+     * What each connected MCP server is for, as `mcp.json` describes it. A small
+     * model picks the tool it can read about: "code — run_javascript and
+     * run_python" is what makes it reach for the sandbox instead of a script that
+     * happens to be called `log`.
+     */
+    mcpServers?: readonly {
+        name: string;
+        description?: string;
+    }[];
 }
 export declare function buildSystemPrompt(options: SystemPromptOptions): string;
 /** One-line-per-script summary, used by the CLI and the interface. */
@@ -214,6 +224,24 @@ export declare function finalAnswerPrompt(userQuestion: string, progress: string
  * short strings. They are what a faithful answer is expected to mention.
  */
 export declare function salientValues(result: unknown, limit?: number): string[];
+/**
+ * Every number the payload carries, including inside JSON stored in a string
+ * field (`stdout` of a code run, a nested `output`).
+ *
+ * A reply that answers with a number the tool never produced is inventing, and
+ * that is the one thing this project never publishes.
+ */
+export declare function numbersInPayload(result: unknown, limit?: number): number[];
+/**
+ * The numbers a tool *produced*: a program's stdout, a value the call answered
+ * with — as opposed to the numbers scattered across a listing it returned.
+ *
+ * `run_python` printing `4.5` is a produced value and a reply of "3.5" is then
+ * a wrong answer. A disk report full of free-space figures has produced
+ * nothing: a model that answered a question from its own knowledge after
+ * calling the wrong tool has not contradicted the tool.
+ */
+export declare function producedNumbers(result: unknown, limit?: number): number[];
 /**
  * Is the reply nothing but the protocol talking — an echoed envelope, a stray
  * `{'type': 'listSkills', 'arguments': {}}`, the JSON the model was shown?

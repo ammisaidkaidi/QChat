@@ -122,7 +122,7 @@ export interface ModelStoreOptions {
 }
 
 const DEFAULTS = {
-  contextSize: 2048,
+  contextSize: 4096,
   threads: 2,
   temperature: 0.4,
   maxTokens: 512,

@@ -5,7 +5,7 @@ import { SkillRegistry } from '../skills/registry.js';
 import { DEFAULT_MODELS_DIR, ModelStore } from './modelStore.js';
 import type { ModelRecord, ModelSettings } from './modelStore.js';
 import { SystemPromptStore } from './prompts.js';
-import type { ChatEvent, ChatRequest, EngineStatus } from './types.js';
+import type { ChatEvent, ChatMessage, ChatRequest, EngineStatus } from './types.js';
 /**
  * The model InfAgent ships with: its settings file is committed under `models/`
  * and the 380 MB of weights are fetched on first use into the weights cache.
@@ -39,6 +39,16 @@ export interface QwenEngineOptions {
     idleUnloadMs?: number;
     allowRun?: boolean;
 }
+/**
+ * The conversation turns a chat session actually holds.
+ *
+ * `node-llama-cpp` keeps the system prompt and every prompt the engine injected
+ * (tool results, repair instructions) in the same list, so only user and model
+ * entries are conversation — and the model's entry is its `response` parts.
+ */
+export declare function chatTurnsOf(history: readonly unknown[]): ChatMessage[];
+/** Are these the same conversation, turn for turn? */
+export declare function sameTurns(a: readonly ChatMessage[], b: readonly ChatMessage[]): boolean;
 /**
  * Turns a push-based producer (the token callback) into an async stream, so the
  * browser receives tokens while the model is still generating instead of all at
@@ -139,6 +149,13 @@ export declare class QwenEngine {
     /**
      * Reuse the warm session when the incoming history continues the one it holds,
      * otherwise rebuild it (and drop the stale one). Keeps multi-turn chat fast.
+     *
+     * The cached session is handed back only when the turns *it actually holds*
+     * are the ones the request says came before it. A fingerprint of the request
+     * alone was not enough: two requests that both claim no history (a fresh
+     * question from the API or the CLI) hashed the same, so the second one was
+     * answered inside the first one's conversation — the model continued its own
+     * previous reply instead of reading the new question.
      */
     private sessionFor;
     private createSession;

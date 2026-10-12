@@ -11,7 +11,7 @@
     "url": "https://huggingface.co/unsloth/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-Q4_K_M.gguf"
   },
   "sizeBytes": 396705472,
-  "contextSize": 2048,
+  "contextSize": 4096,
   "threads": 2,
   "temperature": 0.4,
   "maxTokens": 512,

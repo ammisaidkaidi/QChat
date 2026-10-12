@@ -21,6 +21,7 @@ import { SCRIPT_NAME_PATTERN, ScriptError } from '../scripts/registry.js';
 import type { ScriptRegistry } from '../scripts/registry.js';
 import type { SkillRegistry } from '../skills/registry.js';
 import { asSkillInput, SkillError } from '../skills/registry.js';
+import { trimText } from './prompt.js';
 import type { ChatToolCall } from './types.js';
 
 /**
@@ -330,6 +331,30 @@ export interface DispatchOptions {
   alerts?: AlertBus;
 }
 
+/** The payload of an MCP call: its JSON answer when it has one, text otherwise. */
+function mcpPayload(
+  server: string,
+  tool: string,
+  text: unknown,
+  isError: boolean,
+): Record<string, unknown> {
+  const raw = typeof text === 'string' ? text : String(text ?? '');
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+      return {
+        server,
+        tool,
+        ...(parsed as Record<string, unknown>),
+        ...(isError ? { isError } : {}),
+      };
+    }
+    return { server, tool, output: parsed, ...(isError ? { isError } : {}) };
+  } catch {
+    return { server, tool, output: raw, ...(isError ? { isError } : {}) };
+  }
+}
+
 /** Execute one parsed call against the script toolbox. */
 export async function dispatchTool(
   call: ChatToolCall,
@@ -371,11 +396,18 @@ export async function dispatchTool(
     // MCP tools are addressed as `server__tool`.
     if (options.mcp && name.includes('__')) {
       const { server, tool, result } = await options.mcp.call(name, call.args);
+      // A failed MCP call is reported with the server's own words: "failed:
+      // failed" tells the user nothing about what to fix.
+      const reason = trimText(String(result.text ?? '').replace(/^\w*Error:\s*/, ''), 200);
       return finish({
         name,
         args: call.args,
         ok: result.ok,
-        result: { server, tool, output: result.text, isError: result.isError },
+        // Most servers answer with JSON. Passing it through as text wrapped the
+        // model's own payload in a string inside a string; the parsed object is
+        // what the tool actually said, with the addressing kept alongside.
+        result: mcpPayload(server, tool, result.text, result.isError === true),
+        ...(result.ok || reason.length === 0 ? {} : { error: reason }),
         durationMs: result.durationMs,
       });
     }

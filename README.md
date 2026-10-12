@@ -65,7 +65,7 @@ how each one is prompted live in [models/README.md](models/README.md).
 | | |
 | --- | --- |
 | Folder | `models/` next to the project — see [models/README.md](models/README.md) |
-| Backend | CPU only, 2 threads by default, per-model context (2048 for the 0.6B, 4096 for the bigger ones) |
+| Backend | CPU only, 2 threads by default, per-model context (4096 tokens for every catalogued model) |
 | Speed | ~10-17 tok/s on 2 cores for the 0.6B; first token ≈ 1.3 s warm, ~4 s cold |
 | Memory | ~1 GB RSS for the 0.6B; ~3 GB for the 3B models, ~4 GB for the 4B |
 | Unload | automatic after 10 idle minutes |
@@ -366,7 +366,7 @@ connect, disconnect, add servers and call any tool by hand. A dependency-free
 demo server ships in `mcp/example-server.mjs` (`echo`, `add`, `now`) so the loop
 can be verified before a real server is wired in.
 
-Four hardened servers ship in `mcp/servers/`. Nothing is vendored from a package
+Five hardened servers ship in `mcp/servers/`. Nothing is vendored from a package
 registry: each guarantee below is enforced inside the server process, not by
 asking the model to behave.
 
@@ -375,6 +375,7 @@ asking the model to behave.
 | `filesystem.mjs` | `list_allowed_roots`, `list_directory`, `read_file`, `read_multiple_files`, `get_file_info`, `search_files`, plus `write_file` / `create_directory` only with `allow_write` and `remove_path` only with `allow_delete` | Only the declared roots (`./scripts`, `./skills`, `./screenshot` by default) are reachable. Every path is resolved through symlinks and refused if it leaves a root, contains `..` or a NUL byte, or names a credential file (`.env*`, `.git`, `.ssh`, `*.pem`, `id_rsa`, …). Read-only unless the config says otherwise. Caps: 1 MB per read, 500 entries, depth 4; binary files are refused rather than streamed. |
 | `fetch.mjs` | `fetch_url`, `fetch_policy` | https only (`allow_http` opts in). Every DNS answer and every redirect hop is checked against loopback, private, link-local (cloud metadata), CGNAT, multicast and reserved ranges, and the validated address is pinned into the connection so DNS cannot be re-pointed between the check and the request. 1 MB, 3 redirects and a 20 s budget are the defaults; only text-ish content types are returned, the result is flagged `untrusted`, and nothing is executed. |
 | `sqlite.py` (stdlib only) | `list_databases`, `list_tables`, `describe_table`, `read_query`, plus `write_query` only with `allow_write` | Read-only is a real SQLite setting — `file:…?mode=ro` plus `PRAGMA query_only=ON` — not just hidden tools. Foreign keys stay on, one statement per call, `ATTACH`/`DETACH`/`VACUUM`/`REINDEX`/`ANALYZE` and any `PRAGMA … =` are refused, and rows, bytes and time are capped. |
+| `code.mjs` | `run_javascript`, `run_python`, `code_policy` | Runs a snippet in a fresh temp directory with an empty environment (no tokens, no `HOME`, no `PYTHONPATH`) and a hard time limit (5 s default, 15 s ceiling), deletes the directory afterwards and caps each stream's output. JavaScript goes through `node --experimental-permission`: reading or writing outside the sandbox, `child_process`, workers and native addons are refused by Node. Python goes through `python3 -I -B` with `mcp/lib/pyguard.py`, an audit hook that refuses reads outside the sandbox and the interpreter library, writes outside the sandbox, `os.system`/`exec`/`fork` and `subprocess`, plus sockets — with `ctypes`, `socket`, `subprocess`, `urllib` … un-importable. On Linux each run is wrapped in `unshare -n --map-current-user`, so it has no network interface at all; `code_policy` reports whether that holds here and says plainly that the Python guard is an in-process guard rail, not a kernel boundary. |
 | Supabase (official remote endpoint) | whatever the project's tool groups expose | `transport: "http"` to `https://mcp.supabase.com/mcp?project_ref=…&read_only=true`; off by default. The manager refuses a Supabase URL without a bearer token or without `read_only=true` unless `INFAGENT_ALLOW_SUPABASE_WRITES=1`, refuses plain http unless it is loopback *and* `INFAGENT_MCP_ALLOW_INSECURE=1`, and never prints the token — errors are redacted. |
 
 ```bash
@@ -382,7 +383,28 @@ infagent mcp list
 infagent mcp start filesystem
 infagent mcp call filesystem__read_file '{"path":"scripts/hello.js"}'
 infagent mcp call sqlite__read_query '{"database":"demo","sql":"select * from notes limit 5"}'
+infagent mcp call code__run_python '{"code":"import statistics; print(statistics.mean([3,4,5]))"}'
+infagent mcp call code__run_javascript '{"code":"console.log([1,2,3].reduce((a,b)=>a+b,0))"}'
 ```
+
+**Running code from the chat.** With the `code` server enabled the model can
+calculate, reshape data and parse text instead of guessing — the tool result it
+reads is the real output of a real process. Ask for it directly ("run a Python
+snippet that …"), or let the model reach for `code__run_python` on its own. The
+same policy applies to both languages, and `code__code_policy` prints it:
+
+- **What it can touch** — one throwaway directory per run, which is also its
+  working directory. Relative paths resolve inside it; absolute paths outside it
+  are refused (JavaScript by Node's permission model, Python by the audit hook).
+- **What it cannot** — start a process, open a socket, read your `.env`, reach a
+  file outside the sandbox. Nothing of InfAgent's environment is passed down.
+- **Limits** — `timeout_ms` (default 5000, max 15000), `max_output_bytes`
+  (default 64 KiB, ceiling 256 KiB), `code` at most 20000 characters. A run that
+  hits the time limit is killed as a process group and reported as
+  `timed_out: true`, not as an empty result.
+- The defaults live in `mcp.json`; raise `timeout_ms` there if a snippet needs
+  longer. Set `allow_network: true` to give runs the network back — off by
+  default, and on Linux off means "no interface", not "asked nicely".
 
 **Supabase, connected.** The official remote endpoint is the entry in `mcp.json`;
 it needs two values in `.env` (never in the config file) and a project reference:
@@ -582,7 +604,7 @@ Relevant InfAgent variables:
 | `INFAGENT_NAME` | `InfAgent` | agent display name |
 | `INFAGENT_MODELS_DIR` | `<project>/models` | models folder |
 | `INFAGENT_MODEL_PATH` | `<modelsDir>/Qwen3-0.6B-Q4_K_M.gguf` | explicit model file |
-| `INFAGENT_LLM_CONTEXT` | `2048` | context window |
+| `INFAGENT_LLM_CONTEXT` | `4096` | context window |
 | `INFAGENT_LLM_THREADS` | `2` | llama.cpp threads |
 | `INFAGENT_LLM_IDLE_UNLOAD_MS` | `600000` | idle time before the model is freed |
 | `INFAGENT_MCP_CONFIG` | `./mcp.json` | MCP server declarations |

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { OutputSplitter, stripThinking } from '../src/chat/splitter.js';
+import { chatTurnsOf, sameTurns } from '../src/chat/qwen.js';
 import { dispatchTool, extractToolCalls } from '../src/chat/tools.js';
 import {
   grammarEnabled,
@@ -234,6 +235,97 @@ describe('chat prompt styles', () => {
     const parsed = JSON.parse(declaration ?? '{}');
     expect(parsed.function.parameters.properties.path.type).toBe('string');
     expect(parsed.function.description.length).toBeLessThanOrEqual(120);
+  });
+
+  it('shares the declaration budget out between the groups of tools', () => {
+    // A long toolbox must not crowd an MCP server out of the declarations: the
+    // budget is spent a tool at a time, taking one from each group in turn.
+    const many = Array.from({ length: 30 }, (_, index) => ({
+      server: 'fake',
+      name: `tool_${index}`,
+      description: `Tool number ${index}. `.repeat(6),
+      inputSchema: {
+        type: 'object',
+        properties: { path: { type: 'string', description: 'Where to look.'.repeat(6) } },
+        required: ['path'],
+      },
+    }));
+
+    const prompt = buildSystemPrompt({
+      records: registry.list(),
+      tools: true,
+      thinking: false,
+      mcp: [
+        ...many,
+        {
+          server: 'code',
+          name: 'run_python',
+          description: 'Run Python in a sandbox.',
+          inputSchema: {
+            type: 'object',
+            properties: { code: { type: 'string', description: 'The program.'.repeat(8) } },
+            required: ['code'],
+          },
+        },
+      ],
+      toolBudget: 3000,
+    });
+
+    const line = prompt.split('\n').find((entry) => entry.includes('"code__run_python"'));
+    expect(line).toBeDefined();
+    expect(JSON.parse(line ?? '{}').function.parameters.required).toEqual(['code']);
+  });
+
+  it('names the arguments of a tool whose declaration did not fit', () => {
+    const many = Array.from({ length: 20 }, (_, index) => ({
+      server: 'fake',
+      name: `opt_${index}`,
+      description: `A tool with nothing required (${index}). `.repeat(6),
+      inputSchema: {
+        type: 'object',
+        properties: { timeout_ms: { type: 'number', description: 'Wall clock.'.repeat(8) } },
+      },
+    }));
+
+    const prompt = buildSystemPrompt({
+      records: registry.list(),
+      tools: true,
+      thinking: false,
+      mcp: [
+        {
+          server: 'code',
+          name: 'run_python',
+          description: 'Run Python in a sandbox. Required argument: code (string).',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              code: { type: 'string', description: 'The program to run.'.repeat(8) },
+              timeout_ms: { type: 'number', description: 'Wall clock.'.repeat(8) },
+            },
+            required: ['code'],
+          },
+        },
+        {
+          server: 'code',
+          name: 'run_javascript',
+          description: 'Run JavaScript in a sandbox. Required argument: code (string).',
+          inputSchema: {
+            type: 'object',
+            properties: { code: { type: 'string', description: 'The program.'.repeat(8) } },
+            required: ['code'],
+          },
+        },
+        ...many,
+      ],
+      toolBudget: 400,
+    });
+
+    // The declarations that did not fit are not a guess either: the required
+    // argument is named, and a tool with nothing required still shows what it
+    // takes, `?` and all.
+    const overflow = prompt.slice(prompt.indexOf('These tools exist too'));
+    expect(overflow).toMatch(/code__run_javascript\(code\)/);
+    expect(overflow).toMatch(/fake__opt_\d+\(timeout_ms\?\)/);
   });
 
   it('declares the ChatML convention for a plain model, with no Qwen3 switches', () => {
@@ -498,6 +590,25 @@ describe('strict-JSON protocol', () => {
     expect(names).toContain('fake__echo');
   });
 
+  it('says what each connected MCP server is for', () => {
+    const prompt = buildSystemPrompt({
+      records: registry.list(),
+      tools: true,
+      thinking: false,
+      mcp: [
+        {
+          server: 'code',
+          name: 'run_python',
+          description: 'Run Python.',
+          inputSchema: { type: 'object' },
+        },
+      ],
+      mcpServers: [{ name: 'code', description: 'Code sandbox — run_javascript and run_python.' }],
+    });
+    expect(prompt).toContain('MCP servers: code — Code sandbox');
+    expect(prompt).toContain('Call their tools as <server>__<tool>');
+  });
+
   it('injects the tool result as an engine-written object', () => {
     const envelope = resultEnvelope([{ name: 'listScripts', ok: true, result: [{ name: 'hi' }] }]);
     const prompt = toolResultPrompt(['listScripts → 1 script'], 'which scripts?', { envelope });
@@ -547,5 +658,40 @@ describe('strict-JSON protocol', () => {
     const result = parseEnvelope('{"type":"tool_result","calls":[]}', { toolNames: ['x'] });
     expect(result.ok).toBe(false);
     expect(result.ok ? '' : result.reason).toContain('tool_result');
+  });
+});
+
+describe('the turns a chat session holds', () => {
+  /** The shape node-llama-cpp keeps: system prompt, prompts, model responses. */
+  const history = [
+    { type: 'system', text: 'You are InfAgent.' },
+    { type: 'user', text: 'list my scripts\n/no_think' },
+    { type: 'model', response: ['The ', 'six scripts are…'] },
+    { type: 'user', text: '{"type":"tool_result","calls":[]}' },
+    { type: 'model', response: ['done'] },
+  ];
+
+  it('reads user and model entries, and nothing the engine injected', () => {
+    expect(chatTurnsOf(history)).toEqual([
+      { role: 'user', content: 'list my scripts\n/no_think' },
+      { role: 'assistant', content: 'The six scripts are…' },
+      { role: 'user', content: '{"type":"tool_result","calls":[]}' },
+      { role: 'assistant', content: 'done' },
+    ]);
+  });
+
+  it('is what decides whether a cached session may be reused', () => {
+    const held = chatTurnsOf(history);
+    // A fresh request that declares no history is not a continuation of a
+    // session that already answered something: it must get a new session,
+    // otherwise the model continues its own previous reply.
+    expect(sameTurns(held, [])).toBe(false);
+    expect(sameTurns(held, held)).toBe(true);
+    expect(sameTurns([], [])).toBe(true);
+    expect(sameTurns(held, [{ role: 'user', content: 'something else' }])).toBe(false);
+    // Same length, different words: still a different conversation.
+    expect(
+      sameTurns([{ role: 'user', content: 'one' }], [{ role: 'user', content: 'another' }]),
+    ).toBe(false);
   });
 });

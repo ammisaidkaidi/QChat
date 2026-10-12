@@ -33,7 +33,7 @@ export const DEFAULT_WEIGHTS_DIR = join(homedir(), '.cache', 'infagent', 'models
 /** The catalogue folder — kept under its old name for the public API. */
 export const DEFAULT_MODELS_DIR = DEFAULT_SETTINGS_DIR;
 const DEFAULTS = {
-    contextSize: 2048,
+    contextSize: 4096,
     threads: 2,
     temperature: 0.4,
     maxTokens: 512,
