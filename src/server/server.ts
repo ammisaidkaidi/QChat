@@ -38,6 +38,14 @@ import {
 } from '../config/envFile.js';
 import { PromptError } from '../chat/prompts.js';
 import type { SystemPromptStore } from '../chat/prompts.js';
+import {
+  CloudInference,
+  CloudProviderError,
+  CloudProviderStore,
+  CLOUD_PROVIDER_PRESETS,
+  cloudApiKeyEnvName,
+} from '../cloud/providers.js';
+import type { CloudCompletionRequest, CloudProvider } from '../cloud/providers.js';
 import type { AlertBus } from '../capabilities/alerts.js';
 import type { ChatEvent, ChatRequest } from '../chat/types.js';
 import { openSse } from './sse.js';
@@ -78,6 +86,10 @@ export interface ServerOptions {
   uiDir?: string;
   /** SQLite conversation store. Inject one in tests; the default lives in app data. */
   chatStore?: ChatStore;
+  /** Cloud provider metadata store. Keys are resolved only through `.env`. */
+  cloudProviders?: CloudProviderStore;
+  /** Override the cloud inference adapter in tests. */
+  cloudInference?: CloudInference;
   /** Override the SQLite path (`INFAGENT_DB_PATH`/app-data by default). */
   chatDbPath?: string;
   /** The `.env` the Config tab edits. Defaults to `<cwd>/.env`. */
@@ -275,6 +287,17 @@ export function createServer(options: ServerOptions = {}): Server {
     options.chatStore ?? new ChatStore(options.chatDbPath ?? defaultChatDatabasePath());
   const envFile = resolve(options.envFile ?? join(process.cwd(), '.env'));
   const envReference = resolve(options.envReference ?? join(process.cwd(), '.env.example'));
+  const cloudProviders = options.cloudProviders ?? new CloudProviderStore();
+  const cloudInference =
+    options.cloudInference ??
+    new CloudInference(cloudProviders, (provider) => {
+      const keyName = cloudApiKeyEnvName(provider.id);
+      return process.env[keyName] || readEnvValue(envFile, keyName);
+    });
+  const publicCloudProvider = (provider: CloudProvider) => ({
+    ...provider,
+    keyConfigured: cloudInference.apiKeyConfigured(provider),
+  });
   registry.ensureRoot();
   skills.ensureRoot();
   // Connect the configured servers in the background: the console reports state,
@@ -396,6 +419,96 @@ export function createServer(options: ServerOptions = {}): Server {
           return;
         }
 
+        if (segments[1] === 'cloud' && segments[2] === 'providers') {
+          if (segments.length === 3 && method === 'GET') {
+            sendJson(res, 200, {
+              providers: cloudProviders.list().map(publicCloudProvider),
+              presets: CLOUD_PROVIDER_PRESETS,
+            });
+            return;
+          }
+
+          if (segments.length === 3 && (method === 'POST' || method === 'PUT')) {
+            const body = await readBody(req);
+            const rawApiKey = body['apiKey'];
+            if (rawApiKey !== undefined && typeof rawApiKey !== 'string') {
+              sendJson(res, 400, { error: 'Provider API key must be a string.' });
+              return;
+            }
+            if (
+              typeof rawApiKey === 'string' &&
+              (rawApiKey.length > 8192 || rawApiKey.includes(String.fromCharCode(0)))
+            ) {
+              sendJson(res, 400, {
+                error: 'Provider API key is too long or contains an invalid character.',
+              });
+              return;
+            }
+
+            const requestedId =
+              typeof body['id'] === 'string' ? body['id'].trim().toLowerCase() : '';
+            const previous = requestedId ? cloudProviders.get(requestedId) : null;
+            const provider = cloudProviders.upsert(body);
+            const apiKey = typeof rawApiKey === 'string' ? rawApiKey.trim() : '';
+            if (apiKey) {
+              try {
+                writeEnvFile(envFile, { updates: { [cloudApiKeyEnvName(provider.id)]: apiKey } });
+              } catch (error) {
+                try {
+                  if (previous) cloudProviders.upsert(previous);
+                  else cloudProviders.remove(provider.id);
+                } catch {
+                  // Keep the original save error; metadata remains editable if rollback fails.
+                }
+                if (error instanceof EnvFileError) {
+                  sendJson(res, error.code === 'bad_request' ? 400 : 500, { error: error.message });
+                  return;
+                }
+                throw error;
+              }
+            }
+            sendJson(res, previous ? 200 : 201, { provider: publicCloudProvider(provider) });
+            return;
+          }
+
+          if (segments.length === 5 && segments[4] === 'test' && method === 'POST') {
+            await readBody(req);
+            const id = decodeURIComponent(segments[3] ?? '');
+            const models = await cloudInference.listModels(id);
+            const provider = cloudProviders.setModels(id, models);
+            sendJson(res, 200, { provider: publicCloudProvider(provider), models });
+            return;
+          }
+
+          if (segments.length === 4 && method === 'DELETE') {
+            const id = decodeURIComponent(segments[3] ?? '');
+            const removed = cloudProviders.remove(id);
+            if (!removed) {
+              sendJson(res, 404, { error: `Cloud provider "${id}" was not found.` });
+              return;
+            }
+            try {
+              writeEnvFile(envFile, { remove: [cloudApiKeyEnvName(id)] });
+            } catch (error) {
+              try {
+                cloudProviders.upsert(removed);
+              } catch {
+                // Metadata removal cannot be reversed; report the key-file error.
+              }
+              if (error instanceof EnvFileError) {
+                sendJson(res, error.code === 'bad_request' ? 400 : 500, { error: error.message });
+                return;
+              }
+              throw error;
+            }
+            sendJson(res, 200, { removed: id });
+            return;
+          }
+
+          sendJson(res, 404, { error: `Unknown cloud provider route: ${pathname}` });
+          return;
+        }
+
         if (segments[1] === 'chat') {
           const sub = segments[2];
 
@@ -449,6 +562,14 @@ export function createServer(options: ServerOptions = {}): Server {
           if (sub === 'completions' && method === 'POST') {
             const body = await readBody(req);
             const request = body as unknown as ChatRequest;
+            if (
+              request.modelSource !== undefined &&
+              request.modelSource !== 'local' &&
+              request.modelSource !== 'cloud'
+            ) {
+              sendJson(res, 400, { error: 'modelSource must be local or cloud.' });
+              return;
+            }
             if (!Array.isArray(request.messages) || request.messages.length === 0) {
               sendJson(res, 400, { error: 'Body must include a non-empty `messages` array.' });
               return;
@@ -458,10 +579,37 @@ export function createServer(options: ServerOptions = {}): Server {
             const sse = openSse(res);
             req.on('close', () => controller.abort());
 
-            // Iterated by hand so the engine's generator can be closed on
-            // disconnect: a generator nobody drains never runs its `finally`,
-            // which would leave the engine marked busy forever.
-            const turn = engine.stream(request, controller.signal)[Symbol.asyncIterator]();
+            // Cloud requests use the selected provider adapter directly: they
+            // never enter the local agent's script/MCP tool-dispatch loop.
+            const attachedSkills = Array.isArray(request.skills)
+              ? request.skills.filter((name): name is string => typeof name === 'string')
+              : [];
+            const lineBreak = String.fromCharCode(10);
+            const skillContext = skills
+              .load(attachedSkills)
+              .map((skill) => `## Attached skill: ${skill.name}${lineBreak}${skill.body}`)
+              .join(`${lineBreak}${lineBreak}`);
+            const cloudRequest: CloudCompletionRequest = {
+              providerId: request.providerId ?? '',
+              modelId: request.modelId ?? '',
+              messages: request.messages,
+              ...(request.temperature === undefined ? {} : { temperature: request.temperature }),
+              ...(request.maxTokens === undefined ? {} : { maxTokens: request.maxTokens }),
+              systemPrompt: [request.systemPrompt ?? '', skillContext]
+                .filter(Boolean)
+                .join(`${lineBreak}${lineBreak}`),
+              ...(request.promptTemplate === undefined
+                ? {}
+                : { promptTemplate: request.promptTemplate }),
+            };
+            const generation =
+              request.modelSource === 'cloud'
+                ? cloudInference.stream(cloudRequest, controller.signal)
+                : engine.stream(request, controller.signal);
+
+            // Iterated by hand so the generator can close its upstream reader
+            // promptly when the browser disconnects.
+            const turn = generation[Symbol.asyncIterator]();
             try {
               for (;;) {
                 const step = await turn.next();
@@ -997,6 +1145,10 @@ export function createServer(options: ServerOptions = {}): Server {
 
         sendJson(res, 404, { error: `Unknown API route: ${pathname}` });
       } catch (error) {
+        if (error instanceof CloudProviderError) {
+          sendJson(res, error.status, { error: error.message });
+          return;
+        }
         if (error instanceof ChatStoreError) {
           sendJson(res, error.status, { error: error.message });
           return;

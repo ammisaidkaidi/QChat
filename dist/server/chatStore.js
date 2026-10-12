@@ -29,6 +29,8 @@ export const DEFAULT_CHAT_SETTINGS = {
     systemPrompt: '',
     maxSteps: 6,
     mcpServers: null,
+    modelSource: 'local',
+    providerId: '',
     modelId: '',
     styleName: '',
 };
@@ -111,6 +113,10 @@ export function normaliseChatSettings(value) {
             })),
         ];
     }
+    const modelSource = value['modelSource'] === undefined ? fallback.modelSource : value['modelSource'];
+    if (modelSource !== 'local' && modelSource !== 'cloud') {
+        throw new ChatStoreError(400, 'Chat modelSource must be local or cloud.');
+    }
     return {
         temperature: boundedNumber(value['temperature'], 'temperature', fallback.temperature, 0, 2),
         maxTokens: boundedNumber(value['maxTokens'], 'maxTokens', fallback.maxTokens, 1, 8192, true),
@@ -120,7 +126,9 @@ export function normaliseChatSettings(value) {
         systemPrompt: textField(value['systemPrompt'], 'system prompt', fallback.systemPrompt, 40_000),
         maxSteps: boundedNumber(value['maxSteps'], 'maxSteps', fallback.maxSteps, 1, 12, true),
         mcpServers,
-        modelId: textField(value['modelId'], 'model id', fallback.modelId, 128),
+        modelSource,
+        providerId: textField(value['providerId'], 'provider id', fallback.providerId, 48),
+        modelId: textField(value['modelId'], 'model id', fallback.modelId, 256),
         styleName: textField(value['styleName'], 'style name', fallback.styleName, 128),
     };
 }
@@ -320,6 +328,8 @@ export class ChatStore {
             updatedAt: parseTimestamp(Number(row['updated_at'])),
             preview: String(row['preview'] ?? ''),
             turnCount: Number(row['turn_count'] ?? 0),
+            modelSource: settings.modelSource,
+            providerId: settings.providerId,
             modelId: settings.modelId,
         };
     }

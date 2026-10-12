@@ -11,13 +11,22 @@ import {
   mentionAt,
   type Mention,
 } from '../mentions';
-import { chatApi, chatsApi, mcpApi, promptsApi, skillsApi, streamChat } from '../api';
+import {
+  chatApi,
+  chatsApi,
+  cloudProvidersApi,
+  mcpApi,
+  promptsApi,
+  skillsApi,
+  streamChat,
+} from '../api';
 import type { ChatStreamHandle } from '../api';
 import type {
   ChatConfig,
   ChatEvent,
   ChatMessage,
   ChatSettings,
+  CloudProvider,
   ChatSummary,
   ChatTurn,
   StoredChat,
@@ -39,6 +48,11 @@ const LEGACY_IMPORT_KEY = 'infagent.chat.import-id.v1';
 const status = ref<EngineStatus | null>(null);
 const config = ref<ChatConfig | null>(null);
 const catalog = ref<ModelCatalog | null>(null);
+const cloudProviders = ref<CloudProvider[]>([]);
+const cloudProvidersLoading = ref(false);
+const cloudProvidersReady = ref(false);
+const modelPicker = ref(false);
+const modelPickerWrap = ref<HTMLElement | null>(null);
 const switching = ref(false);
 /** Turn id whose text was copied last, for the "copied" tick. */
 const copied = ref<string | null>(null);
@@ -97,6 +111,8 @@ const settings = reactive({
    * `[]` = none at all, a list = exactly those (the 🔧 button by the box).
    */
   mcpServers: null as string[] | null,
+  modelSource: 'local' as 'local' | 'cloud',
+  providerId: '',
   /** Per-chat model; loaded when this chat is selected and included per request. */
   modelId: '',
   /** Per-chat selected template name (the template itself stays in models/). */
@@ -124,12 +140,34 @@ const stateLabel = computed(() => {
   }
 });
 
+const selectedCloudProvider = computed(
+  () => cloudProviders.value.find((provider) => provider.id === settings.providerId) ?? null,
+);
+const selectedCloudModel = computed(
+  () => selectedCloudProvider.value?.models.find((model) => model.id === settings.modelId) ?? null,
+);
+const localModels = computed(() => catalog.value?.models.filter((model) => model.present) ?? []);
+const selectedModelLabel = computed(() => {
+  if (settings.modelSource === 'cloud') {
+    if (selectedCloudProvider.value && selectedCloudModel.value) {
+      return `${selectedCloudProvider.value.name} · ${selectedCloudModel.value.id}`;
+    }
+    return 'Cloud model not configured';
+  }
+  return (
+    catalog.value?.models.find((model) => model.settings.id === settings.modelId)?.settings.id ||
+    settings.modelId ||
+    catalog.value?.active ||
+    'Choose a model'
+  );
+});
 const canChat = computed(
   () =>
     historyReady.value &&
     activeChatId.value.length > 0 &&
-    status.value !== null &&
-    ['ready', 'idle', 'loading'].includes(status.value.state),
+    (settings.modelSource === 'cloud'
+      ? Boolean(selectedCloudProvider.value?.keyConfigured && selectedCloudModel.value)
+      : status.value !== null && ['ready', 'idle', 'loading'].includes(status.value.state)),
 );
 
 /* ── persistence: SQLite on the server, each chat owns its own settings ──── */
@@ -186,6 +224,8 @@ function defaultChatSettings(): ChatSettings {
     systemPrompt: '',
     maxSteps: 6,
     mcpServers: null,
+    modelSource: 'local',
+    providerId: '',
     modelId,
     styleName: defaultStyleName.value,
   };
@@ -307,6 +347,8 @@ function summaryFromRecord(chat: StoredChat): ChatSummary {
     updatedAt: chat.updatedAt,
     preview: chat.preview,
     turnCount: chat.turnCount,
+    modelSource: chat.modelSource,
+    providerId: chat.providerId,
     modelId: chat.modelId,
   };
 }
@@ -326,7 +368,7 @@ function applyStoredChat(chat: StoredChat): void {
 
 async function activateChat(chat: StoredChat): Promise<boolean> {
   let selected = chat;
-  let requestedModel = chat.settings.modelId;
+  let requestedModel = chat.settings.modelSource === 'local' ? chat.settings.modelId : '';
   if (requestedModel && catalog.value) {
     const exists = catalog.value.models.some((model) => model.settings.id === requestedModel);
     if (!exists) {
@@ -508,11 +550,12 @@ async function deleteChat(summary: ChatSummary): Promise<void> {
 
 /* ── engine status ───────────────────────────────────────────────────────── */
 
-const activeModel = computed<ModelRecord | null>(
-  () =>
-    catalog.value?.models.find(
-      (model) => model.settings.id === (settings.modelId || catalog.value?.active),
-    ) ?? null,
+const activeModel = computed<ModelRecord | null>(() =>
+  settings.modelSource === 'local'
+    ? (catalog.value?.models.find(
+        (model) => model.settings.id === (settings.modelId || catalog.value?.active),
+      ) ?? null)
+    : null,
 );
 
 function formatSize(bytes: number): string {
@@ -553,15 +596,17 @@ function selectStyle(event: Event): void {
   );
 }
 
-async function selectModel(event: Event): Promise<void> {
-  const id = (event.target as HTMLSelectElement).value;
-  if (!id || id === settings.modelId) return;
+async function selectLocalModel(id: string): Promise<void> {
+  modelPicker.value = false;
+  if (!id || (settings.modelSource === 'local' && id === settings.modelId)) return;
 
   switching.value = true;
   try {
     const response = await chatApi.useModel(id, false);
     catalog.value = response;
     status.value = response.status;
+    settings.modelSource = 'local';
+    settings.providerId = '';
     settings.modelId = id;
     if (!response.status.modelPresent) {
       emit(
@@ -578,6 +623,40 @@ async function selectModel(event: Event): Promise<void> {
   } finally {
     switching.value = false;
   }
+}
+
+async function selectModel(event: Event): Promise<void> {
+  await selectLocalModel((event.target as HTMLSelectElement).value);
+}
+
+function selectCloudModel(provider: CloudProvider, modelId: string): void {
+  if (!provider.keyConfigured || !provider.models.some((model) => model.id === modelId)) return;
+  settings.modelSource = 'cloud';
+  mcpPicker.value = false;
+  settings.providerId = provider.id;
+  settings.modelId = modelId;
+  modelPicker.value = false;
+  emit('notify', `This chat now uses ${provider.name} · ${modelId}`, 'success');
+}
+
+async function loadCloudProviders(): Promise<void> {
+  cloudProvidersLoading.value = true;
+  try {
+    const response = await cloudProvidersApi.list();
+    cloudProviders.value = response.providers;
+  } catch (error) {
+    if (!cloudProvidersReady.value) {
+      emit('notify', `Cloud model list could not be loaded: ${(error as Error).message}`, 'error');
+    }
+  } finally {
+    cloudProvidersReady.value = true;
+    cloudProvidersLoading.value = false;
+  }
+}
+
+function toggleModelPicker(): void {
+  modelPicker.value = !modelPicker.value;
+  if (modelPicker.value) void loadCloudProviders();
 }
 
 /**
@@ -814,19 +893,23 @@ async function send(): Promise<void> {
 
   handle = streamChat({
     messages: [...priorHistory, { role: 'user', content: text }],
+    modelSource: settings.modelSource,
+    providerId: settings.providerId,
     modelId: settings.modelId,
     temperature: settings.temperature,
     maxTokens: settings.maxTokens,
     thinking: settings.thinking,
-    tools: settings.tools,
-    net: settings.net,
+    tools: settings.modelSource === 'local' && settings.tools,
+    net: settings.modelSource === 'local' && settings.net,
     systemPrompt: settings.systemPrompt,
     promptTemplate,
     maxToolIterations: settings.maxSteps,
     ...(pinned.length > 0 ? { skills: pinned } : {}),
     // Omitted when nothing is restricted, so the engine keeps offering every
     // enabled server (and any that connects later).
-    ...(settings.mcpServers === null ? {} : { mcpServers: [...selectedMcp.value] }),
+    ...(settings.modelSource === 'local' && settings.mcpServers !== null
+      ? { mcpServers: [...selectedMcp.value] }
+      : {}),
     onEvent: (event) => {
       applyEvent(assistant, event);
       void scrollToBottom();
@@ -923,6 +1006,14 @@ function onKeydown(event: KeyboardEvent): void {
 }
 
 function promptPreview(): string {
+  if (settings.modelSource === 'cloud') {
+    return [
+      `# Cloud chat (${selectedCloudProvider.value?.name ?? 'provider unavailable'})`,
+      `model: ${selectedCloudModel.value?.id || settings.modelId || 'not selected'}`,
+      'Inference runs through the provider API; local scripts, web tools and MCP are not executed.',
+      `Attached skills: ${draftSkills.value.join(', ') || 'none for the current draft'}`,
+    ].join(String.fromCharCode(10));
+  }
   if (!config.value) return '';
   return [
     `# InfAgent chat (Qwen3-0.6B, ${status.value?.quantization ?? 'Q4_K_M'}, CPU only)`,
@@ -1054,8 +1145,12 @@ async function loadMcp(): Promise<void> {
 }
 
 function onDocumentClick(event: MouseEvent): void {
-  if (mcpPicker.value && mcpWrap.value && !mcpWrap.value.contains(event.target as Node)) {
+  const target = event.target as Node;
+  if (mcpPicker.value && mcpWrap.value && !mcpWrap.value.contains(target)) {
     mcpPicker.value = false;
+  }
+  if (modelPicker.value && modelPickerWrap.value && !modelPickerWrap.value.contains(target)) {
+    modelPicker.value = false;
   }
 }
 
@@ -1076,12 +1171,13 @@ onMounted(async () => {
   document.addEventListener('click', onDocumentClick);
   void loadMcp();
   void loadSkills();
-  await Promise.all([refresh(), loadModels()]);
+  await Promise.all([refresh(), loadModels(), loadCloudProviders()]);
   await initialiseChatHistory();
   periodicRefresh = window.setInterval(() => {
     void refresh();
     void loadMcp();
     void loadSkills();
+    void loadCloudProviders();
     if (!switching.value) void loadModels();
   }, 20_000);
 });
@@ -1099,15 +1195,26 @@ onMounted(async () => {
               >
               <div>
                 <h2 class="card-title text-base">
-                  {{ status?.modelName ?? 'Qwen3 0.6B (Q4_K_M)' }}
-                  <span v-if="status?.quantization" class="badge badge-sm badge-ghost font-mono">{{
-                    status.quantization
-                  }}</span>
+                  {{
+                    settings.modelSource === 'cloud'
+                      ? (selectedCloudModel?.name ?? settings.modelId ?? 'Cloud model')
+                      : (status?.modelName ?? 'Qwen3 0.6B (Q4_K_M)')
+                  }}
+                  <span
+                    v-if="settings.modelSource === 'local' && status?.quantization"
+                    class="badge badge-sm badge-ghost font-mono"
+                    >{{ status.quantization }}</span
+                  >
                 </h2>
                 <p class="text-[11px] opacity-70">
-                  local · CPU {{ status?.threads ?? config?.threads ?? 2 }} threads · ctx
-                  {{ status?.contextSize ?? config?.contextSize ?? 0 }} · RAM
-                  {{ status?.ramUsedMb ?? 0 }} MB
+                  <template v-if="settings.modelSource === 'cloud'">
+                    cloud · {{ selectedCloudProvider?.name ?? 'provider unavailable' }} · hosted API
+                  </template>
+                  <template v-else>
+                    local · CPU {{ status?.threads ?? config?.threads ?? 2 }} threads · ctx
+                    {{ status?.contextSize ?? config?.contextSize ?? 0 }} · RAM
+                    {{ status?.ramUsedMb ?? 0 }} MB
+                  </template>
                 </p>
                 <p class="truncate text-[10px] text-primary/80">
                   {{
@@ -1123,7 +1230,7 @@ onMounted(async () => {
 
             <div class="flex flex-wrap items-center gap-2">
               <select
-                v-if="catalog && catalog.models.length > 0"
+                v-if="settings.modelSource === 'local' && catalog && catalog.models.length > 0"
                 class="select select-bordered select-xs max-w-[13rem] font-mono"
                 :value="settings.modelId || catalog.active"
                 :disabled="switching || busy || !historyReady"
@@ -1159,6 +1266,7 @@ onMounted(async () => {
               </select>
 
               <label
+                v-if="settings.modelSource === 'local'"
                 class="flex items-center gap-1 text-[11px] text-base-content/70"
                 title="Tool steps one reply may take: several calls, their results, then the answer"
               >
@@ -1176,6 +1284,7 @@ onMounted(async () => {
               </label>
 
               <span
+                v-if="settings.modelSource === 'local'"
                 class="badge badge-sm gap-1"
                 :class="{
                   'badge-success': status?.state === 'ready',
@@ -1191,9 +1300,20 @@ onMounted(async () => {
                 />
                 {{ stateLabel }}
               </span>
+              <span
+                v-if="settings.modelSource === 'cloud'"
+                class="badge badge-sm"
+                :class="canChat ? 'badge-success' : 'badge-warning'"
+                data-testid="cloud-model-status"
+              >
+                {{ canChat ? 'provider configured' : 'model or key needed' }}
+              </span>
 
               <button
-                v-if="status?.state === 'absent' || (activeModel && !activeModel.present)"
+                v-if="
+                  settings.modelSource === 'local' &&
+                  (status?.state === 'absent' || (activeModel && !activeModel.present))
+                "
                 class="btn btn-primary btn-xs"
                 :disabled="downloading"
                 @click="download"
@@ -1206,7 +1326,11 @@ onMounted(async () => {
                 }}
               </button>
               <button
-                v-if="status?.modelPresent && status?.state === 'ready'"
+                v-if="
+                  settings.modelSource === 'local' &&
+                  status?.modelPresent &&
+                  status?.state === 'ready'
+                "
                 class="btn btn-ghost btn-xs"
                 @click="unload"
               >
@@ -1224,7 +1348,20 @@ onMounted(async () => {
             </div>
           </header>
 
-          <div v-if="status?.state === 'downloading'" class="space-y-1">
+          <div
+            v-if="settings.modelSource === 'cloud' && historyReady && !canChat"
+            class="alert alert-warning py-2 text-xs"
+          >
+            <span>
+              This chat's cloud provider or model is unavailable. Open the model picker to choose
+              another model, or configure a provider under Config → Cloud AI providers.
+            </span>
+          </div>
+
+          <div
+            v-if="settings.modelSource === 'local' && status?.state === 'downloading'"
+            class="space-y-1"
+          >
             <progress
               class="progress progress-primary w-full"
               :value="status.downloadProgress * 100"
@@ -1237,7 +1374,10 @@ onMounted(async () => {
             </p>
           </div>
 
-          <div v-if="status?.state === 'absent'" class="alert py-2 text-xs">
+          <div
+            v-if="settings.modelSource === 'local' && status?.state === 'absent'"
+            class="alert py-2 text-xs"
+          >
             <span>
               {{ status?.modelName ?? 'This model' }} ({{
                 formatSize(activeModel?.sizeBytes ?? 0)
@@ -1247,7 +1387,10 @@ onMounted(async () => {
           </div>
 
           <div
-            v-if="status?.state === 'unavailable' || status?.lastError"
+            v-if="
+              settings.modelSource === 'local' &&
+              (status?.state === 'unavailable' || status?.lastError)
+            "
             class="alert alert-warning py-2 text-xs"
           >
             <span>{{
@@ -1294,12 +1437,22 @@ onMounted(async () => {
               Thinking mode (slower, shows a reasoning block)
             </label>
             <label class="flex items-center gap-2 text-xs">
-              <input v-model="settings.tools" type="checkbox" class="toggle toggle-sm" />
-              Let the model call scripts as tools
+              <input
+                v-model="settings.tools"
+                type="checkbox"
+                class="toggle toggle-sm"
+                :disabled="settings.modelSource === 'cloud'"
+              />
+              Let the model call scripts as tools (local only)
             </label>
             <label class="flex items-center gap-2 text-xs">
-              <input v-model="settings.net" type="checkbox" class="toggle toggle-sm" />
-              Internet access (webSearch, webFetch)
+              <input
+                v-model="settings.net"
+                type="checkbox"
+                class="toggle toggle-sm"
+                :disabled="settings.modelSource === 'cloud'"
+              />
+              Internet access (webSearch, webFetch; local only)
             </label>
             <div class="flex items-center gap-2 sm:col-span-2">
               <button
@@ -1360,11 +1513,18 @@ onMounted(async () => {
           <div ref="scroller" class="max-h-[52vh] min-h-[18rem] space-y-3 overflow-y-auto px-1">
             <div v-if="turns.length === 0" class="grid place-items-center gap-2 py-14 text-center">
               <p class="text-sm opacity-80">
-                Ask the on-device model anything — or let it run your scripts.
+                {{
+                  settings.modelSource === 'cloud'
+                    ? 'Ask the selected cloud model anything.'
+                    : 'Ask the on-device model anything — or let it run your scripts.'
+                }}
               </p>
               <p class="max-w-md text-xs opacity-60">
-                Try: “Use a tool to greet Amina”, “Which scripts do you have?”, or “Explain what
-                DPDP means in one line.”
+                {{
+                  settings.modelSource === 'cloud'
+                    ? 'Choose another model at any time; this choice is saved per chat.'
+                    : 'Try: “Use a tool to greet Amina”, “Which scripts do you have?”, or “Explain what DPDP means in one line.”'
+                }}
               </p>
             </div>
 
@@ -1491,8 +1651,126 @@ onMounted(async () => {
           </div>
 
           <div class="flex flex-wrap items-end gap-2">
-            <!-- Which MCP servers the model may use: the wrench beside the box. -->
-            <div ref="mcpWrap" class="relative shrink-0 self-end">
+            <!-- Per-chat local/cloud model choice, beside the MCP control. -->
+            <div ref="modelPickerWrap" class="relative shrink-0 self-end">
+              <button
+                class="btn btn-sm max-w-[15rem] gap-1 px-2"
+                :class="settings.modelSource === 'cloud' ? 'btn-primary' : 'btn-ghost'"
+                :disabled="busy || switching || !historyReady"
+                :title="`Model for this chat: ${selectedModelLabel}`"
+                aria-label="Choose model for this chat"
+                data-testid="model-picker"
+                @click.stop="toggleModelPicker"
+              >
+                <span>🧠 Model</span>
+                <span class="max-w-36 truncate text-[10px] opacity-80">{{
+                  selectedModelLabel
+                }}</span>
+              </button>
+
+              <div
+                v-if="modelPicker"
+                class="absolute bottom-full left-0 z-40 mb-2 max-h-[70vh] w-[min(22rem,calc(100vw-2rem))] overflow-y-auto rounded-box border border-base-300 bg-base-100 p-3 shadow-xl"
+                data-testid="model-picker-panel"
+                @click.stop
+              >
+                <div class="mb-2 flex items-center justify-between gap-2">
+                  <span class="text-xs font-semibold">Model for this chat</span>
+                  <button class="btn btn-ghost btn-xs" @click="modelPicker = false">Close</button>
+                </div>
+                <p class="mb-1 text-[10px] font-semibold uppercase tracking-wide opacity-55">
+                  Downloaded local models
+                </p>
+                <p v-if="localModels.length === 0" class="px-2 py-1 text-[11px] opacity-60">
+                  No downloaded local models. Download one from the Chat controls, or choose a cloud
+                  model below.
+                </p>
+                <button
+                  v-for="model in localModels"
+                  :key="model.settings.id"
+                  class="flex w-full items-center justify-between gap-2 rounded-box px-2 py-1.5 text-left hover:bg-base-200"
+                  :class="
+                    settings.modelSource === 'local' && settings.modelId === model.settings.id
+                      ? 'bg-primary/15'
+                      : ''
+                  "
+                  :data-testid="`model-local-${model.settings.id}`"
+                  @click="selectLocalModel(model.settings.id)"
+                >
+                  <span class="min-w-0 truncate font-mono text-xs">{{ model.settings.id }}</span>
+                  <span class="badge badge-success badge-xs shrink-0">{{
+                    formatSize(model.sizeBytes ?? 0)
+                  }}</span>
+                </button>
+
+                <div class="my-2 border-t border-base-300" />
+                <p class="mb-1 text-[10px] font-semibold uppercase tracking-wide opacity-55">
+                  Configured cloud models
+                </p>
+                <p
+                  v-if="cloudProvidersLoading"
+                  class="flex items-center gap-2 px-2 py-2 text-[11px] opacity-60"
+                >
+                  <span class="loading loading-spinner loading-xs" /> Loading providers…
+                </p>
+                <template v-for="provider in cloudProviders" :key="provider.id">
+                  <p class="mt-2 px-2 text-[11px] font-semibold">
+                    ☁ {{ provider.name }}
+                    <span class="font-normal opacity-55">{{
+                      provider.keyConfigured ? '' : ' · API key needed'
+                    }}</span>
+                  </p>
+                  <button
+                    v-for="model in provider.models"
+                    :key="`${provider.id}:${model.id}`"
+                    class="flex w-full items-center justify-between gap-2 rounded-box px-2 py-1.5 text-left hover:bg-base-200 disabled:cursor-not-allowed disabled:opacity-40"
+                    :class="
+                      settings.modelSource === 'cloud' &&
+                      settings.providerId === provider.id &&
+                      settings.modelId === model.id
+                        ? 'bg-primary/15'
+                        : ''
+                    "
+                    :disabled="!provider.keyConfigured"
+                    :data-testid="`model-cloud-${provider.id}-${model.id}`"
+                    @click="selectCloudModel(provider, model.id)"
+                  >
+                    <span class="min-w-0 truncate font-mono text-xs">{{
+                      model.name || model.id
+                    }}</span>
+                    <span
+                      v-if="
+                        settings.modelSource === 'cloud' &&
+                        settings.providerId === provider.id &&
+                        settings.modelId === model.id
+                      "
+                      class="badge badge-primary badge-xs shrink-0"
+                      >selected</span
+                    >
+                  </button>
+                  <p v-if="provider.models.length === 0" class="px-2 py-1 text-[10px] opacity-55">
+                    No model IDs yet — test the provider or add IDs under Config.
+                  </p>
+                </template>
+                <p
+                  v-if="cloudProviders.length === 0 && !cloudProvidersLoading"
+                  class="px-2 py-1 text-[11px] opacity-60"
+                >
+                  No cloud models configured. Add a provider under Config → Cloud AI providers.
+                </p>
+                <p class="mt-2 border-t border-base-300 pt-2 text-[10px] opacity-55">
+                  Selection is saved to this chat. Cloud chats send messages to the configured
+                  provider; local tool execution remains off.
+                </p>
+              </div>
+            </div>
+
+            <!-- Which MCP servers the local model may use: the wrench beside the box. -->
+            <div
+              v-if="settings.modelSource === 'local'"
+              ref="mcpWrap"
+              class="relative shrink-0 self-end"
+            >
               <button
                 class="btn btn-sm gap-1 px-2"
                 :class="{ 'btn-primary': mcpRestricted, 'btn-ghost': !mcpRestricted }"
@@ -1620,8 +1898,12 @@ onMounted(async () => {
                 class="textarea textarea-bordered textarea-sm w-full"
                 :placeholder="
                   canChat
-                    ? 'Message the on-device model…  (Enter to send, Shift+Enter for a new line, / for a skill)'
-                    : 'Load the model first'
+                    ? settings.modelSource === 'cloud'
+                      ? `Message ${selectedCloudProvider?.name ?? 'cloud model'}…  (Enter to send, Shift+Enter for a new line)`
+                      : 'Message the on-device model…  (Enter to send, Shift+Enter for a new line, / for a skill)'
+                    : settings.modelSource === 'cloud'
+                      ? 'Choose a configured cloud model in Config'
+                      : 'Load the local model first'
                 "
                 :disabled="busy"
                 data-testid="draft"
@@ -1651,8 +1933,15 @@ onMounted(async () => {
           </div>
 
           <p class="text-[10px] opacity-50">
-            Everything runs locally through llama.cpp — no API key, no data leaving the machine.
-            <span v-if="settings.tools"> Tool calls execute scripts from the Scripts tab.</span>
+            <template v-if="settings.modelSource === 'cloud'">
+              Messages are sent to
+              {{ selectedCloudProvider?.name ?? 'the selected cloud provider' }}; this chat does not
+              execute local scripts or MCP tools.
+            </template>
+            <template v-else>
+              Everything runs locally through llama.cpp — no API key, no data leaving the machine.
+              <span v-if="settings.tools"> Tool calls execute scripts from the Scripts tab.</span>
+            </template>
             <span v-if="draftSkills.length > 0" class="ml-1 text-base-content/70">
               Following {{ draftSkills.map((name) => `/${name}`).join(', ') }} —
               {{ draftSkills.length === 1 ? 'its steps are' : 'their steps are' }} loaded for this

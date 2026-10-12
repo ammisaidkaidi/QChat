@@ -1,13 +1,14 @@
 # InfAgent
 
 Agent infrastructure toolkit — strict TypeScript, ESM-only, library **and** CLI,
-plus a **Vue interface** with two tabs: a chat agent running **Qwen3-0.6B locally**
-(CPU, llama.cpp) and a console for the agent's script toolbox.
+plus a **Vue interface** with local and optional cloud-hosted chat models, and a
+console for the agent's script toolbox.
 
 - Node **≥ 20.11**, ESM (`"type": "module"`), TypeScript strict
 - Library + CLI + HTTP API + Vue 3 / Tailwind / daisyUI console
 - Local chat model: Qwen3-0.6B GGUF (Q4_K_M, ~380 MB) via `node-llama-cpp`, no API key, fully offline
-- The chat model calls the script toolbox as tools (`<tool_call>` protocol)
+- Optional cloud inference via NVIDIA NIM/OpenAI-compatible APIs, native Anthropic and Gemini adapters
+- Local chat models can call the script toolbox as tools (`<tool_call>` protocol)
 - Agent scripts as self-describing files: `.js` / `.py` with a prompt header
 - Built-in callbacks: `createScript`, `removeScript`, `listScripts`, `readScript`, `updateScript`, `searchScripts`, `runScript`, `describeScript`, `scriptStats`
 - Env as a first-class citizen: `env.txt` → `.env`, secrets redacted
@@ -40,11 +41,12 @@ npx tsx src/cli.ts scripts list
 npx tsx src/cli.ts scripts run hello '{"name":"world"}'
 ```
 
-## Chat tab — local models on CPU
+## Chat tab — local and cloud models
 
-The model runs in-process through llama.cpp; nothing leaves the machine.
-Fourteen models ship in the catalogue and the picker in the Chat tab switches
-between them; the weights are downloaded on demand.
+Local models run in-process through llama.cpp; nothing leaves the machine.
+Fourteen local models ship in the catalogue and their weights download on demand.
+The per-chat model picker also offers configured cloud models when you prefer a
+hosted API; cloud inference does not download or host model weights.
 
 | Model | Weights | Style |
 | --- | --- | --- |
@@ -110,6 +112,34 @@ infagent chat download [model-id]    # fetch the GGUF into the weights folder
 infagent chat ask "…" [--thinking] [--no-tools] [--temp 0.4] [--max 512]
 infagent chat unload              # free ~1 GB of RAM now
 ```
+
+## Cloud-hosted models
+
+Open **Config → Cloud AI providers** to configure a provider name, API root,
+model IDs and API key, then test the connection. Presets include NVIDIA NIM,
+OpenAI, OpenRouter, Anthropic and Google Gemini; custom OpenAI-compatible APIs
+are supported too. OpenAI-compatible Chat Completions, Anthropic Messages and
+Gemini streaming each use their native request format.
+
+- Keys are write-only in the cloud-provider form and stored through InfAgent's
+  existing `.env` secret handling as `INFAGENT_CLOUD_<PROVIDER_ID>_API_KEY`
+  (hyphens become underscores, uppercased). The `.env` is gitignored; keys are
+  never included in SQLite chat history or provider metadata. The Config tab
+  shows secret values masked by default.
+- Provider endpoints and model IDs live in the OS application-data folder, not
+  in the repository. HTTPS is required, except for localhost endpoints.
+- Choose a downloaded local model or a configured cloud model from the **🧠
+  Model** button beside the composer/MCP picker. The selection is per chat and
+  does not change the global default.
+- Cloud chats send messages and the selected system/style prompt to the chosen
+  provider. They do **not** run local scripts, web tools or MCP calls; those
+  capabilities remain available only on local-model chats. An explicitly
+  attached `/skill` is sent as prompt context for that turn.
+
+The provider endpoints are `GET/POST /api/cloud/providers`,
+`POST /api/cloud/providers/:id/test` and `DELETE /api/cloud/providers/:id`.
+`POST /api/chat/completions` accepts `modelSource: "cloud"`, `providerId` and
+`modelId` for hosted inference, or the existing local request fields.
 
 ### Tool protocol — one JSON object per reply
 
@@ -603,10 +633,12 @@ infagent config | run <task> | --version
 | `POST /api/scripts/:name/run` | `{ "args": {…} }` → run result |
 | `GET /api/scripts/:name/prompt` | ready-to-paste agent prompt |
 | `GET /api/tools` | tool schemas + system prompt |
+| `GET/POST /api/cloud/providers` | list presets / save provider metadata and write-only API key |
+| `POST /api/cloud/providers/:id/test` / `DELETE /api/cloud/providers/:id` | discover models / remove provider and key |
 | `GET /api/chat/status` | engine state, model path, context, RAM, defaults |
 | `POST /api/chat/model/download` | SSE progress while fetching the GGUF |
 | `DELETE /api/chat/model` | unload the model from memory |
-| `POST /api/chat/completions` | SSE token stream (`status`, `thinking`, `token`, `tool_call`, `tool_result`, `reset`, `plan`, `stats`, `done`); per-turn `modelId`, `net`, `tools`, `promptTemplate`, `maxToolIterations`, `mcpServers`, `skills` |
+| `POST /api/chat/completions` | SSE token stream for local or cloud inference; per-turn `modelSource`, `providerId`, `modelId`, `net`, `tools`, `promptTemplate`, `maxToolIterations`, `mcpServers`, `skills` |
 | `GET /api/chats` / `POST /api/chats` | list history / create a chat with its own settings |
 | `GET /api/chats/:id` | saved per-chat settings and full turns |
 | `PUT /api/chats/:id/settings` / `PUT /api/chats/:id/turns` | save settings / atomic transcript snapshot |
@@ -647,8 +679,9 @@ infagent config | run <task> | --version
 Seven tabs in the header: **Chat**, **Scripts**, **Skills**, **Toolbox**, **MCP**,
 **Prompts** and **Config**.
 
-- **Chat** — local Qwen3-0.6B conversation: model picker over the `models/`
-  folder, download button with progress, streaming bubbles, collapsible
+- **Chat** — per-chat local or cloud conversation: composer model picker over
+  downloaded local models and configured cloud providers, local download button
+  with progress, streaming bubbles, collapsible
   reasoning, tool-call cards with arguments and results, **copy** and retry on
   every reply, settings (temperature, max tokens, thinking, tools, custom system
   prompt), an *Internet access* switch for `webSearch` / `webFetch`, a 🔧
@@ -658,6 +691,8 @@ Seven tabs in the header: **Chat**, **Scripts**, **Skills**, **Toolbox**, **MCP*
   **SQLite history menu** on the right (search, switch, create or delete chats;
   full tool cards survive reloads), and per-chat settings including the model,
   prompt style and 🔧 MCP choices, saved automatically
+- **Config** — masked `.env` settings plus secure cloud provider setup, API-key
+  management, model discovery and connection testing
 - **Alerts** — toasts for anything raised by `showAlert`, the CLI or the API,
   with a bell counter in the header and *Dismiss* / *Dismiss all*
 - **Scripts** — searchable script list, detail tabs (overview, *Agent prompt*

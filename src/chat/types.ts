@@ -56,7 +56,11 @@ export interface ChatRequest {
   /** Allow internet capabilities (webSearch/webFetch) for this turn. */
   net?: boolean;
   messages: ChatMessage[];
-  /** Model selected for this conversation; applied only to this process, not global defaults. */
+  /** Local downloaded weights or a remote cloud provider. */
+  modelSource?: 'local' | 'cloud';
+  /** Provider id when `modelSource` is `cloud`. */
+  providerId?: string;
+  /** Model selected for this conversation; local ID or provider model ID. */
   modelId?: string;
   temperature?: number;
   maxTokens?: number;

@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   ChatStore,
@@ -17,6 +17,7 @@ const directories: string[] = [];
 const stores: ChatStore[] = [];
 
 afterEach(() => {
+  vi.restoreAllMocks();
   while (stores.length > 0) stores.pop()?.close();
   while (directories.length > 0) {
     const directory = directories.pop();
@@ -178,8 +179,12 @@ describe('ChatStore', () => {
 
   it('sorts by latest activity and makes the first user message the default title', () => {
     const { store } = open();
+    let timestamp = Date.now();
+    vi.spyOn(Date, 'now').mockImplementation(() => timestamp);
     const older = store.create({ settings });
+    timestamp += 1;
     const newer = store.create({ settings });
+    timestamp += 5;
     store.saveTurns(older.id, [
       { id: 'u', role: 'user', text: 'Find the note in the project', thinking: '', calls: [] },
     ]);

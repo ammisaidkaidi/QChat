@@ -23,7 +23,11 @@ export interface ChatSettings {
   maxSteps: number;
   /** null means every enabled MCP server; [] means none. */
   mcpServers: string[] | null;
-  /** Model to use for this conversation. */
+  /** Local weights or a configured remote provider. */
+  modelSource: 'local' | 'cloud';
+  /** Cloud provider id, empty for local models. */
+  providerId: string;
+  /** Local model ID or remote provider model ID. */
   modelId: string;
   /** Name of the shared template selected for this conversation. */
   styleName: string;
@@ -55,6 +59,8 @@ export interface ChatSummary {
   updatedAt: string;
   preview: string;
   turnCount: number;
+  modelSource: 'local' | 'cloud';
+  providerId: string;
   modelId: string;
 }
 
@@ -98,6 +104,8 @@ export const DEFAULT_CHAT_SETTINGS: ChatSettings = {
   systemPrompt: '',
   maxSteps: 6,
   mcpServers: null,
+  modelSource: 'local',
+  providerId: '',
   modelId: '',
   styleName: '',
 };
@@ -199,6 +207,12 @@ export function normaliseChatSettings(value: unknown): ChatSettings {
     ];
   }
 
+  const modelSource =
+    value['modelSource'] === undefined ? fallback.modelSource : value['modelSource'];
+  if (modelSource !== 'local' && modelSource !== 'cloud') {
+    throw new ChatStoreError(400, 'Chat modelSource must be local or cloud.');
+  }
+
   return {
     temperature: boundedNumber(value['temperature'], 'temperature', fallback.temperature, 0, 2),
     maxTokens: boundedNumber(value['maxTokens'], 'maxTokens', fallback.maxTokens, 1, 8192, true),
@@ -208,7 +222,9 @@ export function normaliseChatSettings(value: unknown): ChatSettings {
     systemPrompt: textField(value['systemPrompt'], 'system prompt', fallback.systemPrompt, 40_000),
     maxSteps: boundedNumber(value['maxSteps'], 'maxSteps', fallback.maxSteps, 1, 12, true),
     mcpServers,
-    modelId: textField(value['modelId'], 'model id', fallback.modelId, 128),
+    modelSource,
+    providerId: textField(value['providerId'], 'provider id', fallback.providerId, 48),
+    modelId: textField(value['modelId'], 'model id', fallback.modelId, 256),
     styleName: textField(value['styleName'], 'style name', fallback.styleName, 128),
   };
 }
@@ -422,6 +438,8 @@ export class ChatStore {
       updatedAt: parseTimestamp(Number(row['updated_at'])),
       preview: String(row['preview'] ?? ''),
       turnCount: Number(row['turn_count'] ?? 0),
+      modelSource: settings.modelSource,
+      providerId: settings.providerId,
       modelId: settings.modelId,
     };
   }

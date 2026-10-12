@@ -180,6 +180,8 @@ export interface ChatSettings {
   maxSteps: number;
   /** null = every enabled MCP server; [] = none. */
   mcpServers: string[] | null;
+  modelSource: 'local' | 'cloud';
+  providerId: string;
   modelId: string;
   /** Name of a shared prompt template; the selection is per chat. */
   styleName: string;
@@ -192,6 +194,8 @@ export interface ChatSummary {
   updatedAt: string;
   preview: string;
   turnCount: number;
+  modelSource: 'local' | 'cloud';
+  providerId: string;
   modelId: string;
 }
 
@@ -237,6 +241,31 @@ export interface ModelCatalog {
   /** Global default model used only to seed a brand-new chat. */
   defaultActive?: string;
   models: ModelRecord[];
+}
+
+export type CloudAdapter = 'openai-compatible' | 'anthropic' | 'gemini';
+
+export interface CloudModel {
+  id: string;
+  name: string;
+}
+
+export interface CloudProvider {
+  id: string;
+  name: string;
+  adapter: CloudAdapter;
+  baseUrl: string;
+  models: CloudModel[];
+  updatedAt: string;
+  /** Only a boolean leaves the server; the secret is never sent back. */
+  keyConfigured: boolean;
+}
+
+export interface CloudProviderPreset {
+  id: string;
+  name: string;
+  adapter: CloudAdapter;
+  baseUrl: string;
 }
 
 /** One skill in `skills/`. */

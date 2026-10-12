@@ -101,6 +101,8 @@ const settings: ChatSettings = {
   systemPrompt: 'Be brief.',
   maxSteps: 2,
   mcpServers: ['filesystem'],
+  modelSource: 'local',
+  providerId: '',
   modelId: 'Qwen3-0.6B-Q4_K_M',
   styleName: 'Precise',
 };
@@ -199,6 +201,37 @@ describe('chat endpoints', () => {
       body: { title: 'Project notes' },
     });
     expect(renamed.body['chat']).toMatchObject({ title: 'Project notes' });
+  });
+
+  it('persists a cloud model source/provider ID per chat while local defaults remain unchanged', async () => {
+    const harness = await start();
+    const cloudSettings = {
+      ...settings,
+      modelSource: 'cloud' as const,
+      providerId: 'nvidia-nim',
+      modelId: 'meta/llama-3.1-8b-instruct',
+    };
+    const created = await call(harness, '/api/chats', {
+      method: 'POST',
+      body: { settings: cloudSettings },
+    });
+    const id = (created.body['chat'] as { id: string }).id;
+    expect(created.body['chat']).toMatchObject({
+      modelSource: 'cloud',
+      providerId: 'nvidia-nim',
+      modelId: 'meta/llama-3.1-8b-instruct',
+      settings: cloudSettings,
+    });
+
+    const next = await call(harness, '/api/chats', { method: 'POST', body: { settings } });
+    expect(next.body['chat']).toMatchObject({
+      modelSource: 'local',
+      providerId: '',
+      modelId: settings.modelId,
+    });
+    expect((await call(harness, `/api/chats/${id}`)).body['chat']).toMatchObject({
+      settings: cloudSettings,
+    });
   });
 
   it('imports the legacy browser transcript once and safely retries the same import', async () => {

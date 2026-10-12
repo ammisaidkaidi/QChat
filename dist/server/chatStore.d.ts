@@ -8,7 +8,11 @@ export interface ChatSettings {
     maxSteps: number;
     /** null means every enabled MCP server; [] means none. */
     mcpServers: string[] | null;
-    /** Model to use for this conversation. */
+    /** Local weights or a configured remote provider. */
+    modelSource: 'local' | 'cloud';
+    /** Cloud provider id, empty for local models. */
+    providerId: string;
+    /** Local model ID or remote provider model ID. */
     modelId: string;
     /** Name of the shared template selected for this conversation. */
     styleName: string;
@@ -41,6 +45,8 @@ export interface ChatSummary {
     updatedAt: string;
     preview: string;
     turnCount: number;
+    modelSource: 'local' | 'cloud';
+    providerId: string;
     modelId: string;
 }
 export interface StoredChat extends ChatSummary {

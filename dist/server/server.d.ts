@@ -5,6 +5,7 @@ import { QwenEngine } from '../chat/qwen.js';
 import { McpManager } from '../mcp/manager.js';
 import { SkillRegistry } from '../skills/registry.js';
 import type { SystemPromptStore } from '../chat/prompts.js';
+import { CloudInference, CloudProviderStore } from '../cloud/providers.js';
 import type { AlertBus } from '../capabilities/alerts.js';
 import { ChatStore } from './chatStore.js';
 export interface ServerOptions {
@@ -22,6 +23,10 @@ export interface ServerOptions {
     uiDir?: string;
     /** SQLite conversation store. Inject one in tests; the default lives in app data. */
     chatStore?: ChatStore;
+    /** Cloud provider metadata store. Keys are resolved only through `.env`. */
+    cloudProviders?: CloudProviderStore;
+    /** Override the cloud inference adapter in tests. */
+    cloudInference?: CloudInference;
     /** Override the SQLite path (`INFAGENT_DB_PATH`/app-data by default). */
     chatDbPath?: string;
     /** The `.env` the Config tab edits. Defaults to `<cwd>/.env`. */

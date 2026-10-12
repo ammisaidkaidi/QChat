@@ -22,6 +22,9 @@ import type {
   ChatSummary,
   ChatTurn,
   StoredChat,
+  CloudProvider,
+  CloudProviderPreset,
+  CloudModel,
   CreateScriptInput,
   EngineStatus,
   Health,
@@ -150,6 +153,28 @@ export const chatsApi = {
     request(`/api/chats/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 };
 
+/** Provider configuration and connection tests. API keys are write-only. */
+export const cloudProvidersApi = {
+  list: (): Promise<{ providers: CloudProvider[]; presets: CloudProviderPreset[] }> =>
+    request('/api/cloud/providers'),
+
+  save: (input: {
+    id: string;
+    name: string;
+    adapter: CloudProvider['adapter'];
+    baseUrl: string;
+    models: CloudModel[];
+    apiKey?: string;
+  }): Promise<{ provider: CloudProvider }> =>
+    request('/api/cloud/providers', { method: 'POST', body: input }),
+
+  test: (id: string): Promise<{ provider: CloudProvider; models: CloudModel[] }> =>
+    request(`/api/cloud/providers/${encodeURIComponent(id)}/test`, { method: 'POST', body: {} }),
+
+  remove: (id: string): Promise<{ removed: string }> =>
+    request(`/api/cloud/providers/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+};
+
 /** The `.env` file behind the Config tab. */
 export const envApi = {
   read: (): Promise<EnvSnapshot> => request<EnvSnapshot>('/api/env'),
@@ -200,6 +225,8 @@ export interface ChatStreamHandle {
 
 interface ChatStreamOptions {
   messages: ChatMessage[];
+  modelSource?: 'local' | 'cloud';
+  providerId?: string;
   /** Per-chat model id; never changes the global model defaults. */
   modelId?: string;
   temperature?: number;
@@ -240,6 +267,8 @@ export function streamChat(options: ChatStreamOptions): ChatStreamHandle {
         signal: controller.signal,
         body: JSON.stringify({
           messages: options.messages,
+          ...(options.modelSource === undefined ? {} : { modelSource: options.modelSource }),
+          ...(options.providerId === undefined ? {} : { providerId: options.providerId }),
           ...(options.modelId === undefined ? {} : { modelId: options.modelId }),
           ...(options.temperature === undefined ? {} : { temperature: options.temperature }),
           ...(options.maxTokens === undefined ? {} : { maxTokens: options.maxTokens }),

@@ -1,5 +1,8 @@
 @import 'tailwindcss';
 
+/* Exclude the generated bundle so repeated builds do not scan their old JS/CSS. */
+@source not "../dist";
+
 @plugin 'daisyui' {
   themes:
     dark --default,

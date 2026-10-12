@@ -10,6 +10,7 @@ import ToolboxPanel from './components/ToolboxPanel.vue';
 import SkillsPanel from './components/SkillsPanel.vue';
 import CreateScriptModal from './components/CreateScriptModal.vue';
 import EnvPanel from './components/EnvPanel.vue';
+import CloudProvidersPanel from './components/CloudProvidersPanel.vue';
 import PromptsPanel from './components/PromptsPanel.vue';
 import ScriptDetail from './components/ScriptDetail.vue';
 import ScriptsPanel from './components/ScriptsPanel.vue';
@@ -254,8 +255,9 @@ onMounted(async () => {
       <PromptsPanel @notify="notify" />
     </main>
 
-    <main v-else-if="tab === 'config'" class="mx-auto max-w-7xl p-3 sm:p-4">
+    <main v-else-if="tab === 'config'" class="mx-auto max-w-7xl space-y-4 p-3 sm:p-4">
       <EnvPanel @notify="notify" />
+      <CloudProvidersPanel @notify="notify" />
     </main>
 
     <main v-else class="mx-auto max-w-7xl p-3 sm:p-4">
