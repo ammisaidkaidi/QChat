@@ -325,6 +325,12 @@ export interface DispatchOptions {
   skills?: SkillRegistry;
   /** Connected MCP servers, addressed as `server__tool`. */
   mcp?: McpManager;
+  /**
+   * MCP servers this turn may call, by name (the Chat tab's wrench picker).
+   * `undefined` allows every server; a list allows only those names. Enforced
+   * here so a model that calls an unticked server is told, rather than served.
+   */
+  mcpAllowed?: readonly string[];
   /** Internet capabilities (webSearch/webFetch). */
   net?: boolean;
   /** Alert display, used by showAlert. */
@@ -395,6 +401,13 @@ export async function dispatchTool(
 
     // MCP tools are addressed as `server__tool`.
     if (options.mcp && name.includes('__')) {
+      const wanted = options.mcpAllowed;
+      const called = name.slice(0, name.indexOf('__'));
+      if (wanted !== undefined && !wanted.includes(called)) {
+        throw new Error(
+          `The MCP server "${called}" is switched off for this chat (the 🔧 picker next to the message box).`,
+        );
+      }
       const { server, tool, result } = await options.mcp.call(name, call.args);
       // A failed MCP call is reported with the server's own words: "failed:
       // failed" tells the user nothing about what to fix.

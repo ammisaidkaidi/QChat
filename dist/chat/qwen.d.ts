@@ -60,6 +60,19 @@ export declare class EventChannel<T> {
     push(item: T): void;
     drain(work: Promise<unknown>): AsyncGenerator<T>;
 }
+/**
+ * The MCP servers a turn may use, in the order the manager lists them.
+ *
+ * `wanted` is the per-turn selection from the console's 🔧 picker: `undefined`
+ * means every enabled server (the CLI, and every client that sends nothing),
+ * a list means exactly those names — with `[]` being "none of them". A name
+ * that is not an enabled server is ignored here rather than raising, so a
+ * server removed since the console last asked cannot fail a whole reply.
+ */
+export declare function selectMcpServers<T extends {
+    name: string;
+    enabled: boolean;
+}>(servers: readonly T[], wanted?: readonly string[]): T[];
 export declare class QwenEngine {
     readonly registry: ScriptRegistry;
     /** Skill library (`skills/*.md`). */

@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 
 import { pushAlert, raiseAlert } from '../alerts';
-import { chatApi, promptsApi, streamChat } from '../api';
+import { chatApi, mcpApi, promptsApi, streamChat } from '../api';
 import type { ChatStreamHandle } from '../api';
 import type {
   ChatConfig,
@@ -10,6 +10,7 @@ import type {
   ChatMessage,
   ChatTurn,
   EngineStatus,
+  McpCatalogue,
   ModelCatalog,
   ModelRecord,
 } from '../types';
@@ -38,6 +39,10 @@ const showPrompt = ref(false);
 const startedAt = ref<number | null>(null);
 const elapsed = ref(0);
 const scroller = ref<HTMLElement | null>(null);
+/** MCP servers, for the wrench picker next to the message box. */
+const mcpCatalogue = ref<McpCatalogue | null>(null);
+const mcpPicker = ref(false);
+const mcpWrap = ref<HTMLElement | null>(null);
 
 let handle: ChatStreamHandle | null = null;
 let clock: number | null = null;
@@ -52,6 +57,11 @@ const settings = reactive({
   systemPrompt: '',
   /** Tool steps a single reply may take (several calls + results + answer). */
   maxSteps: 6,
+  /**
+   * MCP servers this chat may use, by name. `null` = every enabled server,
+   * `[]` = none at all, a list = exactly those (the 🔧 button by the box).
+   */
+  mcpServers: null as string[] | null,
 });
 
 const stateLabel = computed(() => {
@@ -423,6 +433,9 @@ async function send(): Promise<void> {
     net: settings.net,
     systemPrompt: settings.systemPrompt,
     maxToolIterations: settings.maxSteps,
+    // Omitted when nothing is restricted, so the engine keeps offering every
+    // enabled server (and any that connects later).
+    ...(settings.mcpServers === null ? {} : { mcpServers: [...selectedMcp.value] }),
     onEvent: (event) => {
       applyEvent(assistant, event);
       void scrollToBottom();
@@ -501,6 +514,7 @@ function promptPreview(): string {
     `scripts : ${config.value.scriptCount} exposed as tools`,
     `thinking: ${settings.thinking ? 'on' : 'off (default — a 0.6B model is much faster without it)'}`,
     `steps: ${settings.maxSteps} (tool calls → results → more calls, then the answer)`,
+    `mcp   : ${mcpLabel.value}${mcpRestricted.value ? ` (${selectedMcp.value.join(', ') || 'none'})` : ''}`,
     '',
     'The model runs entirely on this machine through llama.cpp.',
     `Model settings: ${status.value?.settingsFile ?? '—'}`,
@@ -510,11 +524,78 @@ function promptPreview(): string {
   ].join('\n');
 }
 
+/* ── the 🔧 MCP picker ───────────────────────────────────────────────────── */
+
+const enabledMcps = computed(() =>
+  (mcpCatalogue.value?.servers ?? []).filter((server) => server.enabled),
+);
+
+/** Names the model may use for the next message (every enabled one by default). */
+const selectedMcp = computed<string[]>(() => {
+  const all = enabledMcps.value.map((server) => server.name);
+  if (settings.mcpServers === null) return all;
+  return all.filter((name) => settings.mcpServers?.includes(name) ?? false);
+});
+
+const mcpLabel = computed(() => {
+  const total = enabledMcps.value.length;
+  if (total === 0) return 'none connected';
+  const chosen = selectedMcp.value.length;
+  if (settings.mcpServers !== null && chosen === 0) return 'all off';
+  if (settings.mcpServers === null || chosen === total) return `all ${total}`;
+  return `${chosen}/${total}`;
+});
+
+const mcpRestricted = computed(
+  () => enabledMcps.value.length > 0 && selectedMcp.value.length !== enabledMcps.value.length,
+);
+
+function toggleMcp(name: string): void {
+  const chosen = new Set(selectedMcp.value);
+  if (chosen.has(name)) chosen.delete(name);
+  else chosen.add(name);
+  // Every enabled server ticked is the same as "no restriction": store `null`,
+  // so a server connected later is offered without coming back to this picker.
+  const all = enabledMcps.value.map((server) => server.name);
+  const next = all.filter((candidate) => chosen.has(candidate));
+  settings.mcpServers = next.length === all.length ? null : next;
+}
+
+function setAllMcp(on: boolean): void {
+  settings.mcpServers = on ? null : [];
+}
+
+async function loadMcp(): Promise<void> {
+  try {
+    mcpCatalogue.value = await mcpApi.list();
+  } catch {
+    // The picker keeps its last known list; chat is unaffected.
+  }
+}
+
+function onDocumentClick(event: MouseEvent): void {
+  if (mcpPicker.value && mcpWrap.value && !mcpWrap.value.contains(event.target as Node)) {
+    mcpPicker.value = false;
+  }
+}
+
+async function toggleMcpPicker(): Promise<void> {
+  mcpPicker.value = !mcpPicker.value;
+  if (mcpPicker.value) await loadMcp();
+}
+
+onBeforeUnmount(() => {
+  document.removeEventListener('click', onDocumentClick);
+});
+
 onMounted(async () => {
   restore();
+  document.addEventListener('click', onDocumentClick);
+  void loadMcp();
   await Promise.all([refresh(), loadModels()]);
   window.setInterval(() => {
     void refresh();
+    void loadMcp();
     if (!switching.value) void loadModels();
   }, 20_000);
 });
@@ -885,6 +966,93 @@ onMounted(async () => {
         </div>
 
         <div class="flex flex-wrap items-end gap-2">
+          <!-- Which MCP servers the model may use: the wrench beside the box. -->
+          <div ref="mcpWrap" class="relative shrink-0 self-end">
+            <button
+              class="btn btn-sm gap-1 px-2"
+              :class="{ 'btn-primary': mcpRestricted, 'btn-ghost': !mcpRestricted }"
+              :disabled="enabledMcps.length === 0 && !mcpCatalogue"
+              :title="
+                settings.mcpServers === null
+                  ? 'MCP servers: every connected server. Click to choose.'
+                  : `MCP servers for this chat: ${selectedMcp.join(', ') || 'none'}`
+              "
+              data-testid="mcp-picker"
+              @click.stop="toggleMcpPicker"
+            >
+              🔧<span class="font-mono text-[10px] opacity-80">{{ mcpLabel }}</span>
+            </button>
+
+            <div
+              v-if="mcpPicker"
+              class="absolute bottom-full left-0 z-30 mb-2 w-80 rounded-box border border-base-300 bg-base-100 p-3 shadow-xl"
+              data-testid="mcp-picker-panel"
+              @click.stop
+            >
+              <div class="mb-2 flex items-center justify-between gap-2">
+                <span class="text-xs font-semibold">MCP servers for this chat</span>
+                <span class="flex gap-1">
+                  <button
+                    class="btn btn-ghost btn-xs"
+                    data-testid="mcp-all"
+                    @click="setAllMcp(true)"
+                  >
+                    All
+                  </button>
+                  <button
+                    class="btn btn-ghost btn-xs"
+                    data-testid="mcp-none"
+                    @click="setAllMcp(false)"
+                  >
+                    None
+                  </button>
+                </span>
+              </div>
+
+              <p v-if="enabledMcps.length === 0" class="text-[11px] opacity-70">
+                No MCP server is connected. Add or connect one in the 🔌 MCP tab — the choice here
+                takes effect on the next message.
+              </p>
+
+              <label
+                v-for="server in enabledMcps"
+                :key="server.name"
+                class="flex cursor-pointer items-center gap-2 rounded-box px-1 py-1 hover:bg-base-200"
+              >
+                <input
+                  type="checkbox"
+                  class="checkbox checkbox-xs"
+                  :checked="selectedMcp.includes(server.name)"
+                  :data-testid="`mcp-pick-${server.name}`"
+                  @change="toggleMcp(server.name)"
+                />
+                <span class="min-w-0 flex-1">
+                  <span class="block truncate text-xs">{{ server.name }}</span>
+                  <span class="block truncate text-[10px] opacity-60">
+                    {{ server.tools.length }} tool(s)
+                    <template v-if="server.description">· {{ server.description }}</template>
+                  </span>
+                </span>
+                <span
+                  class="badge badge-xs"
+                  :class="{
+                    'badge-success': server.state === 'ready',
+                    'badge-warning': server.state === 'starting',
+                    'badge-error': server.state === 'error',
+                    'badge-ghost': server.state === 'stopped',
+                  }"
+                  >{{ server.state }}</span
+                >
+              </label>
+
+              <p class="mt-2 border-t border-base-300 pt-2 text-[10px] opacity-60">
+                An unticked server is hidden from the model and its calls are refused. The choice
+                applies to the next message; <span class="font-semibold">Save</span> in the settings
+                panel keeps it for the next visit.
+              </p>
+            </div>
+          </div>
+
           <textarea
             v-model="draft"
             rows="2"

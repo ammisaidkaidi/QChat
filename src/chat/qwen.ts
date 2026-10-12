@@ -218,6 +218,24 @@ export class EventChannel<T> {
   }
 }
 
+/**
+ * The MCP servers a turn may use, in the order the manager lists them.
+ *
+ * `wanted` is the per-turn selection from the console's 🔧 picker: `undefined`
+ * means every enabled server (the CLI, and every client that sends nothing),
+ * a list means exactly those names — with `[]` being "none of them". A name
+ * that is not an enabled server is ignored here rather than raising, so a
+ * server removed since the console last asked cannot fail a whole reply.
+ */
+export function selectMcpServers<T extends { name: string; enabled: boolean }>(
+  servers: readonly T[],
+  wanted?: readonly string[],
+): T[] {
+  return servers.filter(
+    (server) => server.enabled && (wanted === undefined || wanted.includes(server.name)),
+  );
+}
+
 export class QwenEngine {
   public readonly registry: ScriptRegistry;
   /** Skill library (`skills/*.md`). */
@@ -622,21 +640,31 @@ export class QwenEngine {
       const thinking = request.thinking ?? defaults.thinking;
       // Internet access is a per-request switch so the interface can turn it off.
       const net = request.net ?? netEnabled();
+      /**
+       * Which MCP servers this turn may use — the Chat tab's 🔧 picker.
+       * `undefined` means every enabled server (the CLI and older clients send
+       * nothing); a list is a real restriction, applied to the tool list the
+       * model is shown and to what the dispatcher will run.
+       */
+      const wantedMcp = request.mcpServers;
+      const allowedMcp = selectMcpServers(this.mcp ? this.mcp.list() : [], wantedMcp);
+      const allowedMcpNames = new Set(allowedMcp.map((server) => server.name));
       const mcpTools = this.mcp
-        ? this.mcp.tools().map(({ server, tool }) => ({
-            server,
-            name: tool.name,
-            description: tool.description,
-            inputSchema: tool.inputSchema,
-          }))
+        ? this.mcp
+            .tools()
+            .filter(({ server }) => allowedMcpNames.has(server))
+            .map(({ server, tool }) => ({
+              server,
+              name: tool.name,
+              description: tool.description,
+              inputSchema: tool.inputSchema,
+            }))
         : [];
       /** The same servers, with the purpose `mcp.json` gives each one. */
-      const mcpServers = this.mcp
-        ? this.mcp
-            .list()
-            .filter((server) => server.enabled)
-            .map((server) => ({ name: server.name, description: server.description }))
-        : [];
+      const mcpServers = allowedMcp.map((server) => ({
+        name: server.name,
+        description: server.description,
+      }));
       // The style guide is the user's choice: an explicit `promptTemplate` on the
       // request wins, otherwise the template selected in the console applies.
       const styleGuide =
@@ -1010,7 +1038,12 @@ export class QwenEngine {
             skills: this.skills,
             net,
             alerts: this.alerts,
-            ...(this.mcp ? { mcp: this.mcp } : {}),
+            ...(this.mcp
+              ? {
+                  mcp: this.mcp,
+                  ...(wantedMcp === undefined ? {} : { mcpAllowed: [...allowedMcpNames] }),
+                }
+              : {}),
           });
           yield { type: 'tool_result', call: dispatched };
           for (const alert of pendingAlerts.splice(0)) yield { type: 'alert', alert };

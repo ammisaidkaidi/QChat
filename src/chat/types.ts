@@ -75,6 +75,13 @@ export interface ChatRequest {
    * console; send "" to answer with no style guide at all.
    */
   promptTemplate?: string;
+  /**
+   * MCP servers this turn may use, by name. Omit for every enabled server;
+   * `[]` means no MCP tool at all. The selection is enforced here, not asked
+   * for in the prompt: a call to a server outside it is refused by the
+   * dispatcher, so unticking a server in the console really removes it.
+   */
+  mcpServers?: string[];
 }
 
 export type EngineState =

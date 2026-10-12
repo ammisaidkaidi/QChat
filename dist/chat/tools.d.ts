@@ -24,6 +24,12 @@ export interface DispatchOptions {
     skills?: SkillRegistry;
     /** Connected MCP servers, addressed as `server__tool`. */
     mcp?: McpManager;
+    /**
+     * MCP servers this turn may call, by name (the Chat tab's wrench picker).
+     * `undefined` allows every server; a list allows only those names. Enforced
+     * here so a model that calls an unticked server is told, rather than served.
+     */
+    mcpAllowed?: readonly string[];
     /** Internet capabilities (webSearch/webFetch). */
     net?: boolean;
     /** Alert display, used by showAlert. */

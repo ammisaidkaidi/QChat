@@ -60,6 +60,8 @@ Chat subcommands:
       --thinking               Show the model's reasoning block (on stderr)
       --no-tools               Disable script tool calls
       --steps N                Tool steps one reply may take (default 6)
+      --mcp a,b                MCP servers this turn may use (default: all)
+      --no-mcp                 No MCP tool at all for this turn
       --no-net                 Disable webSearch / webFetch for this turn
       --temp 0.4 --max 512     Sampling controls
   unload                     Free the model from memory
@@ -398,7 +400,7 @@ async function chatCommand(sub: string | undefined, rest: string[]): Promise<num
         .trim();
       if (!message) {
         process.stderr.write(
-          'error: usage: infagent chat ask "your question" [--thinking] [--no-tools] [--steps N]\n',
+          'error: usage: infagent chat ask "your question" [--thinking] [--no-tools] [--steps N] [--mcp a,b]\n',
         );
         return 2;
       }
@@ -411,6 +413,17 @@ async function chatCommand(sub: string | undefined, rest: string[]): Promise<num
         ...(flag('temp') ? { temperature: Number(flag('temp')) } : {}),
         ...(flag('max') ? { maxTokens: Number(flag('max')) } : {}),
         ...(flag('steps') ? { maxToolIterations: Number(flag('steps')) } : {}),
+        // The same per-turn MCP selection the console's 🔧 button sends.
+        ...(argv.includes('--no-mcp')
+          ? { mcpServers: [] }
+          : flag('mcp')
+            ? {
+                mcpServers: String(flag('mcp'))
+                  .split(',')
+                  .map((name) => name.trim())
+                  .filter(Boolean),
+              }
+            : {}),
       })) {
         switch (event.type) {
           case 'thinking':

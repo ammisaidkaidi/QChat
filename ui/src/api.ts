@@ -167,6 +167,11 @@ interface ChatStreamOptions {
   systemPrompt?: string;
   /** Tool steps allowed in one reply (1–12). */
   maxToolIterations?: number;
+  /**
+   * MCP servers this turn may use, by name. Omitted = every enabled server;
+   * `[]` = none. The engine both hides their tools and refuses their calls.
+   */
+  mcpServers?: string[];
   onEvent: (event: ChatEvent) => void;
   onError: (message: string) => void;
   onClose: () => void;
@@ -196,6 +201,7 @@ export function streamChat(options: ChatStreamOptions): ChatStreamHandle {
           ...(options.maxToolIterations === undefined
             ? {}
             : { maxToolIterations: options.maxToolIterations }),
+          ...(options.mcpServers === undefined ? {} : { mcpServers: options.mcpServers }),
         }),
       });
 

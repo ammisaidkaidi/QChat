@@ -464,6 +464,17 @@ Adding a third-party server by hand works the same way (the Add server form
 accepts anything from `npx -y @modelcontextprotocol/server-filesystem .` to a
 remote URL), but its guarantees are then that package's, not InfAgent's.
 
+**Choosing which servers a chat may use.** The 🔧 button beside the message box
+lists every enabled server with its tool count and state; ticking one off hides
+its tools from the model *and* makes a call to it fail, so the selection is a
+restriction rather than a suggestion. The button reads `all 7`, `4/7` or
+`all off` at a glance, and **Save** in the settings panel keeps the choice for
+the next visit (until then it applies to the next message only). Every enabled
+server stays the default, so a server connected later is offered without
+returning to the picker. Per turn the selection travels as
+`POST /api/chat/completions` → `{ "mcpServers": ["toolbox"] }` (`[]` = none,
+omitted = all); the CLI has `--mcp a,b` and `--no-mcp`.
+
 **Skills** — reusable procedures kept as markdown files in `skills/`. Only the
 one-line summary (`name`, `description`, `when to use it`) goes into the system
 prompt; the steps are read on demand through `readSkill`, so a long playbook
@@ -530,7 +541,7 @@ infagent config | run <task> | --version
 | `GET /api/chat/status` | engine state, model path, context, RAM, defaults |
 | `POST /api/chat/model/download` | SSE progress while fetching the GGUF |
 | `DELETE /api/chat/model` | unload the model from memory |
-| `POST /api/chat/completions` | SSE token stream (`status`, `thinking`, `token`, `tool_call`, `tool_result`, `reset`, `stats`, `done`) |
+| `POST /api/chat/completions` | SSE token stream (`status`, `thinking`, `token`, `tool_call`, `tool_result`, `reset`, `plan`, `stats`, `done`); per-turn `net`, `tools`, `promptTemplate`, `maxToolIterations`, `mcpServers` |
 | `GET /api/alerts?limit=…` | recent alerts, newest first |
 | `POST /api/alerts` | raise one (`{ message, title?, level? }`) → 201 |
 | `DELETE /api/alerts` | clear the stored alerts |
@@ -570,8 +581,9 @@ Seven tabs in the header: **Chat**, **Scripts**, **Skills**, **Toolbox**, **MCP*
   folder, download button with progress, streaming bubbles, collapsible
   reasoning, tool-call cards with arguments and results, **copy** and retry on
   every reply, settings (temperature, max tokens, thinking, tools, custom system
-  prompt), an *Internet access* switch for `webSearch` / `webFetch`, a *Send a
-  test alert* button, Stop / Clear, history kept in `localStorage`
+  prompt), an *Internet access* switch for `webSearch` / `webFetch`, a 🔧
+  **MCP-server picker** beside the message box, a *Send a test alert* button,
+  Stop / Clear, history kept in `localStorage`
 - **Alerts** — toasts for anything raised by `showAlert`, the CLI or the API,
   with a bell counter in the header and *Dismiss* / *Dismiss all*
 - **Scripts** — searchable script list, detail tabs (overview, *Agent prompt*

@@ -352,6 +352,11 @@ export async function dispatchTool(call, options) {
         }
         // MCP tools are addressed as `server__tool`.
         if (options.mcp && name.includes('__')) {
+            const wanted = options.mcpAllowed;
+            const called = name.slice(0, name.indexOf('__'));
+            if (wanted !== undefined && !wanted.includes(called)) {
+                throw new Error(`The MCP server "${called}" is switched off for this chat (the 🔧 picker next to the message box).`);
+            }
             const { server, tool, result } = await options.mcp.call(name, call.args);
             // A failed MCP call is reported with the server's own words: "failed:
             // failed" tells the user nothing about what to fix.
