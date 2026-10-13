@@ -52,7 +52,7 @@
     "chat:model": "node dist/cli.js chat download"
   },
   "dependencies": {
-    "better-sqlite3": "^12.11.1",
+    "better-sqlite3": "^13.0.3",
     "dotenv": "^16.6.1",
     "node-llama-cpp": "^3.22.1"
   },
