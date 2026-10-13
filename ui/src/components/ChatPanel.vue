@@ -80,6 +80,21 @@ const styles = ref<{ name: string; description: string; prompt: string }[]>([]);
 const defaultStyleName = ref('');
 const activeStyle = computed(() => settings.styleName);
 const showPrompt = ref(false);
+const runtimePromptPreview = ref<RuntimePromptPreview>({
+  status: 'loading',
+  prompt: '',
+  error: null,
+  modelSource: 'local',
+  modelId: '',
+  modelLabel: 'Loading chat…',
+  modelStyle: '—',
+  styleName: 'Default',
+  toolsEnabled: false,
+  webEnabled: false,
+  mcpServers: [],
+  skills: [],
+  hasCustomPrompt: false,
+});
 const startedAt = ref<number | null>(null);
 const elapsed = ref(0);
 const scroller = ref<HTMLElement | null>(null);
@@ -1266,6 +1281,7 @@ function promptPreviewRequest(): ChatPromptPreviewRequest {
 }
 
 function publishPromptPreview(preview: RuntimePromptPreview): void {
+  runtimePromptPreview.value = preview;
   emit('prompt-preview', preview);
 }
 
@@ -1828,6 +1844,72 @@ onMounted(async () => {
                 </label>
               </div>
             </section>
+
+            <details
+              class="rounded-box border border-base-300 bg-base-100/50"
+              data-testid="settings-prompt-preview"
+            >
+              <summary
+                class="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2 text-xs font-semibold"
+                data-testid="settings-prompt-preview-toggle"
+              >
+                <span>Show complete system prompt injected into the model</span>
+                <span
+                  class="badge badge-xs"
+                  :class="{
+                    'badge-success': runtimePromptPreview.status === 'ready',
+                    'badge-ghost': runtimePromptPreview.status === 'loading',
+                    'badge-error': runtimePromptPreview.status === 'error',
+                  }"
+                >
+                  {{
+                    runtimePromptPreview.status === 'ready'
+                      ? 'current'
+                      : runtimePromptPreview.status === 'loading'
+                        ? 'updating'
+                        : 'unavailable'
+                  }}
+                </span>
+              </summary>
+              <div class="space-y-2 border-t border-base-300 p-3">
+                <p class="text-[10px] opacity-60">
+                  {{ runtimePromptPreview.modelLabel }} · {{ runtimePromptPreview.styleName }} ·
+                  {{ runtimePromptPreview.toolsEnabled ? 'tools on' : 'tools off' }} · MCP
+                  {{ runtimePromptPreview.mcpServers.join(', ') || 'none selected' }}
+                </p>
+                <p v-if="runtimePromptPreview.hasCustomPrompt" class="text-[10px] text-warning">
+                  <template v-if="runtimePromptPreview.modelSource === 'local'">
+                    The custom prompt replaces generated script, MCP, style and skill instructions;
+                    this preview shows the exact replacement text.
+                  </template>
+                  <template v-else>
+                    The cloud system message combines the custom prompt with attached skills and the
+                    selected style.
+                  </template>
+                </p>
+                <p
+                  v-if="runtimePromptPreview.status === 'loading'"
+                  class="flex items-center gap-2 py-3 text-xs opacity-65"
+                >
+                  <span class="loading loading-spinner loading-xs" /> Assembling the next-reply
+                  prompt…
+                </p>
+                <div
+                  v-else-if="runtimePromptPreview.status === 'error'"
+                  class="alert alert-error py-2 text-xs"
+                  role="alert"
+                >
+                  {{ runtimePromptPreview.error || 'The system prompt could not be generated.' }}
+                </div>
+                <pre
+                  v-else
+                  class="max-h-[45vh] overflow-auto rounded-box bg-base-200 p-3 font-mono text-[10px] leading-relaxed whitespace-pre-wrap break-words"
+                  data-testid="chat-settings-runtime-system-prompt"
+                  >{{
+                    runtimePromptPreview.prompt || '(No system message is sent for this chat.)'
+                  }}</pre>
+              </div>
+            </details>
 
             <footer class="flex flex-wrap items-center gap-2 border-t border-base-300 pt-4">
               <button
