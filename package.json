@@ -54,7 +54,7 @@
   "dependencies": {
     "better-sqlite3": "^12.11.1",
     "dotenv": "^16.6.1",
-    "node-llama-cpp": "^3.22.1"
+    "node-llama-cpp": "^3.22.2"
   },
   "keywords": [
     "agent",
